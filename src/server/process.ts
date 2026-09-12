@@ -75,7 +75,7 @@ export async function shellCommand(
   // These commands are materialized project configuration, not interpolated model output.
   return process.platform === 'win32'
     ? command(
-        'powershell.exe',
+        'pwsh.exe',
         [
           '-NoLogo',
           '-NoProfile',

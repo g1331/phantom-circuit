@@ -126,9 +126,7 @@ test('real worktrees, commits and tests complete a task through independent revi
           join(this.cwd, 'sum.cjs'),
           `// Revision ${devTurns}\nmodule.exports=(a,b)=>a+b;\n`,
         );
-        await command('git', ['add', 'sum.cjs'], this.cwd);
-        await command('git', ['commit', '-m', `Implement sum ${devTurns}`], this.cwd);
-        return 'Implemented';
+        return 'Implemented in the task worktree; host must commit and validate.';
       }
       if (this.role === 'review') {
         if (prompt.includes('Axis: spec') && !rejected) {

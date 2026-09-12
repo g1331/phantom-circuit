@@ -4,7 +4,7 @@ A Windows-first, self-hosted AI engineering orchestrator. Discuss requirements w
 
 ## Run locally
 
-Requirements: Node.js 24+, Git, GitHub CLI (`gh auth login`) and Codex CLI with an authenticated account. This implementation was developed against Codex CLI 0.154.0. Target repositories must already have a local checkout whose `origin` matches GitHub.
+Requirements: Node.js 24+, Git, PowerShell 7+ (`pwsh.exe` on PATH on Windows), GitHub CLI (`gh auth login`) and Codex CLI with an authenticated account. This implementation was developed against Codex CLI 0.154.0. Target repositories must already have a local checkout whose `origin` matches GitHub. Configured install/build/test commands use PowerShell 7 on Windows, including `&&` chains.
 
 ```powershell
 npm ci
@@ -23,7 +23,7 @@ During discussion, the PM can persist glossary/ADR drafts locally using the upst
 - Closing a work switch stops new claims; existing tasks finish development, review, revision and merge. Pause interrupts a task separately; cancel retains its branch, worktree and PR.
 - Global/project/repository Dev limits apply together. Defaults: 4 / 4 / 2. Independent Review has a separate global two-session limit; PM activity is separate.
 - Backend defaults to `gpt-5.6-luna / max`; frontend and ordinary fullstack to `gpt-6-astra / low`; complex work, PM and Review to `gpt-6-astra / medium`. The host checks model availability and effort support; it does not silently substitute models.
-- Each task uses a managed branch and worktree. The original checkout is not used for development. Reviews bind both base and head revisions. The host verifies configured tests and GitHub checks before requesting squash merge; branch protection is not bypassed.
+- Each task uses a managed branch and worktree. The original checkout is not used for development. Dev leaves implementation files for host-owned staging, commit and formal validation. A durable finalization checkpoint lets interrupted host work resume without another Dev session. Known Git/process/environment failures pause without consuming product rework attempts; actual test/review failures still require corrections. Reviews bind both base and head revisions. The host verifies configured tests and GitHub checks before requesting squash merge; branch protection is not bypassed.
 - PM owns technical decisions. Product ambiguity and unavailable external authority remain user decisions. Skill confirmation points are adapted to this delegation in `prompts/`.
 
 ## State and recovery

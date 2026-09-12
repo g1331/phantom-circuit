@@ -199,14 +199,42 @@ export class Workspaces {
       throw new Fault('验证过程改变了提交或留下未提交文件，需 Dev 核对');
     return evidence;
   }
-  async push(task: Task) {
+  async commitImplementation(task: Task, signal?: AbortSignal) {
+    if (!task.worktree || !task.branch || !task.base)
+      throw new Fault('任务收尾缺少工作区、分支或基线');
+    await this.assertManaged(task.worktree);
+    const expected = join(this.root, task.repoId, `task-${task.id}`);
+    if ((await realpath(expected)) !== (await realpath(task.worktree)))
+      throw new Fault('任务收尾工作区不匹配');
+    if ((await this.git(task.worktree, ['branch', '--show-current'], signal)) !== task.branch)
+      throw new Fault('任务收尾分支不匹配');
+    const dirty = await this.git(task.worktree, ['status', '--porcelain'], signal);
+    if (dirty) {
+      await this.git(task.worktree, ['diff', '--check'], signal);
+      await this.git(task.worktree, ['add', '-A', '--', '.'], signal);
+      await this.git(task.worktree, ['diff', '--cached', '--check'], signal);
+      await this.git(task.worktree, ['commit', '-m', `task: ${task.title}`], signal);
+    }
+    const head = await this.git(task.worktree, ['rev-parse', 'HEAD'], signal);
+    const diff = await this.git(task.worktree, ['diff', `${task.base}...HEAD`, '--stat'], signal);
+    this.store.event(
+      'task-finalization',
+      dirty ? '宿主已提交任务工作区实现' : diff ? '复用已有任务提交' : '工作区和提交均无实现差异',
+      {
+        taskId: task.id,
+        projectId: task.projectId,
+      },
+    );
+    return { head, changed: !!diff };
+  }
+  async push(task: Task, signal?: AbortSignal) {
     const repo = this.store.repo(task.repoId);
     if (!repo.authorized) throw new Fault('仓库未授权推送');
     await this.assertManaged(task.worktree!);
-    if ((await this.git(task.worktree!, ['branch', '--show-current'])) !== task.branch)
+    if ((await this.git(task.worktree!, ['branch', '--show-current'], signal)) !== task.branch)
       throw new Fault('分支不匹配');
-    if (await this.git(task.worktree!, ['status', '--porcelain']))
+    if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
       throw new Fault('有未提交修改，无法发布');
-    await this.git(task.worktree!, ['push', 'origin', `HEAD:refs/heads/${task.branch}`]);
+    await this.git(task.worktree!, ['push', 'origin', `HEAD:refs/heads/${task.branch}`], signal);
   }
 }

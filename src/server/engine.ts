@@ -95,6 +95,7 @@ export class Engine {
   private async withAgent<T>(
     run: Run,
     fn: (c: Codex, signal: AbortSignal) => Promise<T>,
+    startAgent = true,
   ): Promise<T> {
     const c = this.createCodex();
     const abort = new AbortController();
@@ -122,7 +123,7 @@ export class Engine {
       }),
     );
     try {
-      await c.start();
+      if (startAgent) await c.start();
       const result = await fn(c, abort.signal);
       if (abort.signal.aborted) throw new Fault('执行已暂停', 409);
       this.store.finishRun(run.id, 'completed');
@@ -234,6 +235,7 @@ export class Engine {
             sourceMessageId: source.id,
             control: 'paused',
             stage: old.worktree ? 'developing' : 'ready',
+            devPhase: 'implement',
             reviews: [],
             tests: [],
             retries: 0,
@@ -443,6 +445,7 @@ export class Engine {
     const retries = task.retries + 1;
     this.store.updateTask(task.id, {
       stage: 'developing',
+      devPhase: 'implement',
       retries,
       reviews: [],
       tests: [],
@@ -460,75 +463,109 @@ export class Engine {
   }
   private async develop(run: Run) {
     try {
-      await this.withAgent(run, async (c, signal) => {
-        let task = await this.workspaces.prepare(this.store.task(run.taskId!));
-        const repo = this.store.repo(task.repoId);
-        if (!task.issue) await this.github.publishIssue(task);
-        task = this.store.task(task.id);
-        const base = await this.workspaces.prepareBase(task, signal);
-        if (repo.commands.install) {
-          const r = await shellCommand(repo.commands.install, task.worktree!, signal);
-          if (r.code !== 0) throw new Fault(`依赖安装失败：${r.stderr || r.stdout}`);
-        }
-        const profile = run.profileConfig ?? this.store.settings().profiles[task.profile];
-        const thread = await c.thread({
-          cwd: task.worktree!,
-          profile,
-          instructions: await instructions('dev'),
-          threadId: task.devThreadId,
-          writable: true,
-          tools: [
-            {
-              name: 'ask_pm',
-              description: 'Ask the project PM a technical question within the current task.',
-              inputSchema: jsonSchema(z.object({ question: z.string().min(1) }).strict()),
-            },
-          ],
-          toolHandler: async (name, args) => {
-            if (name !== 'ask_pm') throw new Fault('Dev 没有此操作权限', 403);
-            const { question } = z.object({ question: z.string() }).parse(args);
-            return { answer: await this.technical(task, question) };
-          },
-        });
-        this.saveThread(run, thread);
-        this.store.updateTask(task.id, { devThreadId: thread, base });
-        const reply = await c.turn(
-          thread,
-          `${taskPrompt(task)}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, validation, local self-review and commit. Do not push.`,
-          profile,
-          signal,
-          undefined,
-          this.onTurn(run),
-        );
-        this.store.event('dev-result', reply, {
-          projectId: task.projectId,
-          taskId: task.id,
-          runId: run.id,
-        });
-        if (signal.aborted) throw new Fault('执行已暂停');
-        const current = this.store.task(task.id);
-        if (current.control !== 'active' || current.stage === 'cancelled') return;
-        const head = await this.workspaces.git(task.worktree!, ['rev-parse', 'HEAD']);
-        const diff = await this.workspaces.git(task.worktree!, [
-          'diff',
-          `${base}...HEAD`,
-          '--stat',
-        ]);
-        if (!diff) {
-          this.rework(current, '没有可交付的实现差异，请完成任务或向 PM 说明具体阻塞');
-          return;
-        }
-        const tests = await this.workspaces.verify(current, signal);
-        task = this.store.updateTask(task.id, { tests, head, base });
-        if (tests.some((t) => t.exitCode !== 0)) {
-          this.rework(task, tests.map((t) => `${t.command}\n${t.output}`).join('\n'));
-          return;
-        }
-        await this.workspaces.push(task);
-        await this.github.publishPR(task);
-        this.store.updateTask(task.id, { stage: 'reviewing', reviews: [] });
-      });
+      await this.withAgent(
+        run,
+        async (c, signal) => {
+          let task = await this.workspaces.prepare(this.store.task(run.taskId!));
+          const repo = this.store.repo(task.repoId);
+          if (!task.issue) await this.github.publishIssue(task);
+          task = this.store.task(task.id);
+          const base =
+            task.devPhase === 'finalize' && task.base
+              ? task.base
+              : await this.workspaces.prepareBase(task, signal);
+          task = this.store.updateTask(task.id, { base });
+          if (repo.commands.install) {
+            const r = await shellCommand(repo.commands.install, task.worktree!, signal);
+            if (r.code !== 0) throw new Fault(`依赖安装失败：${r.stderr || r.stdout}`);
+          }
+          if (task.devPhase !== 'finalize') {
+            await c.start();
+            const profile = run.profileConfig ?? this.store.settings().profiles[task.profile];
+            const thread = await c.thread({
+              cwd: task.worktree!,
+              profile,
+              instructions: await instructions('dev'),
+              threadId: task.devThreadId,
+              writable: true,
+              tools: [
+                {
+                  name: 'ask_pm',
+                  description: 'Ask the project PM a technical question within the current task.',
+                  inputSchema: jsonSchema(z.object({ question: z.string().min(1) }).strict()),
+                },
+              ],
+              toolHandler: async (name, args) => {
+                if (name !== 'ask_pm') throw new Fault('Dev 没有此操作权限', 403);
+                const { question } = z.object({ question: z.string() }).parse(args);
+                return { answer: await this.technical(task, question) };
+              },
+            });
+            this.saveThread(run, thread);
+            this.store.updateTask(task.id, { devThreadId: thread, base });
+            const reply = await c.turn(
+              thread,
+              `${taskPrompt(task)}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, targeted checks and local self-review. Leave changes in this worktree. Do not stage, commit or push; the host owns finalization and formal validation.`,
+              profile,
+              signal,
+              undefined,
+              this.onTurn(run),
+            );
+            this.store.event('dev-result', reply, {
+              projectId: task.projectId,
+              taskId: task.id,
+              runId: run.id,
+            });
+            this.store.updateTask(task.id, { devPhase: 'finalize' });
+          }
+          if (signal.aborted) throw new Fault('执行已暂停');
+          const current = this.store.task(task.id);
+          if (current.control !== 'active' || current.stage === 'cancelled') return;
+          const { head, changed } = await this.workspaces.commitImplementation(current, signal);
+          if (!changed) {
+            this.rework(current, '没有可交付的实现差异，请完成任务或向 PM 说明具体阻塞');
+            return;
+          }
+          const tests = await this.workspaces.verify(current, signal);
+          task = this.store.updateTask(task.id, { tests, head, base });
+          const ensureActive = () => {
+            const latest = this.store.task(task.id);
+            if (signal.aborted || latest.control !== 'active' || latest.stage !== 'developing')
+              throw new Fault('执行已暂停', 409);
+          };
+          ensureActive();
+          if (tests.some((t) => t.exitCode !== 0)) {
+            const failure = tests
+              .filter((t) => t.exitCode !== 0)
+              .map((t) => `${t.command}\n${t.output}`)
+              .join('\n');
+            if (
+              /Permission denied|EACCES|EPERM|ENOSPC|no space left on device|UV_HANDLE_CLOSING|uv_async closing|not recognized as (?:the name|an internal)|CommandNotFoundException/i.test(
+                failure,
+              )
+            ) {
+              this.block(
+                task.id,
+                `实现已存在，但宿主验证环境受阻；未消耗产品返工次数。\n${failure}`,
+              );
+            } else this.rework(task, failure);
+            return;
+          }
+          await this.workspaces.push(task, signal);
+          ensureActive();
+          await this.github.publishPR(task);
+          ensureActive();
+          this.store.updateTask(task.id, { stage: 'reviewing', reviews: [] });
+        },
+        false,
+      );
     } catch (e) {
+      if (
+        /index\.lock|Permission denied|EACCES|EPERM|ENOSPC|no space left on device|ENOENT|命令超时|unable to auto-detect email address/i.test(
+          String(e),
+        )
+      )
+        throw new Fault(`宿主收尾环境受阻；未自动清理工作区或消耗产品返工次数。\n${String(e)}`);
       throw e;
     }
   }
@@ -784,6 +821,7 @@ export class Engine {
         if (pr.head.sha !== t.head)
           this.store.updateTask(t.id, {
             stage: 'developing',
+            devPhase: 'implement',
             reviews: [],
             tests: [],
             feedback: [
@@ -791,6 +829,41 @@ export class Engine {
               `远端任务分支已更新到 ${pr.head.sha}；合并远端修改，保留本地工作并重新验证。`,
             ],
           });
+      }
+      // Migrate only the exact legacy misclassification, not genuine review/test rework.
+      const current = this.store.task(t.id);
+      const missing = '没有可交付的实现差异，请完成任务或向 PM 说明具体阻塞';
+      if (
+        current.stage === 'developing' &&
+        !current.devPhase &&
+        current.base &&
+        current.feedback.at(-1) === missing
+      ) {
+        const dirty = await this.workspaces.git(t.worktree, ['status', '--porcelain']);
+        const diff = await this.workspaces.git(t.worktree, [
+          'diff',
+          `${current.base}...HEAD`,
+          '--stat',
+        ]);
+        if (dirty || diff) {
+          let refunded = 0;
+          for (const feedback of [...current.feedback].reverse()) {
+            if (feedback !== missing || refunded >= current.retries) break;
+            refunded++;
+          }
+          this.store.updateTask(t.id, {
+            devPhase: 'finalize',
+            retries: current.retries - refunded,
+          });
+          this.store.event(
+            'task-finalization',
+            `恢复已有实现，撤销 ${refunded} 次旧版缺失差异误判；保留原始反馈记录`,
+            {
+              projectId: t.projectId,
+              taskId: t.id,
+            },
+          );
+        }
       }
     }
     this.store.control(taskId, 'resume');
