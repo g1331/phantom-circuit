@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.phantom/
+.cache/
+test-results/
+*.log

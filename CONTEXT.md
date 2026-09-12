@@ -1,0 +1,29 @@
+# Phantom Circuit
+
+A local software-engineering orchestrator where the user discusses product requirements with a project PM and evaluates delivered experiences.
+
+## Language
+
+**Project**: A product context managed by one PM and associated with one or more repositories.
+_Avoid_: Repository, workspace
+
+**PM**: The agent responsible for a project's requirements, technical decisions, coordination and acceptance.
+_Avoid_: Dispatcher, coding worker
+
+**Dev**: An agent assigned to implement and revise one task in its own branch and worktree.
+_Avoid_: PM, reviewer
+
+**Task**: An independently verifiable slice of an explicit implementation request, with acceptance criteria and blocking dependencies.
+_Avoid_: Run, conversation
+
+**Run**: One bounded execution of a PM, Dev or Review role.
+_Avoid_: Task
+
+**Work switch**: The repository's permission to claim new tasks; existing task lifecycles continue when it is closed.
+_Avoid_: Kill switch, pause
+
+**Engineering completion**: Confirmed merge of work satisfying the task's verification and review requirements.
+_Avoid_: User acceptance, turn completion
+
+**Experience feedback**: A user's observations of delivered behavior, used to initiate a related improvement or repair.
+_Avoid_: Code review

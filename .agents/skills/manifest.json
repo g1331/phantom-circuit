@@ -1,0 +1,21 @@
+{
+  "source": "https://github.com/mattpocock/skills",
+  "revision": "3cca18b368ae95cdbdebbff572ccafa662551015",
+  "skills": [
+    "setup-matt-pocock-skills",
+    "grill-with-docs",
+    "domain-modeling",
+    "to-spec",
+    "to-tickets",
+    "implement",
+    "tdd",
+    "diagnosing-bugs",
+    "codebase-design",
+    "code-review",
+    "resolving-merge-conflicts",
+    "triage",
+    "grilling",
+    "writing-for-agents"
+  ],
+  "files": 43
+}
