@@ -19,6 +19,7 @@ export const taskInput = z
     kind: z.enum(['backend', 'frontend', 'fullstack']),
     complexity: z.enum(['normal', 'complex']),
     priority: z.number().int().min(-10).max(10),
+    documentIds: z.array(z.string()).default([]),
   })
   .strict();
 export const profileSchema = z

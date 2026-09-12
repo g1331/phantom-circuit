@@ -12,6 +12,7 @@ import type {
   Event,
   Operation,
   ProfileName,
+  DesignDocument,
 } from '../shared/types.ts';
 
 export class Fault extends Error {
@@ -55,6 +56,7 @@ type Entities = {
   message: Message;
   operation: Operation;
   settings: Settings;
+  document: DesignDocument;
 };
 export class Store {
   private db: DatabaseSync;
@@ -153,6 +155,7 @@ export class Store {
       messages: this.list('message'),
       events: this.events(),
       settings: this.settings(),
+      documents: this.list('document'),
     };
   }
   createProject(name: string, description: string) {
@@ -227,6 +230,7 @@ export class Store {
       content: redact(content),
       intent,
       createdAt: now(),
+      ...(role === 'user' ? { status: 'queued' as const } : {}),
     };
     this.put('message', m.id, m);
     this.event('message', role === 'user' ? '收到你的消息' : 'PM 更新了对话', { projectId });
@@ -245,7 +249,8 @@ export class Store {
       | 'kind'
       | 'complexity'
       | 'priority'
-    >,
+    > &
+      Pick<Task, 'documentChanges'>,
   ) {
     if (this.repo(input.repoId).projectId !== input.projectId)
       throw new Fault('任务仓库不属于当前项目');
@@ -287,6 +292,30 @@ export class Store {
     this.event('task', `任务已准备：${task.title}`, { projectId: task.projectId, taskId: task.id });
     return task;
   }
+  recordDocument(
+    projectId: string,
+    input: Pick<DesignDocument, 'repoId' | 'path' | 'content' | 'accepted'>,
+  ) {
+    if (this.repo(input.repoId).projectId !== projectId) throw new Fault('文档仓库不属于项目');
+    if (!/^(CONTEXT\.md|CONTEXT-MAP\.md|docs\/adr\/\d{4}-[a-z0-9-]+\.md)$/.test(input.path))
+      throw new Fault('领域文档路径必须使用已约定的词汇表或 ADR 格式');
+    const old = this.list('document').find(
+      (d) => d.repoId === input.repoId && d.path === input.path,
+    );
+    const doc: DesignDocument = {
+      ...input,
+      projectId,
+      id: old?.id ?? id(),
+      content: redact(input.content),
+      version: (old?.version ?? 0) + 1,
+      updatedAt: now(),
+    };
+    this.put('document', doc.id, doc);
+    this.event('design', `PM 已记录${doc.accepted ? '接受的设计' : '设计草案'}：${doc.path}`, {
+      projectId,
+    });
+    return doc;
+  }
   updateTask(key: string, patch: Partial<Task>) {
     const t = { ...this.task(key), ...patch, updatedAt: now() };
     this.put('task', key, t);
@@ -299,6 +328,7 @@ export class Store {
       projectId,
       role,
       profile,
+      profileConfig: { ...this.settings().profiles[profile] },
       status: 'running',
       startedAt: now(),
       taskId: task?.id,
@@ -339,7 +369,12 @@ export class Store {
         const p = projects[(start + offset) % projects.length];
         if (active.filter((r) => r.projectId === p.id).length >= p.devLimit) continue;
         for (const t of tasks.filter((t) => t.projectId === p.id)) {
-          if (t.control !== 'active' || t.blocked || !['ready', 'developing'].includes(t.stage))
+          if (
+            t.control !== 'active' ||
+            t.blocked ||
+            t.pendingFeedback?.length ||
+            !['ready', 'developing'].includes(t.stage)
+          )
             continue;
           const repo = this.repo(t.repoId);
           if (!repo.authorized || repo.blocked || (t.stage === 'ready' && !repo.enabled)) continue;
@@ -371,6 +406,15 @@ export class Store {
     this.event('task', `任务 ${action}`, { projectId: t.projectId, taskId: key });
   }
   recover() {
+    for (const m of this.list('message'))
+      if (m.role === 'user' && m.status === 'running') {
+        this.put('message', m.id, { ...m, status: 'failed' });
+        this.addMessage(
+          m.projectId,
+          'system',
+          '上次 PM 响应被中断，已保留会话和已创建的任务；可重新发送该消息继续。',
+        );
+      }
     for (const r of this.activeRuns()) {
       this.finishRun(r.id, 'interrupted', '服务重启；保留工作区，等待恢复核对');
       if (r.taskId)

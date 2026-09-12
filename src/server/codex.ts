@@ -191,6 +191,15 @@ export class Codex extends EventEmitter {
           allowProviderModelFallback: false,
           serviceName: 'phantom-circuit',
         });
+    // Resume has no allowProviderModelFallback field in the installed protocol.
+    // Validate the effective model instead of relying on an ignored request field.
+    if (result.model !== options.profile.model)
+      throw new Fault(`实际模型与请求不一致：${result.model} / ${options.profile.model}`, 409);
+    if (result.reasoningEffort && result.reasoningEffort !== options.profile.effort)
+      throw new Fault(
+        `实际推理档位与请求不一致：${result.reasoningEffort} / ${options.profile.effort}`,
+        409,
+      );
     return result.thread.id as string;
   }
   async turn(

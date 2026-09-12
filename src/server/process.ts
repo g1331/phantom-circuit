@@ -23,20 +23,29 @@ export function command(
   throwOnError = true,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  if (signal?.aborted) return Promise.reject(new Fault('执行已暂停', 409));
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: 'pipe', shell: false });
     let stdout = '',
       stderr = '';
     let settled = false;
+    let stopError: Error | undefined;
     const timer = setTimeout(() => {
-      void terminate(child);
-      done(new Fault(`命令超时：${binary}`, 504));
+      stopError = new Fault(`命令超时：${binary}`, 504);
+      void terminate(child).then(
+        () => done(stopError),
+        (e) => done(e),
+      );
     }, timeout);
     const abort = () => {
-      void terminate(child);
-      done(new Fault('执行已暂停', 409));
+      stopError = new Fault('执行已暂停', 409);
+      void terminate(child).then(
+        () => done(stopError),
+        (e) => done(e),
+      );
     };
     function done(error?: Error, code = 1) {
+      error ??= stopError;
       if (settled) return;
       settled = true;
       clearTimeout(timer);

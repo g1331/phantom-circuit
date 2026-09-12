@@ -221,6 +221,7 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     const { id, action } = z
       .object({ id: z.string(), action: z.enum(['start', 'stop']) })
       .parse(req.params);
+    store.repo(id);
     if (action === 'stop') {
       await previews.stop(id);
       return { ok: true };

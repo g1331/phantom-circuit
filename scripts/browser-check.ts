@@ -23,6 +23,7 @@ const browser = await chromium.launch({
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1000 },
   deviceScaleFactor: 1,
+  reducedMotion: 'reduce',
 });
 const errors: string[] = [];
 page.on('pageerror', (e) => errors.push(e.message));
@@ -132,7 +133,11 @@ try {
   );
   await page.getByRole('button', { name: '深色外观' }).click();
   await page.getByRole('button', { name: '运行设置' }).click();
-  await page.screenshot({ path: resolve(artifacts, '06-mobile-settings.png'), fullPage: true });
+  await page.screenshot({
+    path: resolve(artifacts, '06-mobile-settings.png'),
+    fullPage: false,
+    animations: 'disabled',
+  });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,

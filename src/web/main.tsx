@@ -542,8 +542,8 @@ function App() {
                               <strong>
                                 {r.role.toUpperCase()}{' '}
                                 <span>
-                                  {state.settings.profiles[r.profile].model} /{' '}
-                                  {state.settings.profiles[r.profile].effort}
+                                  {(r.profileConfig ?? state.settings.profiles[r.profile]).model} /{' '}
+                                  {(r.profileConfig ?? state.settings.profiles[r.profile]).effort}
                                 </span>
                               </strong>
                               <p>

@@ -1,4 +1,4 @@
-import { mkdir, realpath, access } from 'node:fs/promises';
+import { mkdir, realpath, access, readFile } from 'node:fs/promises';
 import { resolve, join, relative, isAbsolute } from 'node:path';
 import { command, shellCommand } from './process.ts';
 import { Store, Fault, now, redact } from './store.ts';
@@ -118,6 +118,30 @@ export class Workspaces {
     const repo = this.store.repo(task.repoId);
     const mirror = await this.mirror(repo);
     const base = await this.git(mirror, ['rev-parse', `refs/remotes/origin/${repo.defaultBranch}`]);
+    if (task.pr && task.branch) {
+      await this.git(
+        task.worktree!,
+        ['fetch', 'origin', `+refs/heads/${task.branch}:refs/remotes/origin/${task.branch}`],
+        signal,
+      );
+      const unmerged = await this.git(task.worktree!, ['diff', '--name-only', '--diff-filter=U']);
+      if (!unmerged) {
+        const result = await command(
+          'git',
+          ['merge', '--no-edit', `refs/remotes/origin/${task.branch}`],
+          task.worktree,
+          undefined,
+          120000,
+          false,
+          signal,
+        );
+        if (result.code !== 0)
+          this.store.event('merge-conflict', '远端任务分支包含新修改，交 Dev 保留双方意图解决', {
+            projectId: task.projectId,
+            taskId: task.id,
+          });
+      }
+    }
     const ancestor = await command(
       'git',
       ['merge-base', '--is-ancestor', base, 'HEAD'],
@@ -150,6 +174,13 @@ export class Workspaces {
     await this.assertManaged(task.worktree);
     const repo = this.store.repo(task.repoId);
     if (!repo.commands.test.trim()) throw new Fault('仓库尚未配置验收测试命令');
+    for (const doc of task.documentChanges ?? []) {
+      const path = join(task.worktree, doc.path);
+      await this.assertManaged(path);
+      const actual = await readFile(path, 'utf8');
+      if (actual.replaceAll('\r\n', '\n').trim() !== doc.content.replaceAll('\r\n', '\n').trim())
+        throw new Fault(`设计文档未按已接受版本落地：${doc.path}`);
+    }
     const before = await this.git(task.worktree, ['rev-parse', 'HEAD']);
     const evidence: Evidence[] = [];
     for (const text of [repo.commands.build, repo.commands.test].filter(Boolean)) {

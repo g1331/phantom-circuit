@@ -59,6 +59,7 @@ export interface Message {
   content: string;
   intent?: 'discuss' | 'implement' | 'feedback';
   createdAt: string;
+  status?: 'queued' | 'running' | 'completed' | 'failed';
 }
 export interface Task {
   id: string;
@@ -83,6 +84,7 @@ export interface Task {
   issue?: number;
   issueUrl?: string;
   issueNodeId?: string;
+  issueDatabaseId?: number;
   projectItemId?: string;
   issueBody?: string;
   pr?: number;
@@ -94,6 +96,7 @@ export interface Task {
   retries: number;
   feedback: string[];
   pendingFeedback?: string[];
+  documentChanges?: { path: string; content: string; version: number }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +123,7 @@ export interface Run {
   role: Role;
   status: RunStatus;
   profile: ProfileName;
+  profileConfig?: Profile;
   threadId?: string;
   turnId?: string;
   error?: string;
@@ -150,6 +154,17 @@ export interface Snapshot {
   messages: Message[];
   events: Event[];
   settings: Settings;
+  documents: DesignDocument[];
+}
+export interface DesignDocument {
+  id: string;
+  projectId: string;
+  repoId: string;
+  path: string;
+  content: string;
+  accepted: boolean;
+  version: number;
+  updatedAt: string;
 }
 export const stageLabels: Record<Stage, string> = {
   clarifying: '待澄清',

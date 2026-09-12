@@ -16,6 +16,8 @@ Open **http://127.0.0.1:4317**. Create a project, connect a repository and expli
 
 Use `npm run dev:web` in a second terminal for frontend development. The Vite development server proxies API requests to port 4317.
 
+During discussion, the PM can persist glossary/ADR drafts locally using the upstream document formats. Accepted documents are attached as immutable snapshots to a documentation task under an explicit implementation request, then published through the normal Dev/review/merge loop. Discussion alone never starts a documentation Dev. PM contexts refresh from managed default-branch views so merged decisions are not read from a stale original checkout.
+
 ## Controls
 
 - Closing a work switch stops new claims; existing tasks finish development, review, revision and merge. Pause interrupts a task separately; cancel retains its branch, worktree and PR.
@@ -57,6 +59,8 @@ npm run probe
 Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on port 4318. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
 
 `npm run probe -- --turn` additionally makes two metered Codex calls to verify a model response and conversation recovery across process restart. It does not mutate repositories.
+
+`npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt, bundled skill context and registered host tools, using a temporary project without repositories or GitHub writes.
 
 Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner. The current session has not created a remote source repository or modified a user's existing GitHub project.
 

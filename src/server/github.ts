@@ -1,5 +1,5 @@
 import { command } from './process.ts';
-import { Fault, Store } from './store.ts';
+import { Fault, Store, redact } from './store.ts';
 import type { Repo, Task, ReviewResult } from '../shared/types.ts';
 
 export interface PullState {
@@ -81,7 +81,12 @@ export class GitHub {
       this.store.put('operation', key, { id: key, kind, status: 'done', result });
       return result;
     } catch (e) {
-      this.store.put('operation', key, { id: key, kind, status: 'uncertain', error: String(e) });
+      this.store.put('operation', key, {
+        id: key,
+        kind,
+        status: 'uncertain',
+        error: redact(String(e)),
+      });
       throw e;
     }
   }
@@ -134,7 +139,9 @@ export class GitHub {
               ])
             ).stdout,
           ).projects;
-          return projects.find((p: any) => p.title === `Phantom · ${project.name}`);
+          return projects.find(
+            (p: any) => p.title === `Phantom · ${project.name} · ${project.id.slice(0, 8)}`,
+          );
         },
         async () =>
           JSON.parse(
@@ -145,19 +152,21 @@ export class GitHub {
                 '--owner',
                 owner,
                 '--title',
-                `Phantom · ${project.name}`,
+                `Phantom · ${project.name} · ${project.id.slice(0, 8)}`,
                 '--format',
                 'json',
               ])
             ).stdout,
           ),
       );
-      project.githubProjectId = result.id;
-      project.githubProjectUrl = result.url;
-      this.store.put('project', project.id, project);
+      this.store.put('project', project.id, {
+        ...this.store.project(project.id),
+        githubProjectId: result.id,
+        githubProjectUrl: result.url,
+      });
     }
     if (!repo.milestone) {
-      const title = `Phantom · ${project.name}`;
+      const title = `Phantom · ${project.name} · ${project.id.slice(0, 8)}`;
       const milestone = await this.operation(
         `milestone:${repo.id}`,
         'create-milestone',
@@ -178,6 +187,25 @@ export class GitHub {
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     await this.setupProject(repo);
+    for (const key of task.dependencies) {
+      const dependency = this.store.task(key);
+      if (!dependency.issueDatabaseId) await this.publishIssue(dependency);
+    }
+    await this.operation(
+      `label:${repo.id}:ready`,
+      'create-label',
+      async () =>
+        (await this.paged(`repos/${repo.github}/labels?per_page=100`)).find(
+          (x) => x.name === 'ready-for-agent',
+        ),
+      () =>
+        this.api(`repos/${repo.github}/labels`, 'POST', {
+          name: 'ready-for-agent',
+          color: '9bc7a7',
+          description:
+            'Prepared for a delegated agent; host authorization and work switches still apply.',
+        }),
+    );
     const marker = `<!-- phantom-task:${task.id} -->`;
     const deps = task.dependencies.map((key) => {
       const t = this.store.task(key);
@@ -196,14 +224,27 @@ export class GitHub {
           title: task.title,
           body,
           milestone: this.store.repo(repo.id).milestone,
+          labels: ['ready-for-agent'],
         }),
     );
     this.store.updateTask(task.id, {
       issue: issue.number,
       issueUrl: issue.html_url,
       issueNodeId: issue.node_id,
+      issueDatabaseId: issue.id,
       issueBody: issue.body,
     });
+    for (const key of task.dependencies) {
+      const dep = this.store.task(key);
+      const endpoint = `repos/${repo.github}/issues/${issue.number}/dependencies/blocked_by`;
+      await this.operation(
+        `dependency:${task.id}:${key}`,
+        'link-dependency',
+        async () =>
+          (await this.paged(`${endpoint}?per_page=100`)).find((x) => x.id === dep.issueDatabaseId),
+        () => this.api(endpoint, 'POST', { issue_id: dep.issueDatabaseId }),
+      );
+    }
     const p = this.store.project(repo.projectId);
     if (p.githubProjectId && !task.projectItemId) {
       // addProjectV2ItemById returns the existing item when content is already attached.
@@ -238,6 +279,23 @@ export class GitHub {
         }),
     );
     this.store.updateTask(task.id, { pr: result.number, prUrl: result.html_url });
+    return result;
+  }
+  async reviseIssue(task: Task) {
+    const repo = this.store.repo(task.repoId);
+    this.authorize(repo);
+    const endpoint = `repos/${repo.github}/issues/${task.issue}`;
+    const body = `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [ ] ${x}`).join('\n')}\n\n## Blocked by\n${task.dependencies.map((key) => this.store.task(key).issueUrl ?? key).join('\n') || 'None (can start immediately)'}\n`;
+    const result = await this.operation(
+      `revise-issue:${task.id}:${task.sourceMessageId}`,
+      'revise-issue',
+      async () => {
+        const issue = await this.api(endpoint);
+        return issue.body === body ? issue : undefined;
+      },
+      () => this.api(endpoint, 'PATCH', { body }),
+    );
+    this.store.updateTask(task.id, { issueBody: result.body });
     return result;
   }
   async pull(task: Task): Promise<PullState> {
