@@ -11,7 +11,7 @@ import { Codex } from './codex.ts';
 import { commandSchema, limit, settingsSchema } from './schemas.ts';
 
 export function createApp(store: Store, engine: Engine, previews: Previews, port = 4317) {
-  const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
+  const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
   const token = randomBytes(32).toString('hex');
   const csrf = randomBytes(32).toString('hex');
   const allowed = new Set([

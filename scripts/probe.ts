@@ -11,6 +11,19 @@ try {
     console.log(`${name}: ${p.model} / ${p.effort} available`);
   }
   console.log(`Handshake OK; ${models.length} models.`);
+  if (process.argv.includes('--session')) {
+    const cwd = resolve('.cache/protocol-smoke');
+    await mkdir(cwd, { recursive: true });
+    await c.thread({
+      cwd,
+      profile: defaults.profiles.frontend,
+      instructions: 'Protocol configuration check. No turn will run.',
+      writable: false,
+    });
+    console.log(
+      'Effective model and reasoning effort verified against actual thread/start response.',
+    );
+  }
   if (process.argv.includes('--turn')) {
     const cwd = resolve('.cache/protocol-smoke');
     await mkdir(cwd, { recursive: true });

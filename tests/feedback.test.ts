@@ -19,6 +19,7 @@ test('external requests for new product scope wait for PM clarification instead 
     defaultBranch: 'main',
   });
   const m = store.addMessage(p.id, 'user', 'Implement login', 'implement');
+  store.put('project', p.id, { ...p, pmThreadId: 'persistent-project-pm' });
   const task = store.createTask({
     projectId: p.id,
     repoId: repo.id,
@@ -46,7 +47,8 @@ test('external requests for new product scope wait for PM clarification instead 
   class FeedbackModel extends Codex {
     override async start() {}
     override async stop() {}
-    override async thread() {
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      assert.equal(options.threadId, 'persistent-project-pm');
       return 'pm';
     }
     override async turn() {

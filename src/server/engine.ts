@@ -399,8 +399,13 @@ export class Engine {
         const thread = await c.thread({
           cwd: task.worktree ?? this.store.repo(task.repoId).path,
           profile,
-          instructions: await instructions('pm'),
+          threadId: this.store.project(task.projectId).pmThreadId,
+          instructions: `${await instructions('pm')}\nThis turn only evaluates external feedback. Return the requested JSON; no tool mutations.`,
           writable: false,
+        });
+        this.store.put('project', task.projectId, {
+          ...this.store.project(task.projectId),
+          pmThreadId: thread,
         });
         this.saveThread(run, thread);
         const reply = await c.turn(
@@ -648,8 +653,13 @@ export class Engine {
         const thread = await c.thread({
           cwd,
           profile,
+          threadId: this.store.project(task.projectId).pmThreadId,
           instructions: `${await instructions('pm')}\nThis turn only judges acceptance for merge. Return the requested JSON; no tool mutations.`,
           writable: false,
+        });
+        this.store.put('project', task.projectId, {
+          ...this.store.project(task.projectId),
+          pmThreadId: thread,
         });
         this.saveThread(run, thread);
         const reply = await c.turn(

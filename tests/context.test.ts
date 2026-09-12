@@ -43,3 +43,33 @@ test('resuming a thread rejects an effective model different from the requested 
     /模型|model/,
   );
 });
+
+test('thread setup rejects a mismatched or missing effective reasoning effort', async () => {
+  for (const effort of ['medium', null, undefined]) {
+    class Protocol extends Codex {
+      override async models() {
+        return [
+          {
+            id: 'requested',
+            model: 'requested',
+            displayName: 'Requested',
+            supportedReasoningEfforts: [{ reasoningEffort: 'low' }],
+          },
+        ];
+      }
+      override async request() {
+        return { thread: { id: 'thread' }, model: 'requested', reasoningEffort: effort };
+      }
+    }
+    await assert.rejects(
+      new Protocol().thread({
+        cwd: '.',
+        profile: { model: 'requested', effort: 'low' },
+        instructions: '',
+        writable: false,
+        threadId: 'thread',
+      }),
+      /推理档位/,
+    );
+  }
+});
