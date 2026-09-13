@@ -63,3 +63,101 @@ test('local API requires a same-site session and explicit write token', async ()
   await app.close();
   store.close();
 });
+
+test('priority HTTP writes require token and project ownership and reject stale versions', async () => {
+  const store = new Store(':memory:');
+  const ws = new Workspaces('/test', store);
+  const app = createApp(
+    store,
+    new Engine(store, new GitHub(store), ws, '/test'),
+    new Previews(store, ws),
+  );
+  const p = store.createProject('priority', '');
+  const other = store.createProject('other', '');
+  const repo = store.createRepo({
+    projectId: p.id,
+    name: 'repo',
+    path: '/priority',
+    github: 'test/priority',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const source = store.addMessage(p.id, 'user', 'Build', 'implement');
+  const task = store.createTask({
+    projectId: p.id,
+    repoId: repo.id,
+    sourceMessageId: source.id,
+    title: 'Task',
+    spec: 'Build',
+    acceptance: ['Works'],
+    dependencies: [],
+    kind: 'backend',
+    complexity: 'normal',
+    priority: 1,
+  });
+  const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+  const headers = {
+    host: '127.0.0.1:4317',
+    cookie: String(init.headers['set-cookie']).split(';')[0],
+  };
+  const payload = {
+    taskId: task.id,
+    level: 'high',
+    reason: 'Delivery blocked',
+    expectedVersion: 0,
+    requestId: 'http-1',
+  };
+  const url = `/api/projects/${p.id}/task-priority`;
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 403);
+  const auth = { ...headers, 'x-phantom-csrf': init.json().csrf };
+  assert.equal(
+    (
+      await app.inject({
+        method: 'POST',
+        url: `/api/projects/${other.id}/task-priority`,
+        headers: auth,
+        payload,
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (await app.inject({ method: 'POST', url, headers: auth, payload })).json().priority,
+    5,
+  );
+  assert.equal(
+    (await app.inject({ method: 'POST', url, headers: auth, payload })).json().priorityHistory
+      .length,
+    1,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers: auth,
+        payload: { ...payload, requestId: 'http-2' },
+      })
+    ).statusCode,
+    409,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers: auth,
+        payload: { ...payload, level: 'critical' },
+      })
+    ).statusCode,
+    400,
+  );
+  const before = store.snapshot();
+  assert.equal(
+    (await app.inject({ url: `/api/projects/${p.id}/scheduling`, headers })).statusCode,
+    200,
+  );
+  assert.deepEqual(store.snapshot(), before);
+  await app.close();
+  store.close();
+});

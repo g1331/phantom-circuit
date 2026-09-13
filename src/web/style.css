@@ -1749,3 +1749,92 @@ time {
     scroll-behavior: auto !important;
   }
 }
+
+.priority-badge {
+  display: inline-block;
+  font-size: 12px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 2px 6px;
+  width: fit-content;
+  overflow-wrap: anywhere;
+}
+.priority-language {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.claim-order,
+.priority-editor,
+.claim-conditions {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+.claim-order p,
+.priority-editor p,
+.claim-conditions p {
+  margin: 8px 0;
+}
+.priority-editor form {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.priority-editor label {
+  display: grid;
+  gap: 6px;
+}
+.priority-editor textarea,
+.priority-editor select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.priority-editor summary {
+  cursor: pointer;
+}
+.priority-editor li,
+.claim-order li {
+  margin: 8px 0;
+}
+.task-row-main .priority-badge {
+  white-space: normal;
+}
+
+.priority-language {
+  padding: 16px 25px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.priority-language select {
+  padding: 6px 10px;
+}
+.claim-order {
+  margin: 0 25px 16px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.claim-order h3 {
+  margin: 0;
+  color: var(--text);
+}
+.claim-order button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.task-row-main .priority-badge {
+  color: var(--text);
+  font-size: 11px;
+}
+@media (max-width: 600px) {
+  .priority-language {
+    padding: 14px 18px;
+  }
+  .claim-order {
+    margin: 0 18px 14px;
+  }
+}

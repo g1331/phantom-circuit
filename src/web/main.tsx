@@ -1,3 +1,7 @@
+import { PriorityBadge, PriorityEditor, ClaimConditions, ClaimOrder } from './task-priority.tsx';
+import { priorityText } from './priority-resources.ts';
+import type { PriorityLocale } from '../shared/priority.ts';
+import type { SchedulingExplanation } from '../shared/types.ts';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -53,6 +57,12 @@ const profiles: Record<ProfileName, string> = {
 };
 const isRunning = (status: string) => status === 'running' || status === 'waiting';
 function App() {
+  const [priorityLocale, setPriorityLocale] = useState<PriorityLocale>(
+    localStorage.getItem('phantom.priorityLocale') === 'en' ? 'en' : 'zh-CN',
+  );
+  const [schedule, setSchedule] = useState<SchedulingExplanation>();
+  const [scheduleError, setScheduleError] = useState('');
+  const [scheduleRefresh, setScheduleRefresh] = useState(0);
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
   const [view, setView] = useState<'chat' | 'tasks' | 'runs'>('chat');
@@ -139,6 +149,22 @@ function App() {
   );
   const pmBusy = active.some((r) => r.role === 'pm');
   const detail = state?.tasks.find((t) => t.id === taskDetail);
+  useEffect(() => {
+    let current = true;
+    setSchedule(undefined);
+    setScheduleError('');
+    if (project)
+      void api<SchedulingExplanation>(`/projects/${project.id}/scheduling`)
+        .then((result) => {
+          if (current) setSchedule(result);
+        })
+        .catch((error) => {
+          if (current) setScheduleError(String(error));
+        });
+    return () => {
+      current = false;
+    };
+  }, [state, project?.id, scheduleRefresh]);
   async function send() {
     if (!draft.trim() || !project) return;
     const content = draft;
@@ -484,6 +510,27 @@ function App() {
                   </div>
                 ) : view === 'tasks' ? (
                   <div className="task-workspace">
+                    <label className="priority-language">
+                      {priorityText[priorityLocale].language}
+                      <select
+                        value={priorityLocale}
+                        onChange={(e) => {
+                          const locale = e.target.value as PriorityLocale;
+                          setPriorityLocale(locale);
+                          localStorage.setItem('phantom.priorityLocale', locale);
+                        }}
+                      >
+                        <option value="zh-CN">中文</option>
+                        <option value="en">English</option>
+                      </select>
+                    </label>
+                    <ClaimOrder
+                      schedule={schedule}
+                      projects={state?.projects ?? []}
+                      locale={priorityLocale}
+                      refresh={() => setScheduleRefresh((n) => n + 1)}
+                      error={scheduleError}
+                    />
                     <div className="list-toolbar">
                       <input
                         aria-label="搜索任务"
@@ -521,6 +568,7 @@ function App() {
                             </span>
                             <div className="task-row-main">
                               <strong>{t.title}</strong>
+                              <PriorityBadge value={t.priority} locale={priorityLocale} />
                               <span>
                                 {repos.find((r) => r.id === t.repoId)?.name} <i>·</i>{' '}
                                 {profiles[t.profile]} {t.blocked && <em>· {t.blocked}</em>}
@@ -876,6 +924,11 @@ function App() {
           onClose={() => setTaskDetail(undefined)}
         >
           <div className="task-detail">
+            <PriorityEditor key={detail.id} task={detail} locale={priorityLocale} reload={reload} />
+            <ClaimConditions
+              entry={schedule?.tasks.find((t) => t.taskId === detail.id)}
+              locale={priorityLocale}
+            />
             <MarkdownContent content={detail.spec} label="任务说明" />
             <h3>验收条件</h3>
             <ul>

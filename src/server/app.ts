@@ -62,6 +62,14 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     reply.header('Set-Cookie', `phantom_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
     return { csrf };
   });
+  app.get('/api/projects/:id/scheduling', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.explainScheduling(id);
+  });
+  app.post('/api/projects/:id/task-priority', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.setTaskPriority(id, req.body, { actor: 'user' });
+  });
   app.get('/api/state', async () => store.snapshot());
   app.get('/api/events', async (req, reply) => {
     reply.hijack();
