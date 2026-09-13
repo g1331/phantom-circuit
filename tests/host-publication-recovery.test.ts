@@ -215,13 +215,15 @@ test('host recovery authorizes one controlled publication and completes without 
     assert.equal(f.operation()!.reconciliation, undefined, 'the authorization is consumed');
     assert.equal(f.starts(), 0, 'no extra Dev session after recovery');
     assert.equal(f.turns(), 0, 'no reimplementation turn');
-    // The pinned revision and its formal evidence survived the recovery untouched.
+    // The pinned revision did not move, and it still carries passing formal evidence for the
+    // same commands. (Recovery re-runs verify on the unchanged worktree, so this is content
+    // equality of a fresh run, not identity of the original evidence record.)
     assert.equal(result.head, failed.head);
     assert.equal(result.base, failed.base);
     assert.deepEqual(
       result.tests.map((t) => [t.command, t.exitCode]),
       evidence.map((t) => [t.command, t.exitCode]),
-      'the formal evidence for the pinned revision is the same evidence',
+      'the same commands still pass for the pinned revision',
     );
     assert.equal(
       await readFile(join(f.task().worktree!, 'implementation.txt'), 'utf8'),
@@ -412,13 +414,15 @@ test('a creation whose response was lost is adopted at resume, never created twi
     assert.equal(f.github.posted.length, 1, 'the lost-response PR is adopted, not recreated');
     assert.equal(f.github.writes, 1, 'and no second PR ever reached the remote');
     assert.equal(result.retries, 0);
-    // Adoption must not move the pinned revision or replace the evidence it was validated with.
+    // Adoption must not move the pinned revision, and must leave it with passing evidence for
+    // the same commands. `base` is pinned by the fixture and origin/main never moves, so that
+    // assertion only records the value; the head and evidence comparisons are the real checks.
     assert.equal(result.head, lost.head);
     assert.equal(result.base, lost.base);
     assert.deepEqual(
       result.tests.map((t) => [t.command, t.exitCode]),
       lost.tests.map((t) => [t.command, t.exitCode]),
-      'the pinned revision keeps its own formal evidence',
+      'the same commands still pass for the pinned revision',
     );
     assert.equal(f.starts(), 0, 'adoption needs no Dev session');
     assert.equal(f.turns(), 0);
