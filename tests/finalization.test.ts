@@ -80,6 +80,14 @@ async function fixture(
       return this.pull(task);
     }
     override async pull(task: Task): Promise<PullState> {
+      const remoteHead = await command(
+        'git',
+        ['rev-parse', '--verify', '--quiet', `refs/heads/${task.branch}`],
+        remote,
+        undefined,
+        120000,
+        false,
+      );
       return {
         number: 2,
         html_url: '',
@@ -87,7 +95,11 @@ async function fixture(
         merged: false,
         mergeable: true,
         mergeable_state: 'clean',
-        head: { sha: task.head!, ref: prIdentity.branch, repo: { full_name: prIdentity.headRepo } },
+        head: {
+          sha: remoteHead.code === 0 ? remoteHead.stdout.trim() : task.head!,
+          ref: prIdentity.branch,
+          repo: { full_name: prIdentity.headRepo },
+        },
         base: { sha: task.base!, repo: { full_name: prIdentity.baseRepo } },
         body: '',
       };
@@ -260,6 +272,79 @@ async function conflictingTask(
   });
   return { ...f, oldHead, incoming };
 }
+
+for (const failure of ['install', 'validation'] as const) {
+  test(`resume keeps the merged finalize checkpoint after ${failure} fails before pushing an existing PR`, async (t) => {
+    const f = await conflictingTask(
+      t,
+      async (cwd) => {
+        await writeFile(join(cwd, 'value.txt'), 'after');
+      },
+      'task',
+    );
+    const commands = f.store.repo(f.repo.id).commands;
+    const fail = 'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
+    f.store.patchRepo(f.repo.id, {
+      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: fail },
+    });
+    const paused = await f.run();
+    assert.equal(paused.control, 'paused', paused.blocked);
+    assert.equal(paused.devPhase, 'finalize');
+    assert.equal(paused.pendingMerge, undefined);
+    assert.equal(f.turns(), 1);
+    const merged = paused.head!;
+    assert.notEqual(merged, f.incoming);
+    assert.equal(
+      (await f.git(f.path, ['ls-remote', 'origin', `refs/heads/${paused.branch}`])).stdout.split(
+        /\s/,
+      )[0],
+      f.incoming,
+    );
+    f.store.patchRepo(f.repo.id, { commands });
+    await f.engine.resume(paused.id);
+    assert.equal(f.task().devPhase, 'finalize');
+    const result = await f.run();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+    assert.equal(result.head, merged);
+    assert.equal(result.pr, 2);
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 1);
+    assert.equal(result.tests[0].head, merged);
+    assert.equal(
+      (await f.git(f.path, ['ls-remote', 'origin', `refs/heads/${result.branch}`])).stdout.split(
+        /\s/,
+      )[0],
+      merged,
+    );
+  });
+}
+
+test('resume still coordinates genuinely new remote PR commits before another implementation turn', async (t) => {
+  const f = await fixture(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const first = await f.run();
+  assert.equal(first.stage, 'reviewing', first.blocked);
+  f.store.updateTask(first.id, { stage: 'developing', control: 'paused', devPhase: 'finalize' });
+  await f.git(f.source, ['fetch', 'origin', `refs/heads/${first.branch}`]);
+  await f.git(f.source, ['checkout', '-b', 'remote-edit', 'FETCH_HEAD']);
+  await writeFile(join(f.source, 'remote-feature.txt'), 'new remote work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Remote contribution']);
+  await f.git(f.source, ['push', 'origin', `HEAD:refs/heads/${first.branch}`]);
+  const incoming = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  await f.engine.resume(first.id);
+  assert.equal(f.task().devPhase, 'implement');
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(f.turns(), 2);
+  assert.equal(result.retries, 0);
+  assert.equal(await readFile(join(f.path, 'remote-feature.txt'), 'utf8'), 'new remote work');
+  assert.equal(
+    (await f.git(f.path, ['merge-base', '--is-ancestor', incoming, result.head!])).code,
+    0,
+  );
+});
 
 for (const source of ['default', 'task'] as const) {
   test(`${source} conflict stops installation and another merge; repeated resume does not repeat Dev`, async (t) => {

@@ -483,6 +483,37 @@ export class Workspaces {
     }
     return merge;
   }
+  async hasRemoteTaskChanges(task: Task, remoteHead: string) {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      task = this.store.task(task.id);
+      await this.assertTask(task);
+      // An unfinished merge must go through its own reconciliation before fetching again.
+      if (task.pendingMerge || (await this.mergeHead(task)) || (await this.unmerged(task)))
+        return false;
+      const head = await this.git(task.worktree!, ['rev-parse', 'HEAD']);
+      if (task.head && task.head !== head)
+        throw new Fault('恢复时任务 HEAD 与固定 revision 不匹配');
+      if (!/^[a-f0-9]{40,64}$/.test(remoteHead)) throw new Fault('远端 PR HEAD 无法核实');
+      const object = await command(
+        'git',
+        ['rev-parse', '--verify', '--quiet', `${remoteHead}^{commit}`],
+        task.worktree!,
+        undefined,
+        120000,
+        false,
+      );
+      if (object.code === 1) {
+        const ref = `refs/remotes/origin/${task.branch}`;
+        await this.git(task.worktree!, ['fetch', 'origin', `+refs/heads/${task.branch}:${ref}`]);
+        if ((await this.git(task.worktree!, ['rev-parse', ref])) !== remoteHead)
+          throw new Fault('恢复时远端 PR HEAD 已漂移，需重新核对');
+      } else if (object.code !== 0)
+        throw new Fault(`Git 远端提交检查结果未知 (${object.code})：${object.stderr}`);
+      if ((await this.git(task.worktree!, ['rev-parse', 'HEAD'])) !== head)
+        throw new Fault('恢复核对期间任务 HEAD 已漂移');
+      return !(await this.ancestor(task.worktree!, remoteHead, head));
+    });
+  }
   async prepareBase(task: Task, signal?: AbortSignal, advance = true): Promise<BaselineResult> {
     return this.exclusive(`repo:${task.repoId}`, async () => {
       try {
