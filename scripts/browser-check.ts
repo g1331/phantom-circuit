@@ -1,3 +1,4 @@
+import { checkPriority } from './browser-priority.ts';
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -595,6 +596,7 @@ try {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
+  await checkPriority(page, store, task, artifacts);
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, dark/light, 390px responsive; screenshots in test-results/.',
