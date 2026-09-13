@@ -1,5 +1,8 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
+import multipart from '@fastify/multipart';
+import { readFile } from 'node:fs/promises';
+import { MessageImages, imageLimits } from './images.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -12,6 +15,8 @@ import { commandSchema, limit, settingsSchema } from './schemas.ts';
 
 export function createApp(store: Store, engine: Engine, previews: Previews, port = 4317) {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
+  const images = new MessageImages(store, engine.dataDir);
+  void app.register(multipart, { limits: imageLimits });
   const token = randomBytes(32).toString('hex');
   const csrf = randomBytes(32).toString('hex');
   const allowed = new Set([
@@ -21,10 +26,32 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     'localhost:5173',
   ]);
   app.setErrorHandler((error, _req, reply) => {
-    const status = error instanceof Fault ? error.status : error instanceof z.ZodError ? 400 : 500;
+    const code = (error as { code?: string }).code ?? '';
+    const uploadStorageFailure =
+      _req.isMultipart() &&
+      ['EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EBUSY', 'ENOTDIR', 'EEXIST'].includes(code);
+    const uploadLimit = [
+      'FST_REQ_FILE_TOO_LARGE',
+      'FST_FILES_LIMIT',
+      'FST_FIELDS_LIMIT',
+      'FST_PARTS_LIMIT',
+    ].includes(code);
+    const status = uploadLimit
+      ? 413
+      : error instanceof Fault
+        ? error.status
+        : error instanceof z.ZodError
+          ? 400
+          : ((error as { statusCode?: number }).statusCode ?? 500);
     reply
       .code(status)
-      .send({ error: redact(error instanceof Error ? error.message : String(error)) });
+      .send({
+        error: uploadStorageFailure
+          ? '图片保存失败，请检查本地磁盘空间和权限后重试'
+          : uploadLimit
+            ? '上传超限：每条消息最多 4 张图片，每张不超过 10 MiB'
+            : redact(error instanceof Error ? error.message : String(error)),
+      });
   });
   app.addHook('onRequest', async (req, reply) => {
     if (!allowed.has(req.headers.host ?? '')) throw new Fault('不允许的 Host', 403);
@@ -155,14 +182,18 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
   });
   app.post('/api/projects/:id/messages', async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
-    const b = z
-      .object({
-        content: z.string().trim().min(1).max(30000),
-        intent: z.enum(['discuss', 'implement', 'feedback']),
-      })
-      .strict()
-      .parse(req.body);
-    const m = store.addMessage(id, 'user', b.content, b.intent);
+    const m = req.isMultipart()
+      ? await images.create(id, req.parts())
+      : (() => {
+          const b = z
+            .object({
+              content: z.string().trim().min(1).max(30000),
+              intent: z.enum(['discuss', 'implement', 'feedback']),
+            })
+            .strict()
+            .parse(req.body);
+          return store.addMessage(id, 'user', b.content, b.intent);
+        })();
     void engine
       .chat(m)
       .catch((e) =>
@@ -171,6 +202,26 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     reply.code(202);
     return m;
   });
+  app.get(
+    '/api/projects/:projectId/messages/:messageId/images/:attachmentId',
+    async (req, reply) => {
+      const { projectId, messageId, attachmentId } = z
+        .object({ projectId: z.string(), messageId: z.string(), attachmentId: z.string() })
+        .parse(req.params);
+      const { attachment, path } = images.locate(projectId, messageId, attachmentId);
+      let data: Buffer;
+      try {
+        data = await readFile(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Fault('图片不存在', 404);
+        throw error;
+      }
+      return reply
+        .header('Cache-Control', 'private, no-store')
+        .type(attachment.mediaType)
+        .send(data);
+    },
+  );
   app.post('/api/messages/:id/retry', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const m = store.get('message', id);

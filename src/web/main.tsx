@@ -64,6 +64,22 @@ function App() {
   const [theme, setTheme] = useState(localStorage.getItem('phantom.theme') ?? 'dark');
   const [stream, setStream] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState('');
+  const [images, setImages] = useState<{ file: File; url: string }[]>([]);
+  const imageDrafts = useRef(images);
+  const sending = useRef(false);
+  function updateImages(next: typeof images) {
+    for (const image of imageDrafts.current) {
+      if (!next.includes(image)) URL.revokeObjectURL(image.url);
+    }
+    imageDrafts.current = next;
+    setImages(next);
+  }
+  useEffect(
+    () => () => {
+      for (const image of imageDrafts.current) URL.revokeObjectURL(image.url);
+    },
+    [],
+  );
   const [intent, setIntent] = useState<Message['intent']>('discuss');
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -107,6 +123,7 @@ function App() {
     localStorage.setItem('phantom.project', selected);
     setTaskDetail(undefined);
     setDraft('');
+    updateImages([]);
   }, [selected]);
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' });
@@ -138,12 +155,26 @@ function App() {
   const pmBusy = active.some((r) => r.role === 'pm');
   const detail = state?.tasks.find((t) => t.id === taskDetail);
   async function send() {
-    if (!draft.trim() || !project) return;
+    if ((!draft.trim() && !images.length) || !project || busy || sending.current) return;
+    sending.current = true;
     const content = draft;
-    await act(async () => {
-      await api(`/projects/${project.id}/messages`, { content, intent });
-      setDraft('');
-    });
+    try {
+      await act(async () => {
+        let body: unknown = { content, intent };
+        if (images.length) {
+          const form = new FormData();
+          form.append('content', content);
+          form.append('intent', intent ?? 'discuss');
+          for (const image of images) form.append('images', image.file);
+          body = form;
+        }
+        await api(`/projects/${project.id}/messages`, body);
+        setDraft('');
+        updateImages([]);
+      });
+    } finally {
+      sending.current = false;
+    }
   }
   return (
     <div className="shell">
@@ -388,6 +419,24 @@ function App() {
                             <time>{time(m.createdAt)}</time>
                           </div>
                           <div className="message-content">{m.content}</div>
+                          {!!m.attachments?.length && (
+                            <div className="message-images">
+                              {m.attachments.map((attachment) => {
+                                const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
+                                return (
+                                  <a
+                                    key={attachment.id}
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    <img src={url} alt={attachment.name} />
+                                    <span>{attachment.name}</span>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
                           {m.role === 'user' && (
                             <button
                               className="retry-message"
@@ -434,8 +483,70 @@ function App() {
                           </button>
                         ))}
                       </div>
+                      <div className="image-picker">
+                        <label>
+                          添加图片
+                          <input
+                            aria-label="选择图片"
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            multiple
+                            disabled={busy}
+                            onChange={(event) => {
+                              const files = Array.from(event.target.files ?? []);
+                              event.target.value = '';
+                              if (images.length + files.length > 4) {
+                                setError('每条消息最多 4 张图片');
+                                return;
+                              }
+                              if (
+                                files.some(
+                                  (file) =>
+                                    !['image/png', 'image/jpeg', 'image/webp'].includes(file.type),
+                                )
+                              ) {
+                                setError('仅支持 PNG、JPEG、WebP 图片');
+                                return;
+                              }
+                              if (files.some((file) => file.size > 10 * 1024 * 1024)) {
+                                setError('每张图片不能超过 10 MiB');
+                                return;
+                              }
+                              setError('');
+                              updateImages([
+                                ...images,
+                                ...files.map((file) => ({ file, url: URL.createObjectURL(file) })),
+                              ]);
+                            }}
+                          />
+                        </label>
+                        <small>PNG / JPEG / WebP · 最多 4 张 · 每张 10 MiB</small>
+                      </div>
+                      {!!images.length && (
+                        <div className="image-drafts">
+                          {images.map((image) => (
+                            <div key={image.url} className="image-draft">
+                              <img src={image.url} alt={`待发送：${image.file.name}`} />
+                              <span>
+                                {image.file.name}
+                                <small>{Math.max(1, Math.ceil(image.file.size / 1024))} KiB</small>
+                              </span>
+                              <button
+                                aria-label={`移除 ${image.file.name}`}
+                                disabled={busy}
+                                onClick={() =>
+                                  updateImages(images.filter((item) => item !== image))
+                                }
+                              >
+                                <X size={16} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         aria-label="给 PM 的消息"
+                        disabled={busy}
                         placeholder={
                           intent === 'discuss'
                             ? '有什么想法？先聊清楚，再决定开工。'
@@ -461,7 +572,7 @@ function App() {
                         </span>
                         <button
                           className="send-button"
-                          disabled={!draft.trim() || busy}
+                          disabled={(!draft.trim() && !images.length) || busy}
                           onClick={() => void send()}
                           aria-label="发送消息"
                         >

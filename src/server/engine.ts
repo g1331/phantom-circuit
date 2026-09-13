@@ -8,6 +8,7 @@ import { Workspaces } from './workspaces.ts';
 import { instructions, domainContext, taskPrompt } from './prompts.ts';
 import { commandSchema, taskInput, jsonSchema, reviewSchema, mergeSchema } from './schemas.ts';
 import { shellCommand } from './process.ts';
+import { MessageImages } from './images.ts';
 import type { Message, Run, Task, ReviewResult } from '../shared/types.ts';
 
 const configureInput = z
@@ -321,7 +322,18 @@ export class Engine {
       );
       const context = `${await domainContext(contextPaths)}\nLocal design records (not yet necessarily published): ${JSON.stringify(this.store.list('document').filter((d) => d.projectId === projectId))}`;
       const prompt = `Project: ${JSON.stringify(project)}\nRepositories: ${JSON.stringify(repos)}\nTasks: ${JSON.stringify(this.store.list('task').filter((t) => t.projectId === projectId))}\n${context}\n\nCurrent input intent: ${source?.intent ?? 'technical coordination (no new product scope)'}\n${task ? taskPrompt(task) : ''}\n\n${content}`;
-      const reply = await c.turn(thread, prompt, profile, signal, undefined, this.onTurn(run));
+      const imagePaths = source
+        ? await new MessageImages(this.store, this.dataDir).paths(source)
+        : [];
+      const reply = await c.turn(
+        thread,
+        prompt,
+        profile,
+        signal,
+        undefined,
+        this.onTurn(run),
+        imagePaths,
+      );
       this.store.addMessage(projectId, 'assistant', reply);
       return reply;
     });

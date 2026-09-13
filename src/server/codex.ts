@@ -209,6 +209,7 @@ export class Codex extends EventEmitter {
     signal?: AbortSignal,
     outputSchema?: unknown,
     onTurn?: (id: string) => void,
+    imagePaths: string[] = [],
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       let output = '';
@@ -259,7 +260,10 @@ export class Codex extends EventEmitter {
       }
       void this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: prompt }],
+        input: [
+          { type: 'text', text: prompt },
+          ...imagePaths.map((path) => ({ type: 'localImage', path })),
+        ],
         model: profile.model,
         effort: profile.effort,
         ...(outputSchema ? { outputSchema } : {}),
