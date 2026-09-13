@@ -197,6 +197,12 @@ test('host recovery authorizes one controlled publication and completes without 
       'the authorization names the exact revision that was verified',
     );
 
+    // Repeating the explicit resume before any publication re-affirms the same single-use
+    // authorization instead of stacking a second one.
+    await f.engine.resume(f.task().id);
+    assert.equal(f.operation()!.reconciliation!.id, authorization.id);
+    assert.equal(f.github.posted.length, 1, 'coordination alone never writes');
+
     const result = await f.cycle();
     assert.equal(result.stage, 'reviewing', result.blocked);
     assert.equal(result.pr, 41);
