@@ -163,6 +163,24 @@ export class Store {
       }[]
     ).map((x) => ({ ...JSON.parse(x.body), id: x.id }));
   }
+  /**
+   * Every durable event recorded against one task, oldest first.
+   *
+   * `events()` above is a bounded feed for the UI, so it stops answering "did the host ever
+   * coordinate a merge for this task?" once unrelated events have accumulated. That question must
+   * stay answerable for as long as the task exists: it is one of the host records a legacy
+   * in-progress merge is verified against when its source branch has moved on.
+   */
+  taskEvents(taskId: string): Event[] {
+    const pattern = `%"taskId":"${taskId.replace(/[\\%_]/g, '\\$&')}"%`;
+    return (
+      this.db
+        .prepare("SELECT id,body FROM events WHERE body LIKE ? ESCAPE '\\' ORDER BY id")
+        .all(pattern) as { id: number; body: string }[]
+    )
+      .map((row) => ({ ...(JSON.parse(row.body) as Omit<Event, 'id'>), id: row.id }))
+      .filter((event) => event.taskId === taskId);
+  }
   snapshot(): Snapshot {
     return {
       projects: this.list('project'),
