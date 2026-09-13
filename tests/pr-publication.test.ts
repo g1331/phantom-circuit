@@ -1,0 +1,551 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Store } from '../src/server/store.ts';
+import { parsePullPages } from '../src/server/github.ts';
+import { FakeGitHub, pullFixture, seedAdapterTask } from './fake-github.ts';
+
+/**
+ * Publication reconciliation at the adapter boundary, against a local fake GitHub. Every case
+ * here exists because the host must be able to tell "the remote object was never created" apart
+ * from "a related remote object exists but cannot be adopted", and must never turn the second
+ * into a duplicate creation.
+ */
+function prFixture() {
+  const store = new Store(':memory:');
+  const seed = seedAdapterTask(store);
+  const github = new FakeGitHub(store);
+  const key = `pr:${seed.task().id}`;
+  return {
+    ...seed,
+    github,
+    key,
+    /** The remote rejected the request outright: it holds no PR for this task. */
+    transportFailure: (message = 'gh (1): gh: Server Error (HTTP 502)') => {
+      github.failWrite = new Error(message);
+    },
+    /** The remote applied the creation and then lost the response. */
+    lostResponse: () => {
+      github.loseWriteResponse = true;
+    },
+  };
+}
+type Fixture = ReturnType<typeof prFixture>;
+
+/** Drive the fixture into the real Task #32 state: one create-pr whose outcome is unknown. */
+async function unconfirmed(f: Fixture) {
+  f.transportFailure();
+  await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+  f.github.failWrite = undefined;
+  assert.equal(f.operation()!.status, 'uncertain');
+  assert.equal(f.operation()!.result, undefined);
+  assert.equal(f.github.posted.length, 1, 'the original request was attempted exactly once');
+  assert.equal(f.github.writes, 0, 'the fake remote never accepted it');
+}
+
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => (release = resolve));
+  return { promise, release };
+}
+
+test('a create-pr response lost after the remote creation is adopted without a second write', async () => {
+  const f = prFixture();
+  try {
+    f.lostResponse();
+    await assert.rejects(f.github.publishPR(f.task()), /unexpected end of JSON input/);
+    assert.equal(f.operation()!.status, 'uncertain');
+    assert.equal(f.github.posted.length, 1);
+    assert.equal(f.github.writes, 1);
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 41);
+    assert.equal(f.github.posted.length, 1, 'a visible remote PR must never be created twice');
+    assert.equal(f.task().pr, 41);
+    assert.equal(f.operation()!.status, 'done');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a proven-absent creation is authorized once and a repeat failure cannot loop', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    await assert.rejects(f.github.publishPR(f.task()), /结果不明/);
+    assert.equal(f.github.posted.length, 1);
+
+    const reconciliation = await f.github.authorizeTaskPRRetry(f.task(), 'pm');
+    assert.equal(reconciliation.action, 'authorize');
+    const authorization = f.operation()!.reconciliation!;
+    assert.equal(authorization.verdict, 'absent');
+    assert.equal(authorization.actor, 'pm');
+    assert.equal(authorization.observedOperation.status, 'uncertain');
+    assert.match(authorization.taskRevision, /^.+:phantom\/task@head#base$/);
+
+    // The controlled retry fails again: the authorization is spent and cannot loop.
+    f.transportFailure();
+    await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+    assert.equal(f.github.posted.length, 2, 'the authorized retry runs exactly once');
+    assert.equal(f.operation()!.status, 'uncertain');
+    assert.equal(f.operation()!.reconciliation, undefined, 'the authorization is consumed');
+    await assert.rejects(f.github.publishPR(f.task()), /结果不明/);
+    await assert.rejects(f.github.publishPR(f.task()), /结果不明/);
+    assert.equal(f.github.posted.length, 2, 'an unresolved outcome is never blindly repeated');
+
+    // Only another explicit coordination can try once more, and then it succeeds.
+    f.github.failWrite = undefined;
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 41);
+    assert.equal(f.github.posted.length, 3);
+    assert.equal(f.operation()!.status, 'done');
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'none');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a same-branch PR whose marker was stripped blocks instead of authorizing a duplicate', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    const edited = 'Maintainer rewrote this PR body by hand.\n';
+    f.github.pulls = [
+      pullFixture({ number: 7, slug: 'example/repo', branch: 'phantom/task', body: edited }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /需要人工核对.*缺少任务标记/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    await assert.rejects(f.github.publishPR(f.task()), /需要人工核对/);
+    assert.equal(f.github.posted.length, 1, 'a marker-less same-branch PR is never re-created');
+    assert.equal(f.github.pulls[0].body, edited, 'the human body is never overwritten');
+    assert.equal(f.task().pr, undefined);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a same-branch PR whose marker was edited is not read as absent either', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    // Same task id, hand-edited marker syntax: it must not be treated as ours or as nothing.
+    const near = `<!--phantom-task:${f.task().id}-->\n`;
+    f.github.pulls = [
+      pullFixture({ number: 8, slug: 'example/repo', branch: 'phantom/task', body: near }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /需要人工核对/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    assert.equal(f.github.posted.length, 1);
+    assert.equal(f.github.pulls[0].body, near);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a closed but unmerged PR on the task branch blocks instead of authorizing', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pulls = [
+      pullFixture({
+        number: 5,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        marker: f.marker,
+        state: 'closed',
+        merged: false,
+      }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /已关闭但未合并/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    await assert.rejects(f.github.publishPR(f.task()), /需要人工核对/);
+    assert.equal(f.github.posted.length, 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('an already merged marker PR is adopted without any write', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pulls = [
+      pullFixture({
+        number: 4,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        marker: f.marker,
+        state: 'closed',
+        merged: true,
+      }),
+    ];
+    const reconciliation = await f.github.authorizeTaskPRRetry(f.task(), 'user');
+    assert.equal(reconciliation.action, 'adopt');
+    assert.equal(f.operation()!.reconciliation, undefined, 'adoption needs no authorization');
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 4);
+    assert.equal(pr.merged, true);
+    assert.equal(f.github.posted.length, 1, 'a merged delivery is adopted, never duplicated');
+    assert.equal(f.task().pr, 4);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a retargeted marker PR blocks instead of authorizing', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pulls = [
+      pullFixture({
+        number: 6,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        baseRef: 'release',
+        marker: f.marker,
+      }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /目标分支为 release/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    assert.equal(f.github.posted.length, 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a marker PR from another repository or branch blocks instead of authorizing', async () => {
+  for (const [label, pull] of [
+    [
+      'foreign head repository',
+      pullFixture({ number: 5, slug: 'example/repo', branch: 'phantom/task', headRepo: 'fork/repo', marker: '' }),
+    ],
+    ['moved head branch', pullFixture({ number: 5, slug: 'example/repo', branch: 'phantom/task', headRef: 'phantom/older' })],
+  ] as const) {
+    const f = prFixture();
+    try {
+      await unconfirmed(f);
+      f.github.pulls = [{ ...pull, body: `${f.marker}\n` }];
+      await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /需要人工核对/);
+      assert.equal(f.operation()!.reconciliation, undefined, label);
+      assert.equal(f.github.posted.length, 1, label);
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test('multiple related candidates block instead of authorizing', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pulls = [
+      pullFixture({ number: 5, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+      pullFixture({
+        number: 6,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        marker: f.marker,
+        state: 'closed',
+      }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /存在 2 个与本任务相关的 PR/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    await assert.rejects(f.github.publishPR(f.task()), /需要人工核对/);
+    assert.equal(f.github.posted.length, 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a candidate on a later page is found, and a page-1 miss never reads as absent', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pageSize = 1;
+    f.github.pulls = [
+      pullFixture({ number: 1, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({ number: 2, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({ number: 3, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({ number: 9, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+    ];
+    const reconciliation = await f.github.authorizeTaskPRRetry(f.task(), 'pm');
+    assert.equal(reconciliation.action, 'adopt', 'a later-page candidate is still found');
+    assert.equal(f.operation()!.reconciliation, undefined);
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 9);
+    assert.equal(f.github.posted.length, 1, 'pagination misses must never authorize a creation');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a related candidate beyond the first page blocks instead of authorizing', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    f.github.pageSize = 1;
+    f.github.pulls = [
+      pullFixture({ number: 1, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({ number: 2, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({ number: 3, slug: 'example/repo', branch: 'phantom/other' }),
+      pullFixture({
+        number: 9,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        headRef: 'phantom/older',
+        marker: f.marker,
+      }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /源分支为 phantom\/older/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    assert.equal(f.github.posted.length, 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a failing, partial or malformed read authorizes nothing', async () => {
+  const cases: { label: string; expected: RegExp; prepare: (f: Fixture) => void }[] = [
+    {
+      label: 'every read fails',
+      expected: /HTTP 502/,
+      prepare: (f) => (f.github.failRead = new Error('gh (1): gh: Server Error (HTTP 502)')),
+    },
+    {
+      label: 'only the branch query fails',
+      expected: /HTTP 503/,
+      prepare: (f) => (f.github.failBranchRead = new Error('gh (1): gh: Server Error (HTTP 503)')),
+    },
+    {
+      label: 'a later page is truncated',
+      expected: /核对后恢复/,
+      prepare: (f) => (f.github.readBody = () => '[[{"number":1},{"number":2}],'),
+    },
+    {
+      label: 'the response is not a listing',
+      expected: /核对后恢复/,
+      prepare: (f) => (f.github.readBody = () => '{"message":"Bad credentials"}'),
+    },
+    {
+      label: 'pages were not slurped',
+      expected: /核对后恢复/,
+      prepare: (f) => (f.github.readBody = () => '[{"number":1}]'),
+    },
+    {
+      label: 'entries lack an identity',
+      expected: /核对后恢复/,
+      prepare: (f) => (f.github.readBody = () => '[[{"title":"no number"}]]'),
+    },
+  ];
+  for (const { label, expected, prepare } of cases) {
+    const f = prFixture();
+    try {
+      await unconfirmed(f);
+      prepare(f);
+      await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), expected, label);
+      assert.equal(f.operation()!.reconciliation, undefined, label);
+      await assert.rejects(f.github.publishPR(f.task()), expected, label);
+      assert.equal(f.github.posted.length, 1, label);
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test('pagination parsing rejects anything that cannot prove the candidate set', () => {
+  assert.deepEqual(
+    parsePullPages('[[{"number":1}],[{"number":2}]]').map((x) => x.number),
+    [1, 2],
+    'pages are flattened in order',
+  );
+  assert.deepEqual(parsePullPages('[[]]'), [], 'a genuinely empty listing is an empty list');
+  for (const malformed of [
+    '[[{"number":1}]',
+    '{"message":"Bad credentials"}',
+    '[{"number":1}]',
+    '[[]',
+    '',
+    '[[{"number":1}],[{"title":"x"}]]',
+  ])
+    assert.throws(() => parsePullPages(malformed), /核对后恢复/, JSON.stringify(malformed));
+});
+
+test('two concurrent reconciliations issue at most one authorization', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    const pending = gate();
+    f.github.readGate = pending.promise;
+    const first = f.github.authorizeTaskPRRetry(f.task(), 'pm');
+    const second = f.github.authorizeTaskPRRetry(f.task(), 'user');
+    pending.release();
+    const results = await Promise.allSettled([first, second]);
+    const authorized = results.filter(
+      (r) => r.status === 'fulfilled' && r.value.action === 'authorize',
+    );
+    assert.equal(authorized.length, 1, 'exactly one reconciliation is granted');
+    assert.equal(
+      results.filter((r) => r.status === 'rejected').length,
+      1,
+      'the loser is refused rather than stacking a second authorization',
+    );
+    assert.ok(f.operation()!.reconciliation);
+    // One authorization still yields exactly one controlled write, and then no more.
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 41);
+    assert.equal(f.github.posted.length, 2, 'one authorization, one write');
+    assert.equal(f.operation()!.status, 'done');
+    assert.equal((await f.github.publishPR(f.task())).number, 41);
+    assert.equal(f.github.posted.length, 2);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('an operation that changes while the reconciliation read runs is never overwritten', async () => {
+  for (const injected of [
+    { id: 'done' as const },
+    { id: 'pending' as const },
+  ]) {
+    const f = prFixture();
+    try {
+      await unconfirmed(f);
+      const pending = gate();
+      f.github.readGate = pending.promise;
+      const verifying = f.github.authorizeTaskPRRetry(f.task(), 'pm');
+      // A competing publisher moved the record on while the remote read was in flight.
+      const replacement =
+        injected.id === 'done'
+          ? { id: f.key, kind: 'create-pr', status: 'done' as const, result: { number: 77 } }
+          : { id: f.key, kind: 'create-pr', status: 'pending' as const };
+      f.store.put('operation', f.key, replacement);
+      pending.release();
+      await assert.rejects(verifying, /外部操作|状态已变化/, injected.id);
+      assert.equal(f.operation()!.reconciliation, undefined, injected.id);
+      assert.deepEqual(f.operation(), replacement, injected.id);
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test('a related PR that appears after the authorization is adopted, not duplicated', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    // Somebody publishes the task PR between the authorization and the controlled retry.
+    f.github.pulls = [
+      pullFixture({ number: 42, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+    ];
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 42);
+    assert.equal(f.github.posted.length, 1, 'the late PR is adopted before any write is attempted');
+    assert.equal(f.task().pr, 42);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('an authorization recorded for another task revision is superseded, never reused', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    const stale = f.operation()!.reconciliation!;
+    // The task moved on: the verified absence no longer describes this revision.
+    f.store.updateTask(f.task().id, { head: 'moved-head' });
+    await assert.rejects(f.github.publishPR(f.task()), /核对结论与当前任务版本不一致/);
+    assert.equal(f.github.posted.length, 1, 'a stale conclusion never authorizes a write');
+    assert.equal(f.operation()!.reconciliation!.id, stale.id, 'a refusal does not burn it');
+
+    // Reconciling again re-reads the remote for the new revision and replaces the stale grant.
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    const fresh = f.operation()!.reconciliation!;
+    assert.notEqual(fresh.id, stale.id);
+    assert.match(fresh.taskRevision, /@moved-head#base$/);
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 41);
+    assert.equal(f.github.posted.length, 2, 'the moved revision publishes exactly once');
+    assert.equal(f.operation()!.status, 'done');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('reconciling the same revision twice re-affirms one single-use authorization', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    const first = f.operation()!.reconciliation!;
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'user')).action, 'authorize');
+    assert.equal(f.operation()!.reconciliation!.id, first.id, 'no second authorization is stacked');
+    // Arm the retry to fail, so the single consumed authorization is observable.
+    f.transportFailure();
+    await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+    assert.equal(f.github.posted.length, 2, 'one authorization still yields one write');
+    assert.equal(f.operation()!.reconciliation, undefined, 'and it is consumed');
+    await assert.rejects(f.github.publishPR(f.task()), /结果不明/);
+    assert.equal(f.github.posted.length, 2);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('an interrupted write is never treated as a write that never happened', async () => {
+  for (const remote of [false, true]) {
+    const f = prFixture();
+    try {
+      // A crash between recording `pending` and the write: acceptance is unknowable from here.
+      f.store.put('operation', f.key, { id: f.key, kind: 'create-pr', status: 'pending' });
+      if (remote)
+        f.github.pulls = [
+          pullFixture({ number: 12, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+        ];
+      if (remote) {
+        assert.equal((await f.github.publishPR(f.task())).number, 12);
+        assert.equal(f.github.posted.length, 0, 'an interrupted write is reconciled, not repeated');
+        assert.equal(f.operation()!.status, 'done');
+      } else {
+        await assert.rejects(f.github.publishPR(f.task()), /结果不明/);
+        assert.equal(f.github.posted.length, 0, 'pending is undecided, not "not yet performed"');
+        assert.equal(f.operation()!.status, 'pending', 'the undecided record is left undecided');
+        // Only a verified-absence coordination can move it forward.
+        assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+        assert.equal((await f.github.publishPR(f.task())).number, 41);
+        assert.equal(f.github.posted.length, 1);
+      }
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test('reconciliation refuses an operation that already has a result', async () => {
+  const f = prFixture();
+  try {
+    await f.github.publishPR(f.task());
+    assert.throws(
+      () =>
+        f.github.reconcileAbsent(f.key, {
+          actor: 'user',
+          evidence: '核对',
+          taskRevision: 'revision',
+          observed: { status: 'uncertain' },
+        }),
+      /不需要重新创建/,
+    );
+    assert.throws(
+      () =>
+        f.github.reconcileAbsent('pr:missing', {
+          actor: 'user',
+          evidence: '核对',
+          taskRevision: 'revision',
+          observed: { status: 'uncertain' },
+        }),
+      /不存在/,
+    );
+  } finally {
+    f.store.close();
+  }
+});

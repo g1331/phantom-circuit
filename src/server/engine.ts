@@ -964,13 +964,19 @@ export class Engine {
     try {
       // An explicit resume is the host's supported reconciliation path for an external creation
       // whose outcome is still unknown. Re-read the remote state here and authorize at most one
-      // controlled retry; a failed or inconclusive read raises a blocker instead of repeating a
-      // write whose outcome nobody verified.
-      if (await this.github.authorizeTaskPRRetry(t, guidance ? 'pm' : 'user'))
+      // controlled retry; a failed, ambiguous or already-satisfied read never repeats the write.
+      const reconciliation = await this.github.authorizeTaskPRRetry(t, guidance ? 'pm' : 'user');
+      if (reconciliation.action === 'authorize')
         this.store.event('task', '已核对远端 Task PR 不存在，授权一次受控发布重试', {
           projectId: t.projectId,
           taskId: t.id,
         });
+      else if (reconciliation.action === 'adopt')
+        this.store.event(
+          'task',
+          `已核对远端存在 Task PR #${reconciliation.pr.number}，发布阶段直接接管而不重复创建`,
+          { projectId: t.projectId, taskId: t.id },
+        );
       if (t.worktree) {
         await this.workspaces.assertTask(t);
         if (t.pr) {

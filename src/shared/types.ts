@@ -148,9 +148,15 @@ export interface Event {
   message: string;
 }
 export interface Reconciliation {
+  /** Identity of this authorization; consumption compares and swaps on it. */
+  id: string;
   /** Only a proven-absent remote object authorizes a retry; a present object is adopted instead. */
   verdict: 'absent';
   actor: 'user' | 'pm';
+  /** The unresolved operation revision the remote verification was performed against. */
+  observedOperation: { status: Operation['status']; error?: string };
+  /** The task revision (repository, branch, head, base) the remote verification was about. */
+  taskRevision: string;
   evidence: string;
   at: string;
 }
@@ -163,7 +169,9 @@ export interface Operation {
   /**
    * Durable, single-use authorization recorded only after an explicit host coordination step
    * re-read the remote state and proved this operation created no remote object. Automatic
-   * lookups never write it, so an unresolved outcome is still never blindly repeated.
+   * lookups never write it, so an unresolved outcome is still never blindly repeated. It is
+   * bound to the operation revision and task revision it was verified against, and is consumed
+   * before the controlled retry, so it can never be replayed for a revision nobody checked.
    */
   reconciliation?: Reconciliation;
 }
