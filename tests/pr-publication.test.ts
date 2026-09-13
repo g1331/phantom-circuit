@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
-import { isMerged, parsePullPages } from '../src/server/github.ts';
+import { isMerged, parsePullPage } from '../src/server/github.ts';
 import { FakeGitHub, pullFixture, seedAdapterTask } from './fake-github.ts';
 
 /**
@@ -46,6 +46,16 @@ function gate() {
   let release!: () => void;
   const promise = new Promise<void>((resolve) => (release = resolve));
   return { promise, release };
+}
+
+/**
+ * `count` PRs that are related to no task, enough to push a real candidate past GitHub's first
+ * page. The adapter asks for 20 per page, so exactly 20 of these fill page 1.
+ */
+function unrelated(count: number, start = 100) {
+  return Array.from({ length: count }, (_, i) =>
+    pullFixture({ number: start + i, slug: 'example/repo', branch: 'phantom/other' }),
+  );
 }
 
 test('a create-pr response lost after the remote creation is adopted without a second write', async () => {
@@ -261,11 +271,9 @@ test('a candidate on a later page is found, and a page-1 miss never reads as abs
   const f = prFixture();
   try {
     await unconfirmed(f);
-    f.github.pageSize = 1;
+    // A full first page of unrelated PRs, so the candidate really is on page 2.
     f.github.pulls = [
-      pullFixture({ number: 1, slug: 'example/repo', branch: 'phantom/other' }),
-      pullFixture({ number: 2, slug: 'example/repo', branch: 'phantom/other' }),
-      pullFixture({ number: 3, slug: 'example/repo', branch: 'phantom/other' }),
+      ...unrelated(20),
       pullFixture({ number: 9, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
     ];
     const reconciliation = await f.github.authorizeTaskPRRetry(f.task(), 'pm');
@@ -279,15 +287,50 @@ test('a candidate on a later page is found, and a page-1 miss never reads as abs
   }
 });
 
+test('a full page is followed by another request until the listing is confirmed finished', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    // Exactly one full page and no related PR anywhere. The reader may only conclude "absent"
+    // after the empty page that follows the full one confirms the listing really ended.
+    f.github.pulls = unrelated(20);
+    const reconciliation = await f.github.authorizeTaskPRRetry(f.task(), 'pm');
+    assert.equal(reconciliation.action, 'authorize');
+    assert.equal(f.operation()!.reconciliation!.verdict, 'absent');
+    const pr = await f.github.publishPR(f.task());
+    assert.equal(pr.number, 41);
+    assert.equal(f.github.posted.length, 2, 'exactly one authorized retry');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a second related candidate on a later page is never missed', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    // The adoptable candidate is the 20th entry of page 1; a second related PR sits on page 2.
+    // Concluding at the first match would adopt it and hide the ambiguity.
+    f.github.pulls = [
+      ...unrelated(19),
+      pullFixture({ number: 9, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+      pullFixture({ number: 10, slug: 'example/repo', branch: 'phantom/task', marker: f.marker }),
+    ];
+    await assert.rejects(f.github.authorizeTaskPRRetry(f.task(), 'pm'), /存在 2 个与本任务相关的 PR/);
+    assert.equal(f.operation()!.reconciliation, undefined);
+    await assert.rejects(f.github.publishPR(f.task()), /存在 2 个与本任务相关的 PR/);
+    assert.equal(f.github.posted.length, 1, 'an ambiguous listing never creates anything');
+  } finally {
+    f.store.close();
+  }
+});
+
 test('a related candidate beyond the first page blocks instead of authorizing', async () => {
   const f = prFixture();
   try {
     await unconfirmed(f);
-    f.github.pageSize = 1;
     f.github.pulls = [
-      pullFixture({ number: 1, slug: 'example/repo', branch: 'phantom/other' }),
-      pullFixture({ number: 2, slug: 'example/repo', branch: 'phantom/other' }),
-      pullFixture({ number: 3, slug: 'example/repo', branch: 'phantom/other' }),
+      ...unrelated(20),
       pullFixture({
         number: 9,
         slug: 'example/repo',
@@ -317,24 +360,48 @@ test('a failing, partial or malformed read authorizes nothing', async () => {
       prepare: (f) => (f.github.failBranchRead = new Error('gh (1): gh: Server Error (HTTP 503)')),
     },
     {
-      label: 'a later page is truncated',
+      label: 'a page response is cut off mid-JSON',
       expected: /核对后恢复/,
-      prepare: (f) => (f.github.readBody = () => '[[{"number":1},{"number":2}],'),
+      prepare: (f) => (f.github.readBody = () => '[{"number":1},{"number":2}'),
     },
     {
-      label: 'the response is not a listing',
+      label: 'the response is not a page',
       expected: /核对后恢复/,
       prepare: (f) => (f.github.readBody = () => '{"message":"Bad credentials"}'),
     },
     {
-      label: 'pages were not slurped',
+      label: 'the response is a whole slurped listing, not one page',
       expected: /核对后恢复/,
-      prepare: (f) => (f.github.readBody = () => '[{"number":1}]'),
+      prepare: (f) => (f.github.readBody = () => '[[{"number":1}]]'),
     },
     {
       label: 'entries lack an identity',
       expected: /核对后恢复/,
-      prepare: (f) => (f.github.readBody = () => '[[{"title":"no number"}]]'),
+      prepare: (f) => (f.github.readBody = () => '[{"title":"no number"}]'),
+    },
+    {
+      label: 'a page exceeds the process output limit',
+      expected: /核对后恢复/,
+      prepare: (f) => {
+        f.github.pulls = unrelated(1);
+        f.github.truncatePage = 1;
+      },
+    },
+    {
+      label: 'a later page fails',
+      expected: /HTTP 502/,
+      prepare: (f) => {
+        f.github.pulls = unrelated(21);
+        f.github.failPage = 2;
+      },
+    },
+    {
+      label: 'a later page exceeds the process output limit',
+      expected: /核对后恢复/,
+      prepare: (f) => {
+        f.github.pulls = unrelated(21);
+        f.github.truncatePage = 2;
+      },
     },
   ];
   for (const { label, expected, prepare } of cases) {
@@ -346,28 +413,53 @@ test('a failing, partial or malformed read authorizes nothing', async () => {
       assert.equal(f.operation()!.reconciliation, undefined, label);
       await assert.rejects(f.github.publishPR(f.task()), expected, label);
       assert.equal(f.github.posted.length, 1, label);
+      assert.equal(f.github.writes, 0, label);
     } finally {
       f.store.close();
     }
   }
 });
 
-test('pagination parsing rejects anything that cannot prove the candidate set', () => {
+test('an incomplete read neither consumes nor replaces an outstanding authorization', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+    const granted = f.operation()!.reconciliation!;
+    // The listing becomes unreadable after the authorization was issued.
+    f.github.pulls = unrelated(21);
+    f.github.failPage = 2;
+    await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+    const live = f.operation()!;
+    assert.equal(live.reconciliation!.id, granted.id, 'the authorization survives unread');
+    assert.equal(live.reconciliation!.verdict, 'absent');
+    assert.equal(f.github.posted.length, 1, 'an unread listing never reaches a creation');
+    // Once the listing can be read again the same single-use authorization still works.
+    f.github.failPage = undefined;
+    assert.equal((await f.github.publishPR(f.task())).number, 41);
+    assert.equal(f.github.posted.length, 2, 'no authorization was lost or duplicated');
+    assert.equal(live.status, 'uncertain');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('page parsing rejects anything that cannot prove a complete page', () => {
   assert.deepEqual(
-    parsePullPages('[[{"number":1}],[{"number":2}]]').map((x) => x.number),
+    parsePullPage('[{"number":1},{"number":2}]').map((x) => x.number),
     [1, 2],
-    'pages are flattened in order',
+    'a page yields its entries in order',
   );
-  assert.deepEqual(parsePullPages('[[]]'), [], 'a genuinely empty listing is an empty list');
+  assert.deepEqual(parsePullPage('[]'), [], 'a genuinely empty page is an empty page');
   for (const malformed of [
-    '[[{"number":1}]',
+    '[{"number":1},{"number":2}',
     '{"message":"Bad credentials"}',
-    '[{"number":1}]',
+    '[[{"number":1}]]',
+    '[{"title":"no number"}]',
     '[[]',
     '',
-    '[[{"number":1}],[{"title":"x"}]]',
   ])
-    assert.throws(() => parsePullPages(malformed), /核对后恢复/, JSON.stringify(malformed));
+    assert.throws(() => parsePullPage(malformed), /核对后恢复/, JSON.stringify(malformed));
 });
 
 test('two concurrent reconciliations issue at most one authorization', async () => {

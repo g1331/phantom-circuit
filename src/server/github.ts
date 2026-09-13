@@ -39,27 +39,43 @@ export interface GhResult {
   stdout: string;
   stderr: string;
   code: number;
+  /** Set when the process layer dropped output from the front of stdout. */
+  truncated?: boolean;
 }
 /**
- * Strict read of a fully paginated PR listing. `--paginate --slurp` yields one array per page;
- * anything else - unparseable JSON, a bare object, a truncated later page, an entry without a
- * number - is an error rather than an empty list. Reconciliation must never mistake "could not
- * read the remote" for "the remote object is absent".
+ * Strict read of one page of a PR listing. A listing is read one page per request, so exactly
+ * one JSON array is expected; anything else - unparseable JSON, a bare object, a page whose
+ * entries lack an identity - is an error rather than an empty page. Reconciliation must never
+ * mistake "could not read the remote" for "the remote object is absent".
  */
-export function parsePullPages(stdout: string): PullState[] {
-  let pages: unknown;
+export function parsePullPage(stdout: string): PullState[] {
+  let page: unknown;
   try {
-    pages = JSON.parse(stdout);
+    page = JSON.parse(stdout);
   } catch {
     throw new Fault('GitHub PR 查询响应无法解析，需要核对后恢复', 502);
   }
-  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page)))
-    throw new Fault('GitHub PR 查询响应格式异常，需要核对后恢复', 502);
-  return (pages as unknown[][]).flat().map((pull) => {
+  if (!Array.isArray(page)) throw new Fault('GitHub PR 查询响应格式异常，需要核对后恢复', 502);
+  return page.map((pull) => {
     if (!pull || typeof pull !== 'object' || typeof (pull as PullState).number !== 'number')
       throw new Fault('GitHub PR 查询响应缺少必要字段，需要核对后恢复', 502);
     return pull as PullState;
   });
+}
+/** Conservative page size: one page stays far below the process stdout limit. */
+const PULL_PAGE_SIZE = 20;
+/** A single coordination scan reads at most this many pages of either listing. */
+const PULL_MAX_PAGES = 500;
+/** A single coordination scan must finish within this budget. */
+const PULL_SCAN_MS = 120_000;
+/** One listing read to its end, plus whatever the caller chose to keep from it. */
+interface PullScan {
+  /** Retained PRs in page order, deduplicated by number. */
+  kept: PullState[];
+  /** Pages actually read. */
+  pages: number;
+  /** Set when the listing was not read to its end; absent means the last page was confirmed. */
+  incomplete?: string;
 }
 /**
  * The outcome of asking the host to reconcile an unresolved external creation. `adopt` and
@@ -100,9 +116,10 @@ export class GitHub {
   /**
    * Process boundary for every `gh` invocation. Tests replace this one method with a local fake
    * GitHub, so the adapter's own pagination, parsing and reconciliation logic stay under test.
+   * `timeout` bounds this one request; the caller may pass what is left of a larger budget.
    */
-  protected async gh(args: string[], input?: string): Promise<GhResult> {
-    return command('gh', args, undefined, input);
+  protected async gh(args: string[], input?: string, timeout?: number): Promise<GhResult> {
+    return command('gh', args, undefined, input, timeout);
   }
   async api<T = any>(endpoint: string, method = 'GET', body?: unknown): Promise<T> {
     const r = await this.gh(
@@ -230,6 +247,69 @@ export class GitHub {
       throw e;
     }
   }
+  /**
+   * Read one PR listing to its end, one page per request, keeping only what `retain` accepts.
+   *
+   * `--paginate --slurp` is deliberately not used here. It aggregates the whole listing into a
+   * single stdout, which the process layer caps by dropping the front, so a large listing would
+   * arrive truncated and could be mistaken for a short one. Reading page by page keeps every
+   * individual response small, makes every response strictly parsed on its own, and turns a
+   * truncation into an explicit incomplete scan rather than a missing PR.
+   *
+   * A full page is always followed by another request: the end of a listing is confirmed by a
+   * short page, never guessed from a full one. Hitting the page or time bound leaves the scan
+   * incomplete, which the caller must treat as "the remote could not be read", never as absence.
+   */
+  private async scanPulls(
+    base: string,
+    retain: (pr: PullState) => boolean,
+    deadline: number,
+  ): Promise<PullScan> {
+    const kept = new Map<number, PullState>();
+    const result = () => ({ kept: [...kept.values()] });
+    let pages = 0;
+    for (let page = 1; page <= PULL_MAX_PAGES; page++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        return {
+          ...result(),
+          pages,
+          incomplete: `已读取 ${pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`,
+        };
+      // Each request is bounded by whatever is left of the scan budget; a request failure
+      // propagates as a read failure and is never read as an empty listing.
+      const response = await this.gh(
+        ['api', `${base}&per_page=${PULL_PAGE_SIZE}&page=${page}`],
+        undefined,
+        remaining,
+      );
+      if (response.truncated)
+        return {
+          ...result(),
+          pages,
+          incomplete: `第 ${page} 页响应超过进程输出上限被截断，尚未确认末页`,
+        };
+      let items: PullState[];
+      try {
+        items = parsePullPage(response.stdout);
+      } catch (error) {
+        // An unreadable page says nothing about the pages that follow it.
+        return {
+          ...result(),
+          pages,
+          incomplete: `第 ${page} 页响应无法核对（${(error as Error).message}），尚未确认末页`,
+        };
+      }
+      pages++;
+      for (const pr of items) if (retain(pr)) kept.set(pr.number, pr);
+      if (items.length < PULL_PAGE_SIZE) return { ...result(), pages };
+    }
+    return {
+      ...result(),
+      pages,
+      incomplete: `已读取 ${pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`,
+    };
+  }
   async feedback(task: Task): Promise<{ key: string; text: string }[]> {
     if (!task.pr) return [];
     const repo = this.store.repo(task.repoId);
@@ -255,13 +335,6 @@ export class GitHub {
   async paged(endpoint: string): Promise<any[]> {
     const r = await this.gh(['api', endpoint, '--paginate', '--slurp']);
     return (JSON.parse(r.stdout) as any[][]).flat();
-  }
-  /**
-   * Fully paginated, all-state PR read for one repository. Every candidate check goes through
-   * this, so a partial or malformed answer raises instead of reading as "no PR".
-   */
-  private async listPulls(endpoint: string): Promise<PullState[]> {
-    return parsePullPages((await this.gh(['api', endpoint, '--paginate', '--slurp'])).stdout);
   }
   async setupProject(repo: Repo) {
     this.authorize(repo);
@@ -463,13 +536,16 @@ export class GitHub {
   /**
    * Classify every PR that could be this task's publication.
    *
-   * Two independent reads are required, because each covers a case the other misses: the branch
-   * query also returns a PR on this branch whose marker was stripped from the body, and the
-   * repository-wide marker sweep also returns a PR whose head branch has since moved. They do not
-   * cover the intersection - a PR whose marker was stripped *and* whose head branch was renamed
-   * appears in neither - so an empty result means "no related candidate is visible to these two
-   * reads", not "no related PR exists". Either read failing - transport, a later page, a
-   * malformed body - propagates, so an incomplete answer is never read as "absent".
+   * Two independent listings are required, because each covers a case the other misses: the
+   * branch listing also returns a PR on this branch whose marker was stripped from the body, and
+   * the repository-wide marker sweep also returns a PR whose head branch has since moved. They do
+   * not cover the intersection - a PR whose marker was stripped *and* whose head branch was
+   * renamed appears in neither - so an empty result means "no related candidate is visible to
+   * these two listings", not "no related PR exists".
+   *
+   * Both listings are read to their end before anything is concluded: a single match cannot be
+   * adopted on its own, because a later page may hold a second related candidate. Any failure,
+   * truncation or bound leaves the scan incomplete, which raises rather than reading as absence.
    *
    * A PR is adoptable only when its marker, head repository, head branch, base repository and
    * base branch all agree with this task and it is open or already merged. Anything else is a
@@ -480,15 +556,34 @@ export class GitHub {
     const repo = this.store.repo(task.repoId);
     const owner = repo.github.split('/')[0];
     const marker = `<!-- phantom-task:${task.id} -->`;
-    const [onBranch, repository] = await Promise.all([
-      this.listPulls(
-        `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(`${owner}:${task.branch}`)}&per_page=100`,
+    // One budget covers the whole coordination read; each listing has its own page bound. The
+    // sweep keeps only marker-bearing PRs, so unrelated bodies are never accumulated.
+    const deadline = Date.now() + PULL_SCAN_MS;
+    const [onBranch, sweep] = await Promise.all([
+      this.scanPulls(
+        `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(`${owner}:${task.branch}`)}`,
+        () => true,
+        deadline,
       ),
-      this.listPulls(`repos/${repo.github}/pulls?state=all&per_page=100`),
+      this.scanPulls(
+        `repos/${repo.github}/pulls?state=all`,
+        (pr) => pr.body?.includes(marker) ?? false,
+        deadline,
+      ),
     ]);
+    const unread = onBranch.incomplete ?? sweep.incomplete;
+    if (unread) {
+      // The listings were not read to their end, so they cannot speak to absence. The operation
+      // is left exactly as it stands: nothing is authorized and no creation is attempted.
+      this.store.event(
+        'operation',
+        `远端 Task PR 核对未能完成读取（任务分支 ${onBranch.pages} 页、任务标记 ${sweep.pages} 页）：${unread}`,
+      );
+      throw new Fault(`远端 Task PR 查询未完成，需要核对后恢复：${unread}`, 502);
+    }
     const related = new Map<number, PullState>();
-    for (const pr of onBranch) related.set(pr.number, pr);
-    for (const pr of repository) if (pr.body?.includes(marker)) related.set(pr.number, pr);
+    for (const pr of onBranch.kept) related.set(pr.number, pr);
+    for (const pr of sweep.kept) related.set(pr.number, pr);
     const prs = [...related.values()];
     if (!prs.length) return { related: [] };
     const adoptable = prs.filter(

@@ -62,12 +62,18 @@ export class FakeGitHub extends GitHub {
   pulls: FakePull[] = [];
   /** Creation attempts the adapter POSTed, whether or not the remote accepted them. */
   posted: Record<string, any>[] = [];
-  /** Pagination page size; a small value forces a candidate onto a later page. */
-  pageSize = 100;
+  /** How many PRs the fake returns per page; a small value forces a candidate onto a later page. */
+  pageSize = 20;
   /** Thrown by every read, modelling a transport or permissions failure. */
   failRead: Error | undefined;
   /** Thrown only by the branch-scoped query, leaving the repository query successful. */
   failBranchRead: Error | undefined;
+  /** Thrown only for one page number, modelling a later page that fails mid-listing. */
+  failPage: number | undefined;
+  /** Answers one page with output the process layer had to cut, modelling a dropped front. */
+  truncatePage: number | undefined;
+  /** Never end the listing, so a scan can be driven to its own page bound deterministically. */
+  endlessPages = false;
   /** Raw stdout for reads, so a test can model a malformed or truncated response. */
   readBody: ((endpoint: string) => string) | undefined;
   /** Awaited inside every read, so a test can interleave work with an in-flight verification. */
@@ -80,7 +86,7 @@ export class FakeGitHub extends GitHub {
   /** Creations the remote actually applied. */
   writes = 0;
 
-  override async gh(args: string[], input?: string): Promise<GhResult> {
+  override async gh(args: string[], input?: string, _timeout?: number): Promise<GhResult> {
     const endpoint = args[1];
     const declared = args.indexOf('--method');
     const method = declared === -1 ? 'GET' : args[declared + 1];
@@ -101,8 +107,16 @@ export class FakeGitHub extends GitHub {
       };
     if (/[?&]head=/.test(endpoint) && this.failBranchRead) throw this.failBranchRead;
     if (!/\/pulls\?/.test(endpoint)) throw new Fault(`fake gh: unsupported read ${endpoint}`, 502);
+    const page = Number(/[?&]page=(\d+)/.exec(endpoint)?.[1] ?? '1');
+    const size = Number(/[?&]per_page=(\d+)/.exec(endpoint)?.[1] ?? this.pageSize);
     if (this.readBody) return { stdout: this.readBody(endpoint), stderr: '', code: 0 };
-    return { stdout: JSON.stringify(this.pages(this.matching(endpoint))), stderr: '', code: 0 };
+    if (this.failPage === page) throw new Error('gh (1): gh: Server Error (HTTP 502)');
+    const items = this.page(this.matching(endpoint), page, size);
+    // GitHub returns whole pages until the listing runs out, so a short page is the last one.
+    const response = { stdout: JSON.stringify(items), stderr: '', code: 0 };
+    if (this.truncatePage === page)
+      return { ...response, stdout: response.stdout.slice(0, 64), truncated: true };
+    return response;
   }
 
   private create(input?: string): GhResult {
@@ -140,11 +154,13 @@ export class FakeGitHub extends GitHub {
     );
   }
 
-  private pages(items: FakePull[]) {
-    const pages: FakePull[][] = [];
-    for (let i = 0; i < items.length; i += this.pageSize)
-      pages.push(items.slice(i, i + this.pageSize));
-    return pages.length ? pages : [[]];
+  /** One page of the listing, as GitHub's own `page`/`per_page` would slice it. */
+  private page(items: FakePull[], page: number, size: number) {
+    const slice = items.slice((page - 1) * size, page * size);
+    if (!this.endlessPages) return slice;
+    // A listing that never runs out: every page comes back full, forever.
+    const filler = pullFixture({ number: -1, slug: 'example/repo', branch: 'phantom/other' });
+    return [...slice, ...Array.from({ length: size - slice.length }, () => filler)];
   }
 }
 
