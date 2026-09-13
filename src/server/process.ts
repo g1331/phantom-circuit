@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { Fault, redact } from './store.ts';
 
 export async function terminate(child: ChildProcess) {
@@ -14,6 +15,11 @@ export async function terminate(child: ChildProcess) {
     );
   } else child.kill('SIGTERM');
 }
+/**
+ * How much stdout a single command may return. Output past this is dropped from the front, so a
+ * structured read that receives `truncated` cannot be parsed as if it were complete.
+ */
+export const OUTPUT_LIMIT = 2_000_000;
 export function command(
   binary: string,
   args: string[],
@@ -22,12 +28,17 @@ export function command(
   timeout = 120000,
   throwOnError = true,
   signal?: AbortSignal,
-): Promise<{ stdout: string; stderr: string; code: number }> {
+): Promise<{ stdout: string; stderr: string; code: number; truncated: boolean }> {
   if (signal?.aborted) return Promise.reject(new Fault('执行已暂停', 409));
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: 'pipe', shell: false });
     let stdout = '',
-      stderr = '';
+      stderr = '',
+      received = 0;
+    // Decode through StringDecoder so a multi-byte character split across two chunks is not
+    // mangled, which would corrupt structured output for no reason.
+    const outDecoder = new StringDecoder('utf8');
+    const errDecoder = new StringDecoder('utf8');
     let settled = false;
     let stopError: Error | undefined;
     const timer = setTimeout(() => {
@@ -50,15 +61,24 @@ export function command(
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
+      // Flush any bytes the decoders were still holding once all output has arrived.
+      const outTail = outDecoder.end();
+      received += outTail.length;
+      stdout = (stdout + outTail).slice(-OUTPUT_LIMIT);
+      stderr = (stderr + errDecoder.end()).slice(-100_000);
       if (error) reject(error);
       else if (throwOnError && code !== 0)
         reject(new Fault(redact(`${binary} (${code}): ${stderr || stdout}`).slice(-8000), 502));
-      else resolve({ stdout, stderr, code });
+      else resolve({ stdout, stderr, code, truncated: received > OUTPUT_LIMIT });
     }
-    child.stdout.on('data', (d) => (stdout = (stdout + d.toString()).slice(-2_000_000)));
-    child.stderr.on('data', (d) => (stderr = (stderr + d.toString()).slice(-100_000)));
+    child.stdout.on('data', (d) => {
+      const text = outDecoder.write(d);
+      received += text.length;
+      stdout = (stdout + text).slice(-OUTPUT_LIMIT);
+    });
+    child.stderr.on('data', (d) => (stderr = (stderr + errDecoder.write(d)).slice(-100_000)));
     child.on('error', (e) => done(e));
-    child.on('close', (code) => done(undefined, code ?? 1));
+    child.on('close', (code) => done(undefined, code ?? -1));
     child.stdin.on('error', () => {});
     if (input) child.stdin.end(input);
     else child.stdin.end();

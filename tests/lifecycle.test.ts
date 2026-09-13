@@ -76,8 +76,8 @@ test('real worktrees, commits and tests complete a task through independent revi
         merged,
         mergeable: true,
         mergeable_state: 'clean',
-        head: { sha: t.head! },
-        base: { sha: t.base! },
+        head: { sha: t.head!, ref: t.branch, repo: { full_name: 'fixture/source' } },
+        base: { sha: t.base!, repo: { full_name: 'fixture/source' } },
         body: '',
       };
     }
