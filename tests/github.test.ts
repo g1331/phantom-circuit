@@ -156,6 +156,25 @@ test('Issue completion checks only managed criteria, closes and persists the can
   }
 });
 
+test('external publication redacts diagnostic paths and credentials without changing local context or reconciliation', async () => {
+  const f = issueFixture();
+  const path = String.raw`D:\owner\private\worktree\main.ts`;
+  try {
+    f.store.updateTask(f.task().id, {
+      spec: `Inspect "${path}"\nAuthorization: Bearer external-secret`,
+    });
+    await f.github().reviseIssue(f.task());
+    assert.ok(!f.remote().body.includes(path));
+    assert.ok(!f.remote().body.includes('external-secret'));
+    assert.ok(f.task().spec.includes(path));
+    await f.github().completeIssue(f.task());
+    assert.equal(f.remote().state, 'closed');
+    assert.equal(f.task().issueBody, f.remote().body);
+  } finally {
+    f.store.close();
+  }
+});
+
 test('Issue completion preserves external edits and the last known body', async () => {
   const f = issueFixture();
   try {

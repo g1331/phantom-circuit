@@ -1,6 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { redact, bounded } from './redaction.ts';
+export { redact } from './redaction.ts';
 import type {
   Project,
   Repo,
@@ -13,6 +15,7 @@ import type {
   Operation,
   ProfileName,
   DesignDocument,
+  PMActivity,
 } from '../shared/types.ts';
 
 export class Fault extends Error {
@@ -25,17 +28,6 @@ export class Fault extends Error {
 }
 export const now = () => new Date().toISOString();
 export const id = () => randomUUID();
-export function redact(value: string): string {
-  return value
-    .replace(
-      /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/g,
-      '<REDACTED>',
-    )
-    .replace(
-      /((?:authorization|api[_-]?key|access[_-]?token|password|secret)\s*[=:]\s*)([^\s,;]+)/gi,
-      '$1<REDACTED>',
-    );
-}
 export const defaults: Settings = {
   globalDevLimit: 4,
   reviewLimit: 2,
@@ -49,6 +41,7 @@ export const defaults: Settings = {
   },
 };
 type Entities = {
+  activity: PMActivity;
   project: Project;
   repo: Repo;
   task: Task;
@@ -137,6 +130,7 @@ export class Store {
       .prepare('INSERT INTO events(body) VALUES (?)')
       .run(JSON.stringify(event));
     this.changes.emit('event', { ...event, id: Number(result.lastInsertRowid) });
+    return Number(result.lastInsertRowid);
   }
   events(): Event[] {
     return (
@@ -148,6 +142,7 @@ export class Store {
   }
   snapshot(): Snapshot {
     return {
+      activities: this.list('activity'),
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),
@@ -157,6 +152,65 @@ export class Store {
       settings: this.settings(),
       documents: this.list('document'),
     };
+  }
+  private timelineOrder() {
+    return Number(
+      (
+        this.db.prepare('SELECT COALESCE(MAX(rowid),0)+1 AS next FROM documents').get() as {
+          next: number;
+        }
+      ).next,
+    );
+  }
+  activity(
+    run: Run,
+    key: string,
+    patch: Pick<PMActivity, 'kind' | 'title' | 'status'> & Partial<PMActivity>,
+  ) {
+    const activityId = `${run.id}:${key}`;
+    const previous = this.get('activity', activityId);
+    const at = now();
+    const value: PMActivity = {
+      timelineOrder: this.timelineOrder(),
+      id: activityId,
+      projectId: run.projectId,
+      runId: run.id,
+      taskId: run.taskId,
+      startedAt: at,
+      ...previous,
+      ...patch,
+      updatedAt: at,
+      details: {
+        ...previous?.details,
+        ...Object.fromEntries(
+          Object.entries(patch.details ?? {}).filter(([, value]) => value !== undefined),
+        ),
+      },
+    };
+    if (!['running', 'waiting', 'queued'].includes(value.status)) value.endedAt ??= at;
+    value.title = bounded(value.title, 240);
+    value.details = Object.fromEntries(
+      Object.entries(value.details)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, ['command', 'cwd', 'paths'].includes(k) ? redact(v!) : bounded(v!)]),
+    );
+    this.put('activity', activityId, value);
+    if (['command', 'tool'].includes(value.kind)) {
+      const current = this.get('run', run.id)!;
+      if (['running', 'waiting'].includes(current.status)) {
+        current.status = this.list('activity').some(
+          (a) =>
+            a.runId === run.id &&
+            ['command', 'tool'].includes(a.kind) &&
+            ['running', 'waiting'].includes(a.status),
+        )
+          ? 'waiting'
+          : 'running';
+        this.put('run', current.id, current);
+      }
+    }
+    this.changes.emit('change');
+    return value;
   }
   createProject(name: string, description: string) {
     const p: Project = { id: id(), name, description, devLimit: 4, createdAt: now() };
@@ -224,6 +278,7 @@ export class Store {
   ) {
     this.project(projectId);
     const m: Message = {
+      timelineOrder: this.timelineOrder(),
       id: id(),
       projectId,
       role,
@@ -342,6 +397,22 @@ export class Store {
     if (!r) return;
     Object.assign(r, { status, error: error ? redact(error) : undefined, endedAt: now() });
     this.put('run', key, r);
+    if (r.role === 'pm') {
+      for (const a of this.list('activity').filter(
+        (a) => a.runId === key && ['running', 'waiting', 'queued'].includes(a.status),
+      ))
+        this.activity(r, a.id.slice(key.length + 1), {
+          ...a,
+          status,
+          details: { ...a.details, ...(error ? { error } : {}) },
+        });
+      this.activity(r, 'result', {
+        kind: 'phase',
+        title: `PM ${status}`,
+        status,
+        details: error ? { error } : {},
+      });
+    }
     this.event('run', error ?? `${r.role} ${status}`, {
       projectId: r.projectId,
       taskId: r.taskId,
@@ -416,6 +487,16 @@ export class Store {
         );
       }
     for (const r of this.activeRuns()) {
+      if (r.role === 'pm')
+        this.activity(r, `recovery:${now()}`, {
+          kind: 'trigger',
+          title: '服务重启恢复',
+          status: 'interrupted',
+          details: {
+            source: '服务重启恢复',
+            summary: '上次运行中断，等待重新发送消息或恢复任务。',
+          },
+        });
       this.finishRun(r.id, 'interrupted', '服务重启；保留工作区，等待恢复核对');
       if (r.taskId)
         this.updateTask(r.taskId, {

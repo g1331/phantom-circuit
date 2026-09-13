@@ -1749,3 +1749,91 @@ time {
     scroll-behavior: auto !important;
   }
 }
+.pm-activity {
+  margin: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  min-width: 0;
+}
+.pm-activity summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 2px;
+}
+.pm-activity summary::before {
+  content: '›';
+}
+.pm-activity[open] summary::before {
+  content: '⌄';
+}
+.activity-title {
+  flex-shrink: 0;
+}
+.activity-preview {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.65;
+  min-width: 0;
+}
+.activity-status {
+  flex-shrink: 0;
+}
+.pm-activity[data-status='failed'] .activity-status {
+  color: #db786d;
+}
+.pm-activity dl {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 4px 12px 14px;
+}
+.pm-activity dt {
+  opacity: 0.65;
+}
+.pm-activity dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  min-width: 0;
+}
+.pm-activity pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.activity-detail {
+  display: contents;
+}
+.pm-progress {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  margin: 8px 0 14px;
+}
+.pm-progress small {
+  opacity: 0.65;
+}
+@media (max-width: 480px) {
+  .pm-activity summary {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .activity-preview {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .activity-status {
+    margin-left: auto;
+  }
+  .pm-activity dl {
+    grid-template-columns: 62px minmax(0, 1fr);
+    padding-inline: 2px;
+  }
+}

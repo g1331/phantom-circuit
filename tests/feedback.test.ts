@@ -76,6 +76,13 @@ test('external requests for new product scope wait for PM clarification instead 
     );
     assert.match(store.task(task.id).blocked ?? '', /产品澄清/);
     assert.equal(store.task(task.id).spec, 'Email login');
+    const trigger = store.snapshot().activities.find((a) => a.kind === 'trigger');
+    assert.equal(trigger?.title, '宿主事件：评估外部反馈');
+    assert.equal(trigger?.taskId, task.id);
+    assert.equal(
+      store.events().find((event) => event.id === trigger?.eventId)?.runId,
+      trigger?.runId,
+    );
   } finally {
     await engine.stop();
     store.close();

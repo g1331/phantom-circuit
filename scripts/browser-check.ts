@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -10,28 +10,41 @@ import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 
 const artifacts = resolve('test-results');
+const port = Number(process.env.PHANTOM_BROWSER_PORT ?? 4318);
+if (!Number.isInteger(port) || port < 1 || port > 65535)
+  throw new Error('PHANTOM_BROWSER_PORT must be an integer from 1 to 65535');
+const origin = `http://127.0.0.1:${port}`;
 await mkdir(artifacts, { recursive: true });
 const store = new Store(':memory:');
 const ws = new Workspaces(resolve('.cache/browser-workspaces'), store);
 const engine = new Engine(store, new GitHub(store), ws, resolve('.cache'));
-const app = createApp(store, engine, new Previews(store, ws), 4318);
-await app.listen({ host: '127.0.0.1', port: 4318 });
-const browser = await chromium.launch({
-  headless: true,
-  channel: process.platform === 'win32' ? 'msedge' : undefined,
-});
-const page = await browser.newPage({
-  viewport: { width: 1440, height: 1000 },
-  deviceScaleFactor: 1,
-  reducedMotion: 'reduce',
-});
+const app = createApp(store, engine, new Previews(store, ws), port);
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+let page: Page;
+try {
+  await app.listen({ host: '127.0.0.1', port });
+  browser = await chromium.launch({
+    headless: true,
+    channel: process.platform === 'win32' ? 'msedge' : undefined,
+  });
+  page = await browser.newPage({
+    viewport: { width: 1440, height: 1000 },
+    deviceScaleFactor: 1,
+    reducedMotion: 'reduce',
+  });
+} catch (error) {
+  await browser?.close();
+  await app.close();
+  store.close();
+  throw error;
+}
 const errors: string[] = [];
 // Windows normalizes line endings in its native clipboard; the source text is unchanged.
 const readClipboard = async () =>
   (await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n');
 page.on('pageerror', (e) => errors.push(e.message));
 try {
-  await page.goto('http://127.0.0.1:4318');
+  await page.goto(origin);
   await page.getByText('从一个项目开始。').waitFor();
   await page.screenshot({ path: resolve(artifacts, '01-empty-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
@@ -40,6 +53,54 @@ try {
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   const project = store.list('project')[0];
+  const activityRun = store.run('pm', project.id, 'pm');
+  const diagnosticPath = String.raw`D:\Orbit Studio\.phantom\workspaces\task-alpha\src\entry.ts`;
+  store.activity(activityRun, 'trigger', {
+    kind: 'trigger',
+    title: '用户消息',
+    status: 'completed',
+    details: { source: '用户消息' },
+  });
+  store.activity(activityRun, 'command', {
+    kind: 'command',
+    title: '执行命令',
+    status: 'running',
+    details: {
+      command: `type "${diagnosticPath}"`,
+      cwd: String.raw`D:\Orbit Studio\.phantom\workspaces\task-alpha`,
+      output: 'Authorization: Bearer browser-secret',
+    },
+  });
+  const activity = page.locator('.pm-activity').filter({ hasText: '执行命令' });
+  await activity.locator('summary').waitFor({ timeout: 5000 });
+  await activity.locator('summary').click();
+  assert.ok((await activity.textContent())?.includes(diagnosticPath));
+  assert.ok(!(await page.locator('body').textContent())?.includes('browser-secret'));
+  await page.getByText(/最后活动.*已运行/).waitFor();
+  await page.clock.install();
+  await page.clock.fastForward(61000);
+  await page.getByText(/超过 60 秒未更新/).waitFor();
+  await page.clock.setSystemTime(new Date());
+  await page.screenshot({ path: resolve(artifacts, 'activity-desktop.png'), fullPage: true });
+  store.activity(activityRun, 'command', {
+    kind: 'command',
+    title: '执行命令',
+    status: 'failed',
+    details: { error: '找不到文件' },
+  });
+  store.finishRun(activityRun.id, 'failed', '找不到文件');
+  await activity.locator('summary').getByText('失败', { exact: true }).waitFor();
+  await page.reload();
+  await activity.locator('summary').click();
+  assert.ok((await activity.textContent())?.includes(diagnosticPath));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await activity.getByText('找不到文件', { exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: resolve(artifacts, 'activity-mobile.png'), fullPage: true });
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'orbit-web',
@@ -367,7 +428,7 @@ try {
   });
   const pmRun = store.run('pm', project.id, 'pm');
   store.event('fixture', 'PM streaming started', { projectId: project.id });
-  await page.getByText('正在阅读上下文并整理回应…').waitFor();
+  await page.getByText(/进行中.*准备上下文/).waitFor();
   const firstChunk = '# 流式说明\n\n```sh\nnpm test';
   store.changes.emit('delta', { role: 'pm', runId: pmRun.id, text: firstChunk });
   const streaming = page.locator('.message.assistant').last();
@@ -601,7 +662,7 @@ try {
   );
 } finally {
   await page.close();
-  await browser.close();
+  await browser?.close();
   await app.close();
   store.close();
 }

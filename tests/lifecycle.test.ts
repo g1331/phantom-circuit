@@ -182,6 +182,9 @@ test('real worktrees, commits and tests complete a task through independent revi
     assert.equal(result.issueBody, issue.body);
     assert.equal(devTurns, 3);
     assert.equal(merged, true);
+    const triggers = store.snapshot().activities.filter((a) => a.kind === 'trigger');
+    assert.ok(triggers.some((a) => a.title === '宿主事件：Review 后验收' && a.taskId === task.id));
+    assert.ok(triggers.every((a) => store.get('run', a.runId)?.role === 'pm'));
     assert.equal(result.reviews.length, 2);
     assert.equal(result.tests[0].exitCode, 0);
     assert.equal((await command('git', ['status', '--porcelain'], source)).stdout, '');
