@@ -5,6 +5,33 @@ import { command, shellCommand } from './process.ts';
 import { Store, Fault, now, redact } from './store.ts';
 import type { Repo, Task, Evidence } from '../shared/types.ts';
 
+/** One allowed tracking ref and the commit it currently points at. */
+type TrackingRef = { ref: string; tip: string };
+
+function describeRefs(refs: TrackingRef[]) {
+  return refs.map(({ ref, tip }) => `${ref}=${tip}`).join(', ');
+}
+
+/** The last few coordination messages, bounded and single-line, for one pause diagnostic. */
+function describeEvents(events: { message: string }[]) {
+  const shown = events
+    .slice(-3)
+    .map((event) => event.message.replace(/[\r\n]+/g, ' ').slice(0, 160));
+  const hidden = events.length - shown.length;
+  return `${shown.join(' | ')}${hidden > 0 ? ` …（另有 ${hidden} 条）` : ''}`;
+}
+
+/**
+ * Whether one durable merge-coordination event can be about a pending merge of `sourceHead` into
+ * `head`. An event that names commits must name exactly those two; an event that names none - the
+ * wording the pre-finalization host wrote - can only corroborate that this task reached merge
+ * coordination at all, and is accepted as such.
+ */
+function conflictEventAgrees(message: string, head: string, sourceHead: string) {
+  const named = message.match(/[a-f0-9]{40,64}/g);
+  return !named || (named.includes(head) && named.includes(sourceHead));
+}
+
 export type BaselineResult =
   | { status: 'clean' }
   | { status: 'conflicted'; merge: NonNullable<Task['pendingMerge']> }
@@ -426,6 +453,9 @@ export class Workspaces {
       if ((await this.git(task.worktree!, ['rev-parse', 'ORIG_HEAD'], signal)) !== head)
         throw new Fault('遗留合并 ORIG_HEAD 不匹配');
       let sourceRef: string | undefined;
+      let fork: string | undefined;
+      const observed: TrackingRef[] = [];
+      const advanced: TrackingRef[] = [];
       for (const ref of allowed) {
         const r = await command(
           'git',
@@ -437,17 +467,39 @@ export class Workspaces {
           signal,
         );
         if (r.code !== 0 && r.code !== 1) throw new Fault(`Git 来源检查结果未知：${r.stderr}`);
-        if (r.code === 0 && r.stdout.trim() === sourceHead) {
+        if (r.code === 1) continue;
+        const tip = r.stdout.trim();
+        observed.push({ ref, tip });
+        if (tip === sourceHead) {
           sourceRef = ref;
           break;
         }
+        if (await this.ancestor(task.worktree!, sourceHead, tip, signal))
+          advanced.push({ ref, tip });
       }
-      if (!sourceRef)
-        throw new Fault(
-          `遗留 MERGE_HEAD 来源证据不足：${sourceHead}；冲突文件：${conflicts.join(', ')}`,
+      const insufficient = (reason: string) =>
+        new Fault(
+          `遗留 MERGE_HEAD 来源证据不足：${sourceHead}；${reason}；冲突文件：${conflicts.join(', ')}`,
         );
+      if (!sourceRef) {
+        if (!advanced.length)
+          throw insufficient(
+            `允许来源均不包含该提交（${describeRefs(observed) || '无可用来源'}），可能已被改写或回退`,
+          );
+        const verified = await this.verifyAdvancedLegacySource(
+          task,
+          head,
+          sourceHead,
+          advanced,
+          signal,
+        );
+        if ('reason' in verified) throw insufficient(verified.reason);
+        sourceRef = verified.sourceRef;
+        fork = verified.fork;
+      }
       const integratedBase =
         task.integratedBase ??
+        fork ??
         (await this.git(task.worktree!, ['merge-base', head, sourceHead], signal));
       if (!/^[a-f0-9]{40,64}$/.test(integratedBase)) throw new Fault('遗留合并共同祖先未知');
       const targetBase = task.targetBase ?? task.base ?? integratedBase;
@@ -485,6 +537,66 @@ export class Workspaces {
       this.store.updateTask(task.id, { pendingMerge: merge });
     }
     return merge;
+  }
+  /**
+   * Verify a legacy `MERGE_HEAD` whose tracked source branch has since advanced.
+   *
+   * The exact-tip test above only proves provenance while the source still points at the commit the
+   * merge started from. Once the default branch moves on, that test can never pass again and a
+   * still-valid unfinished merge would be rejected forever. A tip that no longer matches is not
+   * evidence by itself, so the commit is verified from three independent host records instead:
+   *
+   * - the target baseline the host recorded for this task (`targetBase`, or the legacy `base` the
+   *   pre-finalization host stored as the default-branch tip it had just merged),
+   * - a durable host event recording that this task reached merge coordination, and
+   * - repository history, which must show the commit as an ancestor of exactly one allowed source
+   *   that advanced from it, still outside the task HEAD, on the recorded integrated baseline.
+   *
+   * All three are required here, so none of the weaker signals can authorize on its own: a
+   * `MERGE_HEAD` that merely exists, merely equals `task.base`, or is merely some ancestor of the
+   * current default branch still pauses with the reason it failed.
+   *
+   * Returns the verified source ref and fork point, or the reason the evidence was insufficient.
+   * Refs that advanced to the same tip are the same merge, so picking either cannot change what is
+   * merged; refs that advanced to different tips are ambiguous and refused.
+   */
+  private async verifyAdvancedLegacySource(
+    task: Task,
+    head: string,
+    sourceHead: string,
+    advanced: TrackingRef[],
+    signal?: AbortSignal,
+  ): Promise<{ sourceRef: string; fork: string } | { reason: string }> {
+    // `targetBase` is the baseline a coordination planned; the legacy host stored the tip it had
+    // just merged in `base` instead, so both are read but only one may be recorded for a merge that
+    // was never given a pendingMerge record.
+    const recordedTargets = [
+      ...new Set([task.targetBase, task.base].filter((x) => !!x)),
+    ] as string[];
+    if (!recordedTargets.length) return { reason: '没有已记录的目标基线' };
+    if (recordedTargets.length > 1)
+      return { reason: `宿主记录的目标基线互相冲突（${recordedTargets.join(', ')}）` };
+    if (recordedTargets[0] !== sourceHead)
+      return { reason: `与宿主记录的目标基线 ${recordedTargets[0]} 不一致，不是原计划合入的提交` };
+    const tips = [...new Set(advanced.map((x) => x.tip))];
+    if (tips.length !== 1)
+      return { reason: `多个允许来源都从该提交推进（${describeRefs(advanced)}），来源歧义` };
+    if (await this.ancestor(task.worktree!, sourceHead, 'HEAD', signal))
+      return { reason: '该提交已包含在任务 HEAD 中，不是待完成合并' };
+    const fork = await this.git(task.worktree!, ['merge-base', 'HEAD', sourceHead], signal);
+    if (!/^[a-f0-9]{40,64}$/.test(fork) || fork === sourceHead)
+      return { reason: '无法核实该提交与任务 HEAD 的共同祖先' };
+    if (task.integratedBase && task.integratedBase !== fork)
+      return { reason: `共同祖先 ${fork} 与已整合基线 ${task.integratedBase} 不一致` };
+    const coordination = this.store
+      .taskEvents(task.id)
+      .filter((event) => event.type === 'merge-conflict');
+    if (!coordination.length) return { reason: '宿主没有该任务的合并协调记录，来源无法核实' };
+    if (!coordination.some((event) => conflictEventAgrees(event.message, head, sourceHead)))
+      return {
+        reason: `宿主已有的合并协调记录都不指向该待完成合并（${describeEvents(coordination)}）`,
+      };
+    return { sourceRef: advanced[0].ref, fork };
   }
   /**
    * Whether adopting the remote task branch's commits is the right next step for this resume.

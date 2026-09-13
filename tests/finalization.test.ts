@@ -11,6 +11,10 @@ import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Task } from '../src/shared/types.ts';
 
+/** A configured-command failure the host must read as an environment block, not product rework. */
+const environmentBlock =
+  'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
+
 async function fixture(
   t: TestContext,
   dev: (cwd: string) => Promise<void> = async () => {},
@@ -273,6 +277,56 @@ async function conflictingTask(
   return { ...f, oldHead, incoming };
 }
 
+/**
+ * Refresh the task worktree's tracking ref for one remote branch, so coordination sees the remote
+ * move the way it would after a real push.
+ */
+async function trackRef(f: Awaited<ReturnType<typeof conflictingTask>>, branch: string) {
+  const fetched = await f.git(f.path, [
+    'fetch',
+    'origin',
+    `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+  ]);
+  assert.equal(fetched.code, 0, fetched.stderr);
+}
+
+/** Publish the source worktree's HEAD as a branch, then refresh its tracking ref. */
+async function publishBranch(
+  f: Awaited<ReturnType<typeof conflictingTask>>,
+  branch: string,
+  push: string[] = [],
+) {
+  const pushed = await f.git(f.source, ['push', ...push, 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(pushed.code, 0, pushed.stderr);
+  await trackRef(f, branch);
+}
+
+/**
+ * The scene #32 was stuck in: a legacy in-progress merge whose tracked default branch moved on.
+ * `conflictingTask` starts the merge the pre-finalization host started and stores the default-branch
+ * tip it merged as `base`, exactly as that host did; this helper adds the durable coordination event
+ * that host wrote and then advances the default branch past the commit the merge started from.
+ */
+async function advancedLegacyTask(
+  t: TestContext,
+  dev: (cwd: string) => Promise<void> = async () => {},
+  options: { record?: boolean } = {},
+) {
+  const f = await conflictingTask(t, dev, 'default', true);
+  if (options.record !== false)
+    f.store.event('merge-conflict', '需要 Dev 按双方意图解决合并冲突', {
+      projectId: f.task().projectId,
+      taskId: f.task().id,
+    });
+  await writeFile(join(f.source, 'later.txt'), 'advanced default work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Later default']);
+  await publishBranch(f, 'main');
+  const advanced = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  assert.notEqual(advanced, f.incoming);
+  return { ...f, advanced };
+}
+
 for (const failure of ['install', 'validation'] as const) {
   test(`resume keeps the merged finalize checkpoint after ${failure} fails before pushing an existing PR`, async (t) => {
     const f = await conflictingTask(
@@ -283,9 +337,8 @@ for (const failure of ['install', 'validation'] as const) {
       'task',
     );
     const commands = f.store.repo(f.repo.id).commands;
-    const fail = 'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
     f.store.patchRepo(f.repo.id, {
-      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: fail },
+      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: environmentBlock },
     });
     const paused = await f.run();
     assert.equal(paused.control, 'paused', paused.blocked);
@@ -1059,3 +1112,190 @@ for (const method of ['UI', 'PM'] as const) {
     assert.match(f.task().blocked!, /分支不匹配/);
   });
 }
+
+test('advanced default branch adopts the recorded legacy merge and integrates the new default after', async (t) => {
+  const f = await advancedLegacyTask(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  assert.equal(f.task().pendingMerge, undefined);
+  await f.engine.resume(f.task().id);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 1);
+  assert.equal(result.pendingMerge, undefined);
+  // The recorded merge is completed first, with its own two parents, and only then is the advanced
+  // default branch coordinated as a second, separate merge commit.
+  const history = f.store.task(f.task().id).mergeHistory!;
+  assert.equal(history.length, 2);
+  assert.equal(history[0].origin, 'legacy');
+  assert.equal(history[0].sourceRef, 'refs/remotes/origin/main');
+  assert.equal(history[0].sourceHead, f.incoming);
+  assert.equal(history[0].targetBase, f.incoming);
+  assert.equal(history[1].sourceRef, 'refs/remotes/origin/main');
+  assert.equal(history[1].sourceHead, f.advanced);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', history[0].head])).stdout.trim(),
+    `${f.oldHead} ${f.incoming}`,
+  );
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', result.head!])).stdout.trim(),
+    `${history[0].head} ${f.advanced}`,
+  );
+  assert.equal(await readFile(join(f.path, 'later.txt'), 'utf8'), 'advanced default work');
+  assert.equal((await f.git(f.path, ['status', '--porcelain'])).stdout, '');
+  assert.equal(result.base, f.advanced);
+  assert.equal(result.tests[0].head, result.head);
+});
+
+test('advanced default branch leaves the legacy merge pending while no target baseline is recorded', async (t) => {
+  const f = await advancedLegacyTask(t);
+  f.store.updateTask(f.task().id, { base: undefined, targetBase: undefined });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*没有已记录的目标基线/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.equal((await f.git(f.path, ['rev-parse', 'MERGE_HEAD'])).stdout.trim(), f.incoming);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+});
+
+test('advanced default branch leaves the legacy merge pending while the recorded target differs', async (t) => {
+  const f = await advancedLegacyTask(t);
+  f.store.updateTask(f.task().id, { base: f.base });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*与宿主记录的目标基线 .* 不一致/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+});
+
+test('advanced default branch leaves the legacy merge pending while target records conflict', async (t) => {
+  const f = await advancedLegacyTask(t);
+  f.store.updateTask(f.task().id, { base: f.base, targetBase: f.incoming });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*目标基线互相冲突/);
+});
+
+test('advanced default branch leaves the legacy merge pending when the source was rewritten', async (t) => {
+  const f = await advancedLegacyTask(t);
+  await f.git(f.source, ['push', '--force', 'origin', `${f.base}:refs/heads/main`]);
+  await trackRef(f, 'main');
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*已被改写或回退/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+});
+
+test('advanced default branch leaves the legacy merge pending while no coordination event is recorded', async (t) => {
+  const f = await advancedLegacyTask(t, undefined, { record: false });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*合并协调记录/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+});
+
+test('advanced default branch refuses a coordination record that names another merge', async (t) => {
+  const f = await advancedLegacyTask(t, undefined, { record: false });
+  // A host record that names commits is evidence about a specific merge, so one that names a
+  // different pair cannot authorize this pending merge.
+  f.store.event('merge-conflict', `待完成合并 ${f.base} + ${f.base}；冲突文件：value.txt`, {
+    projectId: f.task().projectId,
+    taskId: f.task().id,
+  });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*都不指向该待完成合并/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+});
+
+for (const drift of ['head', 'orig-head'] as const) {
+  test(`advanced default branch leaves the legacy merge pending on ${drift} drift`, async (t) => {
+    const f = await advancedLegacyTask(t);
+    if (drift === 'head') f.store.updateTask(f.task().id, { head: f.base });
+    else {
+      const path = (await f.git(f.path, ['rev-parse', '--git-path', 'ORIG_HEAD'])).stdout.trim();
+      await writeFile(path, `${f.base}\n`);
+    }
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 0);
+    assert.match(result.blocked!, drift === 'head' ? /HEAD 漂移/ : /ORIG_HEAD 不匹配/);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  });
+}
+
+test('advanced default branch refuses to guess between two allowed sources that both moved on', async (t) => {
+  const f = await advancedLegacyTask(t);
+  f.store.updateTask(f.task().id, { pr: 2, mergeSourceBranch: f.task().branch });
+  // A second allowed source - the original PR branch - also advances past the pending merge head.
+  await f.git(f.source, ['checkout', '-b', 'task-advance', f.incoming]);
+  await writeFile(join(f.source, 'task-advance.txt'), 'task branch advance');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Task branch advance']);
+  await publishBranch(f, f.task().branch!);
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源歧义/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+});
+
+test('recovering a recorded legacy merge twice repeats neither Dev nor merge nor commit', async (t) => {
+  const f = await advancedLegacyTask(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const retries = f.task().retries;
+  const first = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(first.status, 'conflicted');
+  const id = f.store.task(f.task().id).pendingMerge!.id;
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  // Coordinating the same unfinished merge again reuses the persisted record and starts no merge.
+  const again = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(again.status, 'conflicted');
+  assert.equal(f.store.task(f.task().id).pendingMerge!.id, id);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.equal((await f.git(f.path, ['rev-parse', 'MERGE_HEAD'])).stdout.trim(), f.incoming);
+
+  // An environment failure after the host completed both merges leaves the finalize checkpoint.
+  const commands = f.store.repo(f.repo.id).commands;
+  f.store.patchRepo(f.repo.id, {
+    commands: {
+      ...commands,
+      install: environmentBlock,
+    },
+  });
+  const paused = await f.run();
+  assert.equal(paused.control, 'paused', paused.blocked);
+  assert.equal(paused.devPhase, 'finalize');
+  assert.equal(paused.pendingMerge, undefined);
+  assert.equal(f.turns(), 1);
+  assert.equal(paused.retries, retries);
+  assert.equal(paused.mergeHistory!.length, 2);
+  const merged = paused.head!;
+
+  f.store.patchRepo(f.repo.id, { commands });
+  await f.engine.resume(paused.id);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.head, merged);
+  assert.equal(result.base, f.advanced);
+  assert.equal(result.retries, retries);
+  assert.equal(f.turns(), 1);
+  assert.equal(f.store.task(f.task().id).mergeHistory!.length, 2);
+});
