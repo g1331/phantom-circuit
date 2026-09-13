@@ -88,10 +88,12 @@ export interface Task {
   issueDatabaseId?: number;
   projectItemId?: string;
   issueBody?: string;
+  completionDeliveryPending?: boolean;
   pr?: number;
   prUrl?: string;
   head?: string;
   base?: string;
+  mergeApproval?: { head: string; base: string };
   reviews: ReviewResult[];
   tests: Evidence[];
   retries: number;
@@ -143,7 +145,7 @@ export interface Event {
 export interface Operation {
   id: string;
   kind: string;
-  status: 'pending' | 'done' | 'uncertain';
+  status: 'pending' | 'done' | 'uncertain' | 'failed';
   result?: unknown;
   error?: string;
 }

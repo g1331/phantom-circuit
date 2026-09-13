@@ -86,3 +86,114 @@ test('parallel callers for one external object result in one creation', async ()
   assert.deepEqual(results, [{ id: 'one' }, { id: 'one' }, { id: 'one' }]);
   s.close();
 });
+
+function issueFixture() {
+  const store = new Store(':memory:');
+  const project = store.createProject('Completion', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'repo',
+    path: '.',
+    github: 'example/repo',
+    authorized: true,
+    defaultBranch: 'main',
+  });
+  const message = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  const task = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId: message.id,
+    title: 'Task',
+    spec: 'Keep this unrelated checkbox: - [ ] manual',
+    acceptance: ['First criterion', 'Second criterion'],
+    dependencies: [],
+    kind: 'backend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const body = `<!-- phantom-task:${task.id} -->\n## What to build\nKeep this unrelated checkbox: - [ ] manual\n\n## Acceptance criteria\n- [ ] First criterion\n- [ ] Second criterion\n\n## Blocked by\nNone (can start immediately)\n`;
+  store.updateTask(task.id, { issue: 1, issueBody: body, head: 'head', base: 'base' });
+  let remote = { body, state: 'open' };
+  let writes = 0;
+  let loseResponse = false;
+  class IssueGitHub extends GitHub {
+    override async api<T = any>(_endpoint: string, method = 'GET', data?: any): Promise<T> {
+      if (method === 'PATCH') {
+        writes++;
+        remote = { ...remote, ...data };
+        if (loseResponse) throw new Error('Connection lost after write');
+      }
+      return { ...remote } as T;
+    }
+  }
+  return {
+    store,
+    task: () => store.task(task.id),
+    github: () => new IssueGitHub(store),
+    remote: () => remote,
+    edit: (body: string) => {
+      remote.body = body;
+    },
+    writes: () => writes,
+    loseResponse: () => {
+      loseResponse = true;
+    },
+  };
+}
+
+test('Issue completion checks only managed criteria, closes and persists the canonical body', async () => {
+  const f = issueFixture();
+  try {
+    await f.github().completeIssue(f.task());
+    assert.match(f.remote().body, /- \[x\] First criterion\n- \[x\] Second criterion/);
+    assert.match(f.remote().body, /- \[ \] manual/);
+    assert.equal(f.remote().state, 'closed');
+    assert.equal(f.task().issueBody, f.remote().body);
+    await f.github().completeIssue(f.task());
+    assert.equal(f.writes(), 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('Issue completion preserves external edits and the last known body', async () => {
+  const f = issueFixture();
+  try {
+    const original = f.task().issueBody;
+    f.edit('Maintainer changed the requirements');
+    await assert.rejects(f.github().completeIssue(f.task()), /PM/);
+    assert.equal(f.writes(), 0);
+    assert.equal(f.task().issueBody, original);
+    assert.equal(f.remote().body, 'Maintainer changed the requirements');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('lost Issue completion response is reconciled by a new adapter without a second write', async () => {
+  const f = issueFixture();
+  try {
+    const original = f.task().issueBody;
+    f.loseResponse();
+    await assert.rejects(f.github().completeIssue(f.task()), /Connection lost/);
+    assert.equal(f.task().issueBody, original);
+    assert.equal(f.remote().state, 'closed');
+    await f.github().completeIssue(f.task());
+    assert.equal(f.task().issueBody, f.remote().body);
+    assert.equal(f.writes(), 1);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('completed operation cache cannot hide subsequent external Issue edits', async () => {
+  const f = issueFixture();
+  try {
+    await f.github().completeIssue(f.task());
+    f.edit('Maintainer edited after completion');
+    await assert.rejects(f.github().completeIssue(f.task()), /PM/);
+    assert.equal(f.writes(), 1);
+  } finally {
+    f.store.close();
+  }
+});

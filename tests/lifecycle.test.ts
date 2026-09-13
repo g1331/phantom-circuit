@@ -56,15 +56,14 @@ test('real worktrees, commits and tests complete a task through independent revi
     complexity: 'normal',
     priority: 0,
   });
+  let issue = { number: 1, body: '', state: 'open' };
   let merged = false;
   let rejected = false;
+  let pmRejected = false;
   let devTurns = 0;
   const axes: string[] = [];
   class FakeGitHub extends GitHub {
-    override async publishIssue(t: Task) {
-      store.updateTask(t.id, { issue: 1, issueUrl: 'https://example.invalid/issues/1' });
-      return { number: 1 };
-    }
+    override async setupProject() {}
     override async publishPR(t: Task) {
       store.updateTask(t.id, { pr: 2, prUrl: 'https://example.invalid/pull/2' });
       return this.pull(t);
@@ -92,12 +91,19 @@ test('real worktrees, commits and tests complete a task through independent revi
     }
     override async merge(t: Task) {
       assert.equal(mergeReady(t), true);
+      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
       merged = true;
       return this.pull(t);
     }
     override async syncStatus() {}
-    override async api<T = any>(): Promise<T> {
-      return { state: 'open', body: undefined } as T;
+    override async api<T = any>(endpoint: string, method = 'GET', data?: any): Promise<T> {
+      if (endpoint.endsWith('/issues') && method === 'POST') issue = { ...issue, ...data };
+      if (method === 'PATCH') {
+        assert.equal(merged, true);
+        assert.equal(store.task(task.id).stage, 'merging');
+        issue = { ...issue, ...data };
+      }
+      return { ...issue } as T;
     }
     override async paged() {
       return [];
@@ -141,6 +147,14 @@ test('real worktrees, commits and tests complete a task through independent revi
           findings: [],
         });
       }
+      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
+      if (!pmRejected) {
+        pmRejected = true;
+        return JSON.stringify({
+          approved: false,
+          reason: 'Clarify the revision comment before delivery.',
+        });
+      }
       return JSON.stringify({
         approved: true,
         reason: 'Acceptance criteria and both reviews pass.',
@@ -163,7 +177,10 @@ test('real worktrees, commits and tests complete a task through independent revi
       'done',
       JSON.stringify({ task: result, events: store.events().slice(0, 5) }),
     );
-    assert.equal(devTurns, 2);
+    assert.match(issue.body, /- \[x\] 2 \+ 3 = 5/);
+    assert.equal(issue.state, 'closed');
+    assert.equal(result.issueBody, issue.body);
+    assert.equal(devTurns, 3);
     assert.equal(merged, true);
     assert.equal(result.reviews.length, 2);
     assert.equal(result.tests[0].exitCode, 0);
