@@ -1,0 +1,3 @@
+# Keep providers global and role assignments project-owned
+
+Phantom Circuit treats a Provider as a reusable host connection and keeps its credentials outside ordinary project state, messages and events; the host passes a selected custom Provider to an isolated Codex app-server process through a temporary environment binding. Global role assignments are defaults, while each Project stores its own snapshot copied at creation, so later global edits do not silently change existing Projects. The built-in OpenAI Provider uses the existing Codex login, custom Providers must support Codex's Responses API, and model discovery is advisory because compatible upstreams may not expose a model-list endpoint.

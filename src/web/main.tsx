@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Markdown } from './markdown.tsx';
 import {
   Activity,
   ArrowDownLeft,
@@ -39,6 +38,7 @@ import type {
 } from '../shared/types.ts';
 import { stageLabels } from '../shared/types.ts';
 import { api, session } from './api.ts';
+import { MarkdownContent } from './markdown-content.tsx';
 import './style.css';
 
 const time = (value: string) =>
@@ -130,6 +130,7 @@ function App() {
   const runs = state?.runs.filter((r) => r.projectId === project?.id) ?? [];
   const active = runs.filter((r) => isRunning(r.status));
   const messages = state?.messages.filter((m) => m.projectId === project?.id) ?? [];
+  const documents = state?.documents.filter((d) => d.projectId === project?.id) ?? [];
   const shown = tasks.filter(
     (t) =>
       (filter === 'all' ||
@@ -388,7 +389,13 @@ function App() {
                             )}
                             <time>{time(m.createdAt)}</time>
                           </div>
-                          <div className="message-content">{m.content}</div>
+                          <div className="message-content">
+                            {m.role === 'system' ? (
+                              m.content
+                            ) : (
+                              <MarkdownContent content={m.content} />
+                            )}
+                          </div>
                           {m.role === 'user' && (
                             <button
                               className="retry-message"
@@ -413,9 +420,13 @@ function App() {
                                 处理中<span>…</span>
                               </span>
                             </div>
-                            <div className="message-content">
-                              {stream[r.id] || '正在阅读上下文并整理回应…'}
-                            </div>
+                            {stream[r.id] ? (
+                              <div className="message-content">
+                                <MarkdownContent content={stream[r.id]} />
+                              </div>
+                            ) : (
+                              <div className="message-content">正在阅读上下文并整理回应…</div>
+                            )}
                           </article>
                         ))}
                     </div>
@@ -768,6 +779,20 @@ function App() {
                 </div>
               </aside>
             </div>
+            {documents.length > 0 && (
+              <section className="domain-documents" aria-label="领域文档">
+                <h2>领域文档</h2>
+                {documents.map((doc) => (
+                  <details key={doc.id}>
+                    <summary>
+                      {repos.find((repo) => repo.id === doc.repoId)?.name} · {doc.path} · v
+                      {doc.version} · {doc.accepted ? '已接受' : '草案'}
+                    </summary>
+                    <MarkdownContent content={doc.content} label={`领域文档 ${doc.path}`} />
+                  </details>
+                ))}
+              </section>
+            )}
           </>
         )}
       </main>
@@ -851,21 +876,15 @@ function App() {
           onClose={() => setTaskDetail(undefined)}
         >
           <div className="task-detail">
-            {detail.issueBody ? (
-              <section aria-label="Task Issue 正文">
-                <Markdown text={detail.issueBody} />
-              </section>
-            ) : (
-              <>
-                <Markdown text={detail.spec} />
-                <h3>验收条件</h3>
-                <ul>
-                  {detail.acceptance.map((x, i) => (
-                    <li key={i}>{x}</li>
-                  ))}
-                </ul>
-              </>
-            )}
+            <MarkdownContent content={detail.spec} label="任务说明" />
+            <h3>验收条件</h3>
+            <ul>
+              {detail.acceptance.map((x, i) => (
+                <li key={i}>
+                  <MarkdownContent content={x} label={`验收条件 ${i + 1}`} />
+                </li>
+              ))}
+            </ul>
             {detail.dependencies.length > 0 && (
               <>
                 <h3>等待任务</h3>
@@ -931,12 +950,35 @@ function App() {
                   {r.axis === 'standards' ? 'Standards' : 'Spec'}{' '}
                   <span>{r.approved ? '通过' : '需要修改'}</span>
                 </h3>
-                <p>{r.summary}</p>
+                <MarkdownContent content={r.summary} label={`${r.axis} Review 总结`} />
                 {r.findings.map((f, i) => (
-                  <p key={i}>{f}</p>
+                  <MarkdownContent key={i} content={f} label={`${r.axis} Review 发现 ${i + 1}`} />
                 ))}
               </section>
             ))}
+            {detail.feedback.length > 0 && <h3>反馈</h3>}
+            {detail.feedback.map((content, i) => (
+              <MarkdownContent key={i} content={content} label={`反馈 ${i + 1}`} />
+            ))}
+            {!!detail.pendingFeedback?.length && <h3>待处理反馈</h3>}
+            {detail.pendingFeedback?.map((content, i) => (
+              <MarkdownContent key={i} content={content} label={`待处理反馈 ${i + 1}`} />
+            ))}
+            {!!detail.documentChanges?.length && <h3>领域文档变更</h3>}
+            {detail.documentChanges?.map((doc) => (
+              <section key={doc.path}>
+                <h4>
+                  {doc.path} · v{doc.version}
+                </h4>
+                <MarkdownContent content={doc.content} label={`文档变更 ${doc.path}`} />
+              </section>
+            ))}
+            {detail.issueBody && (
+              <section>
+                <h3>Issue 正文</h3>
+                <MarkdownContent content={detail.issueBody} label="Issue 正文" />
+              </section>
+            )}
             {detail.tests.map((t, i) => (
               <details key={i}>
                 <summary>
