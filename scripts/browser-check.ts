@@ -8,6 +8,7 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
+import { checkInitialLocales } from './locale-browser-check.ts';
 
 const artifacts = resolve('test-results');
 await mkdir(artifacts, { recursive: true });
@@ -21,6 +22,7 @@ const browser = await chromium.launch({
   channel: process.platform === 'win32' ? 'msedge' : undefined,
 });
 const page = await browser.newPage({
+  locale: 'zh-CN',
   viewport: { width: 1440, height: 1000 },
   deviceScaleFactor: 1,
   reducedMotion: 'reduce',
@@ -31,14 +33,20 @@ const readClipboard = async () =>
   (await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n');
 page.on('pageerror', (e) => errors.push(e.message));
 try {
+  await checkInitialLocales(browser, artifacts);
   await page.goto('http://127.0.0.1:4318');
   await page.getByText('从一个项目开始。').waitFor();
   await page.screenshot({ path: resolve(artifacts, '01-empty-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByLabel('项目名称', { exact: true }).fill('Orbit Studio');
   await page.getByLabel('项目目标').fill('让每一次产品迭代，都从明确的需求开始。');
-  await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
+  await page.getByRole('dialog').getByLabel('语言', { exact: true }).selectOption('en');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Create project', exact: true })
+    .click();
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
+  await page.getByLabel('Language', { exact: true }).selectOption('zh-CN');
   const project = store.list('project')[0];
   const repo = store.createRepo({
     projectId: project.id,
@@ -595,9 +603,64 @@ try {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
+  await page.getByRole('button', { name: '关闭窗口' }).click();
+  const beforeLocaleSwitch = store.snapshot();
+  const originalMessages = await page
+    .locator(
+      '.message-content .markdown-rendered, .message-content .markdown-source, .message.system .message-content',
+    )
+    .allTextContents();
+  await page.getByLabel('给 PM 的消息').fill('原样保留 draft **text**');
+  const localeWrites: string[] = [];
+  const recordLocaleWrite = (request: import('playwright').Request) => {
+    if (request.url().includes('/api/') && !['GET', 'HEAD'].includes(request.method()))
+      localeWrites.push(request.url());
+  };
+  page.on('request', recordLocaleWrite);
+  await page.getByLabel('语言', { exact: true }).selectOption('en');
+  await page.getByRole('tab', { name: 'Discuss with PM' }).waitFor();
+  assert.equal(await page.getByLabel('Message to PM').inputValue(), '原样保留 draft **text**');
+  assert.equal(await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).count(), 1);
+  assert.deepEqual(
+    await page
+      .locator(
+        '.message-content .markdown-rendered, .message-content .markdown-source, .message.system .message-content',
+      )
+      .allTextContents(),
+    originalMessages,
+  );
+  assert.equal((await page.getByRole('button', { name: 'Copy', exact: true }).count()) > 0, true);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const theme of ['dark', 'light']) {
+      if ((await page.locator('html').getAttribute('data-theme')) !== theme)
+        await page
+          .getByRole('button', { name: theme === 'dark' ? 'Dark appearance' : 'Light appearance' })
+          .click();
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+        `English workspace ${width} ${theme}`,
+      );
+      await page.screenshot({
+        path: resolve(artifacts, `locale-workspace-${width}-${theme}.png`),
+        fullPage: true,
+      });
+    }
+  }
+  await page.getByRole('tab', { name: 'Tasks', exact: false }).click();
+  await page.getByRole('button', { name: /简化仓库接入与授权提示/ }).click();
+  const untranslatedSpec = page.getByRole('region', { name: '任务说明', exact: true });
+  await untranslatedSpec.getByRole('button', { name: 'Raw', exact: true }).click();
+  assert.equal(await untranslatedSpec.locator('pre').textContent(), longMarkdown);
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByLabel('Language', { exact: true }).selectOption('zh-CN');
+  assert.deepEqual(store.snapshot(), beforeLocaleSwitch);
+  assert.deepEqual(localeWrites, []);
+  page.off('request', recordLocaleWrite);
   assert.deepEqual(errors, []);
   console.log(
-    'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, dark/light, 390px responsive; screenshots in test-results/.',
+    'Browser checks passed: locale inference, switching, persistence, validation, accessibility, unchanged content without writes, bilingual dark/light 390px layouts, project creation, claim switch/drain, task details, search, settings, reload, shared Markdown, streaming, clipboard, safe links/HTML and raw logs; screenshots in test-results/.',
   );
 } finally {
   await page.close();
