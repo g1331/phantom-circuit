@@ -304,7 +304,9 @@ export class GitHub {
     for (let page = 1; page <= PULL_MAX_PAGES; page++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
-        return stop(`已读取 ${budget.pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`);
+        return stop(
+          `已读取 ${budget.pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`,
+        );
       // One page budget covers both listings, so the two together cannot exceed it.
       if (budget.pages >= PULL_MAX_PAGES)
         return stop(
@@ -330,8 +332,7 @@ export class GitHub {
         budget.reason ??= reason;
         return { ...result(), pages, incomplete: reason, failure: error };
       }
-      if (response.truncated)
-        return stop(`第 ${page} 页响应超过进程输出上限被截断，尚未确认末页`);
+      if (response.truncated) return stop(`第 ${page} 页响应超过进程输出上限被截断，尚未确认末页`);
       let items: PullState[];
       try {
         items = parsePullPage(response.stdout);
@@ -342,7 +343,9 @@ export class GitHub {
       for (const pr of items) if (retain(pr)) kept.set(pr.number, pr);
       if (items.length < PULL_PAGE_SIZE) return { ...result(), pages };
     }
-    return stop(`已读取 ${budget.pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`);
+    return stop(
+      `已读取 ${budget.pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`,
+    );
   }
   async feedback(task: Task): Promise<{ key: string; text: string }[]> {
     if (!task.pr) return [];
@@ -641,7 +644,8 @@ export class GitHub {
         pr.base?.ref === repo.defaultBranch &&
         (pr.state === 'open' || isMerged(pr)),
     );
-    if (adoptable.length === 1 && prs.length === 1) return { related: prs, adoptable: adoptable[0] };
+    if (adoptable.length === 1 && prs.length === 1)
+      return { related: prs, adoptable: adoptable[0] };
     return {
       related: prs,
       review: this.reviewReason(prs, repo.github, task, marker, repo.defaultBranch),
