@@ -1,13 +1,17 @@
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useState } from 'react';
+import { useLocale } from './locale/provider.tsx';
 
 const components: Components = {
-  table: ({ children }) => (
-    <div className="markdown-table" role="region" aria-label="表格，可横向滚动" tabIndex={0}>
-      <table>{children}</table>
-    </div>
-  ),
+  table: function Table({ children }) {
+    const { t } = useLocale();
+    return (
+      <div className="markdown-table" role="region" aria-label={t('markdown.table')} tabIndex={0}>
+        <table>{children}</table>
+      </div>
+    );
+  },
   a: ({ href, children, title }) =>
     href ? (
       <a href={href} title={title} target="_blank" rel="noopener noreferrer">
@@ -18,36 +22,36 @@ const components: Components = {
     ),
 };
 
-export function MarkdownContent({
-  content,
-  label = 'Markdown 内容',
-}: {
-  content: string;
-  label?: string;
-}) {
+export function MarkdownContent({ content, label }: { content: string; label?: string }) {
+  const { t } = useLocale();
   const [raw, setRaw] = useState(false);
-  const [copyResult, setCopyResult] = useState({ content: '', message: '' });
+  const [copyResult, setCopyResult] = useState<{
+    content: string;
+    message?: 'markdown.copied' | 'markdown.copyFailed';
+  }>({ content: '' });
   async function copy() {
     try {
       await navigator.clipboard.writeText(content);
-      setCopyResult({ content, message: '已复制' });
+      setCopyResult({ content, message: 'markdown.copied' });
     } catch {
-      setCopyResult({ content, message: '复制失败，请重试' });
+      setCopyResult({ content, message: 'markdown.copyFailed' });
     }
   }
   return (
-    <section className="markdown-block" aria-label={label}>
-      <div className="markdown-tools" role="group" aria-label="内容显示与复制">
+    <section className="markdown-block" aria-label={label ?? t('markdown.content')}>
+      <div className="markdown-tools" role="group" aria-label={t('markdown.controls')}>
         <button type="button" aria-pressed={!raw} onClick={() => setRaw(false)}>
-          美化
+          {t('markdown.pretty')}
         </button>
         <button type="button" aria-pressed={raw} onClick={() => setRaw(true)}>
-          原始
+          {t('markdown.raw')}
         </button>
         <button type="button" onClick={() => void copy()}>
-          复制
+          {t('markdown.copy')}
         </button>
-        <span role="status">{copyResult.content === content ? copyResult.message : ''}</span>
+        <span role="status">
+          {copyResult.content === content && copyResult.message ? t(copyResult.message) : ''}
+        </span>
       </div>
       {raw ? (
         <pre className="markdown-source">{content}</pre>

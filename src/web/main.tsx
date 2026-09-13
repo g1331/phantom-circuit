@@ -37,29 +37,29 @@ import type {
   Message,
 } from '../shared/types.ts';
 import { stageLabels } from '../shared/types.ts';
-import { api, session } from './api.ts';
+import { api, session, LocalRequestError } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import './style.css';
+import { LocaleProvider, useLocale, LanguageControl } from './locale/provider.tsx';
 
-const time = (value: string) =>
-  new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-const profiles: Record<ProfileName, string> = {
-  backend: '常规后端',
-  frontend: '前端',
-  fullstack: '前后端',
-  complex: '复杂任务',
-  pm: '项目 PM',
-  review: '独立 Review',
-};
+const profileKeys = {
+  backend: 'profile.backend',
+  frontend: 'profile.frontend',
+  fullstack: 'profile.fullstack',
+  complex: 'profile.complex',
+  pm: 'profile.pm',
+  review: 'profile.review',
+} as const;
 const isRunning = (status: string) => status === 'running' || status === 'waiting';
 function App() {
+  const { t, time, number } = useLocale();
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
   const [view, setView] = useState<'chat' | 'tasks' | 'runs'>('chat');
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | null>(null);
   const [repoConfig, setRepoConfig] = useState<Repo>();
   const [taskDetail, setTaskDetail] = useState<string>();
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | Error>('');
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('phantom.theme') ?? 'dark');
@@ -86,14 +86,17 @@ function App() {
         source.onerror = () => setConnected(false);
         source.addEventListener('change', () => {
           if (timer) clearTimeout(timer);
-          timer = setTimeout(() => void reload().catch((e) => setError(String(e))), 180);
+          timer = setTimeout(
+            () => void reload().catch((e) => setError(e instanceof Error ? e : String(e))),
+            180,
+          );
         });
         source.addEventListener('delta', (event) => {
           const d = JSON.parse((event as MessageEvent).data);
           if (d.role === 'pm') setStream((s) => ({ ...s, [d.runId]: (s[d.runId] ?? '') + d.text }));
         });
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(e instanceof Error ? e : String(e)));
     return () => {
       alive = false;
       source?.close();
@@ -119,7 +122,7 @@ function App() {
       await fn();
       await reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e : String(e));
     } finally {
       setBusy(false);
     }
@@ -150,7 +153,7 @@ function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Phantom Circuit 首页">
+        <a className="brand" href="/" aria-label={t('app.home')}>
           <span className="brand-mark">
             <Layers3 size={23} />
           </span>
@@ -159,11 +162,15 @@ function App() {
           </span>
         </a>
         <div className="workspace-label">
-          本地工作空间 <span className="local-dot" />
+          {t('app.localWorkspace')} <span className="local-dot" />
         </div>
         <div className="sidebar-heading">
-          <span>项目</span>
-          <button className="icon-button" aria-label="新建项目" onClick={() => setModal('project')}>
+          <span>{t('app.projects')}</span>
+          <button
+            className="icon-button"
+            aria-label={t('app.newProject')}
+            onClick={() => setModal('project')}
+          >
             <Plus size={16} />
           </button>
         </div>
@@ -188,30 +195,32 @@ function App() {
         </nav>
         {!state?.projects.length && (
           <p className="sidebar-hint">
-            添加你的第一个项目
-            <br />让 PM 接手工程工作。
+            {t('app.firstProject')}
+            <br />
+            {t('app.firstProjectHint')}
           </p>
         )}
         <div className="sidebar-bottom">
+          <LanguageControl />
           <button
             className="sidebar-action"
-            aria-label="运行设置"
+            aria-label={t('settings.title')}
             onClick={() => setModal('settings')}
           >
             <Settings2 size={17} />
-            <span>运行设置</span>
+            <span>{t('settings.title')}</span>
           </button>
           <button
             className="sidebar-action"
-            aria-label={theme === 'dark' ? '浅色外观' : '深色外观'}
+            aria-label={theme === 'dark' ? t('controls.light') : t('controls.dark')}
             onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           >
             {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
-            <span>{theme === 'dark' ? '浅色外观' : '深色外观'}</span>
+            <span>{theme === 'dark' ? t('controls.light') : t('controls.dark')}</span>
           </button>
           <div className="connection">
             <span className={`status-dot ${connected ? 'live' : ''}`} />
-            <span>{connected ? '本地服务已连接' : '正在连接本地服务'}</span>
+            <span>{connected ? t('connection.ready') : t('connection.waiting')}</span>
             <span className="version">v0.1</span>
           </div>
         </div>
@@ -219,12 +228,12 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div className="breadcrumb">
-            工作空间 <span>/</span>
-            <strong>{project?.name ?? '开始使用'}</strong>
+            {t('app.workspace')} <span>/</span>
+            <strong>{project?.name ?? t('app.start')}</strong>
           </div>
           <div className="topbar-actions">
             <span className="local-badge">
-              <ShieldCheck size={13} /> 本机运行
+              <ShieldCheck size={13} /> {t('app.local')}
             </span>
             {project?.githubProjectUrl && (
               <a
@@ -240,8 +249,20 @@ function App() {
         </header>
         {error && (
           <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button className="icon-button" aria-label="关闭错误" onClick={() => setError('')}>
+            <span>
+              {error instanceof LocalRequestError
+                ? error.kind === 'connection'
+                  ? t('connection.failed')
+                  : t('request.failed', { status: error.status })
+                : error instanceof Error
+                  ? error.message
+                  : error}
+            </span>
+            <button
+              className="icon-button"
+              aria-label={t('common.dismissError')}
+              onClick={() => setError('')}
+            >
               <X size={16} />
             </button>
           </div>
@@ -249,37 +270,37 @@ function App() {
         {!state ? (
           <div className="loading">
             <span className="spinner" />
-            正在连接工作空间…
+            {t('connection.loading')}
           </div>
         ) : !project ? (
           <div className="onboarding">
             <div className="eyebrow">
               <Radio size={16} /> PHANTOM CIRCUIT
             </div>
-            <h1>从一个项目开始。</h1>
+            <h1>{t('onboarding.title')}</h1>
             <p>
-              告诉 PM 你想做什么。
+              {t('onboarding.intro')}
               <br />
-              准备好后开启仓库，让开发、评审和交付持续运行。
+              {t('onboarding.description')}
             </p>
             <button className="primary-button" onClick={() => setModal('project')}>
-              <Plus size={17} /> 创建项目
+              <Plus size={17} /> {t('project.create')}
             </button>
             <div className="onboarding-flow">
               <div>
                 <span>01</span>
-                <strong>讨论需求</strong>
-                <small>与项目 PM 对齐目标</small>
+                <strong>{t('onboarding.discuss')}</strong>
+                <small>{t('onboarding.align')}</small>
               </div>
               <div>
                 <span>02</span>
-                <strong>打开开工开关</strong>
-                <small>按你的节奏并行开发</small>
+                <strong>{t('onboarding.switch')}</strong>
+                <small>{t('onboarding.pace')}</small>
               </div>
               <div>
                 <span>03</span>
-                <strong>体验并反馈</strong>
-                <small>AI 负责工程交付闭环</small>
+                <strong>{t('onboarding.feedback')}</strong>
+                <small>{t('onboarding.delivery')}</small>
               </div>
             </div>
           </div>
@@ -289,31 +310,40 @@ function App() {
               <div>
                 <div className="eyebrow">PROJECT WORKSPACE</div>
                 <h1>{project.name}</h1>
-                <p>{project.description || '讨论需求，开启开发，体验结果。'}</p>
+                <p>{project.description || t('project.description')}</p>
               </div>
               <button className="secondary-button" onClick={() => setModal('repo')}>
-                <Plus size={16} /> 接入仓库
+                <Plus size={16} /> {t('repo.connect')}
               </button>
             </section>
-            <section className="metrics" aria-label="项目运行概况">
+            <section className="metrics" aria-label={t('project.overview')}>
               <Metric
                 value={active.filter((r) => r.role === 'dev').length}
-                label="正在开发"
+                label={t('metric.dev')}
                 suffix={`/ ${project.devLimit}`}
                 live
               />
-              <Metric value={active.filter((r) => r.role === 'review').length} label="独立评审" />
-              <Metric value={tasks.filter((t) => t.stage === 'ready').length} label="等待认领" />
-              <Metric value={tasks.filter((t) => t.stage === 'done').length} label="工程完成" />
+              <Metric
+                value={active.filter((r) => r.role === 'review').length}
+                label={t('metric.review')}
+              />
+              <Metric
+                value={tasks.filter((t) => t.stage === 'ready').length}
+                label={t('metric.ready')}
+              />
+              <Metric
+                value={tasks.filter((t) => t.stage === 'done').length}
+                label={t('metric.done')}
+              />
             </section>
             <div className="workspace-grid">
               <section className="primary-workspace">
-                <div className="tabs" role="tablist" aria-label="项目视图">
+                <div className="tabs" role="tablist" aria-label={t('project.views')}>
                   {(
                     [
-                      { key: 'chat', label: '与 PM 讨论', icon: MessageSquare },
-                      { key: 'tasks', label: '任务', icon: Layers3 },
-                      { key: 'runs', label: '运行记录', icon: Activity },
+                      { key: 'chat', label: t('tabs.chat'), icon: MessageSquare },
+                      { key: 'tasks', label: t('tabs.tasks'), icon: Layers3 },
+                      { key: 'runs', label: t('tabs.runs'), icon: Activity },
                     ] as const
                   ).map((t) => (
                     <button
@@ -325,7 +355,9 @@ function App() {
                     >
                       <t.icon size={15} />
                       {t.label}
-                      {t.key === 'tasks' && <span className="tab-count">{tasks.length}</span>}
+                      {t.key === 'tasks' && (
+                        <span className="tab-count">{number(tasks.length)}</span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -337,22 +369,18 @@ function App() {
                           <div className="pm-avatar">
                             <Layers3 size={22} />
                           </div>
-                          <h2>我们先聊聊你的想法。</h2>
+                          <h2>{t('chat.emptyTitle')}</h2>
                           <p>
-                            描述要解决的问题，或者你希望获得的体验。
+                            {t('chat.emptyDescription')}
                             <br />
-                            仓库不开工时，我们可以专心讨论。
+                            {t('chat.emptyHint')}
                           </p>
                           <div className="suggestions">
-                            <button
-                              onClick={() => setDraft('我想先和你梳理这个项目的需求和使用场景。')}
-                            >
-                              梳理项目需求 <ArrowUpRight size={13} />
+                            <button onClick={() => setDraft(t('chat.requirementsDraft'))}>
+                              {t('chat.requirements')} <ArrowUpRight size={13} />
                             </button>
-                            <button
-                              onClick={() => setDraft('请先了解已接入的仓库，告诉我现在能做什么。')}
-                            >
-                              了解现有项目 <ArrowUpRight size={13} />
+                            <button onClick={() => setDraft(t('chat.exploreDraft'))}>
+                              {t('chat.explore')} <ArrowUpRight size={13} />
                             </button>
                           </div>
                         </div>
@@ -366,24 +394,26 @@ function App() {
                               {m.role === 'assistant' ? (
                                 <Layers3 size={13} />
                               ) : m.role === 'user' ? (
-                                '你'
+                                t('chat.you')
                               ) : (
                                 '!'
                               )}
                             </span>
                             <strong>
                               {m.role === 'assistant'
-                                ? '项目 PM'
+                                ? t('profile.pm')
                                 : m.role === 'user'
-                                  ? '你'
-                                  : '运行提示'}
+                                  ? t('chat.you')
+                                  : t('chat.notice')}
                             </strong>
                             {m.intent && (
                               <span className="message-intent">
                                 {
-                                  { discuss: '讨论', implement: '实施需求', feedback: '体验反馈' }[
-                                    m.intent
-                                  ]
+                                  {
+                                    discuss: t('chat.discuss'),
+                                    implement: t('chat.implement'),
+                                    feedback: t('chat.feedback'),
+                                  }[m.intent]
                                 }
                               </span>
                             )}
@@ -402,7 +432,7 @@ function App() {
                               disabled={busy || pmBusy}
                               onClick={() => void act(() => api(`/messages/${m.id}/retry`, {}))}
                             >
-                              重新发送
+                              {t('common.retry')}
                             </button>
                           )}
                         </article>
@@ -415,9 +445,10 @@ function App() {
                               <span className="mini-avatar">
                                 <Layers3 size={13} />
                               </span>
-                              <strong>项目 PM</strong>
+                              <strong>{t('profile.pm')}</strong>
                               <span className="thinking">
-                                处理中<span>…</span>
+                                {t('chat.thinking')}
+                                <span>…</span>
                               </span>
                             </div>
                             {stream[r.id] ? (
@@ -425,7 +456,7 @@ function App() {
                                 <MarkdownContent content={stream[r.id]} />
                               </div>
                             ) : (
-                              <div className="message-content">正在阅读上下文并整理回应…</div>
+                              <div className="message-content">{t('chat.reading')}</div>
                             )}
                           </article>
                         ))}
@@ -439,21 +470,23 @@ function App() {
                             onClick={() => setIntent(i)}
                           >
                             {
-                              { discuss: '聊一聊', implement: '交给 PM 做', feedback: '体验反馈' }[
-                                i
-                              ]
+                              {
+                                discuss: t('chat.talk'),
+                                implement: t('chat.delegate'),
+                                feedback: t('chat.feedback'),
+                              }[i]
                             }
                           </button>
                         ))}
                       </div>
                       <textarea
-                        aria-label="给 PM 的消息"
+                        aria-label={t('chat.message')}
                         placeholder={
                           intent === 'discuss'
-                            ? '有什么想法？先聊清楚，再决定开工。'
+                            ? t('chat.discussPlaceholder')
                             : intent === 'implement'
-                              ? '描述你明确希望完成的需求…'
-                              : '告诉 PM 你的使用感受，哪里需要改进…'
+                              ? t('chat.implementPlaceholder')
+                              : t('chat.feedbackPlaceholder')
                         }
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
@@ -466,16 +499,14 @@ function App() {
                       />
                       <div className="composer-footer">
                         <span>
-                          {intent === 'discuss'
-                            ? '讨论不会自动派发开发任务'
-                            : 'PM 会整理任务；仓库开工后自动认领'}
-                          <small>Ctrl ↵ 发送</small>
+                          {intent === 'discuss' ? t('chat.discussNote') : t('chat.implementNote')}
+                          <small>{t('chat.shortcut')}</small>
                         </span>
                         <button
                           className="send-button"
                           disabled={!draft.trim() || busy}
                           onClick={() => void send()}
-                          aria-label="发送消息"
+                          aria-label={t('common.send')}
                         >
                           <Send size={17} />
                         </button>
@@ -486,48 +517,49 @@ function App() {
                   <div className="task-workspace">
                     <div className="list-toolbar">
                       <input
-                        aria-label="搜索任务"
-                        placeholder="搜索任务…"
+                        aria-label={t('tasks.search')}
+                        placeholder={t('tasks.searchPlaceholder')}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                       />
                       <select
-                        aria-label="任务状态筛选"
+                        aria-label={t('tasks.filter')}
                         value={filter}
                         onChange={(e) => setFilter(e.target.value)}
                       >
-                        <option value="all">全部状态</option>
-                        <option value="active">未完成</option>
-                        <option value="ready">待认领</option>
-                        <option value="done">工程完成</option>
+                        <option value="all">{t('tasks.all')}</option>
+                        <option value="active">{t('tasks.active')}</option>
+                        <option value="ready">{t('tasks.ready')}</option>
+                        <option value="done">{t('metric.done')}</option>
                       </select>
                     </div>
                     {shown.length ? (
                       <div className="task-list">
-                        {shown.map((t) => (
+                        {shown.map((task) => (
                           <button
                             className="task-row"
-                            key={t.id}
-                            onClick={() => setTaskDetail(t.id)}
+                            key={task.id}
+                            onClick={() => setTaskDetail(task.id)}
                           >
-                            <span className={`task-icon ${t.stage}`}>
-                              {t.stage === 'done' ? (
+                            <span className={`task-icon ${task.stage}`}>
+                              {task.stage === 'done' ? (
                                 <Check size={17} />
-                              ) : t.blocked ? (
+                              ) : task.blocked ? (
                                 <Pause size={17} />
                               ) : (
                                 <Circle size={16} />
                               )}
                             </span>
                             <div className="task-row-main">
-                              <strong>{t.title}</strong>
+                              <strong>{task.title}</strong>
                               <span>
-                                {repos.find((r) => r.id === t.repoId)?.name} <i>·</i>{' '}
-                                {profiles[t.profile]} {t.blocked && <em>· {t.blocked}</em>}
+                                {repos.find((r) => r.id === task.repoId)?.name} <i>·</i>{' '}
+                                {t(profileKeys[task.profile])}{' '}
+                                {task.blocked && <em>· {task.blocked}</em>}
                               </span>
                             </div>
-                            <span className={`stage ${t.stage}`}>
-                              {t.control === 'paused' ? '已暂停' : stageLabels[t.stage]}
+                            <span className={`stage ${task.stage}`}>
+                              {task.control === 'paused' ? '已暂停' : stageLabels[task.stage]}
                             </span>
                             <ArrowUpRight size={14} />
                           </button>
@@ -536,8 +568,8 @@ function App() {
                     ) : (
                       <Empty
                         icon={<Layers3 size={26} />}
-                        title="还没有匹配的任务"
-                        text="向 PM 提出明确需求，任务和依赖会在这里出现。"
+                        title={t('tasks.emptyTitle')}
+                        text={t('tasks.emptyDescription')}
                       />
                     )}
                   </div>
@@ -584,8 +616,8 @@ function App() {
                     ) : (
                       <Empty
                         icon={<Activity size={26} />}
-                        title="运行记录将保留在这里"
-                        text="PM、Dev 和 Review 的每次执行都可以追踪。"
+                        title={t('runs.emptyTitle')}
+                        text={t('runs.emptyDescription')}
                       />
                     )}
                   </div>
@@ -593,19 +625,19 @@ function App() {
               </section>
               <aside className="context-panel">
                 <div className="panel-heading">
-                  <h2>仓库控制</h2>
-                  <span>{repos.length} 个仓库</span>
+                  <h2>{t('repos.controls')}</h2>
+                  <span>{t('repos.count', { count: repos.length })}</span>
                 </div>
                 {!repos.length ? (
                   <div className="repo-empty">
                     <FolderGit2 size={25} />
                     <p>
-                      接入 GitHub 仓库后，
+                      {t('repos.emptyIntro')}
                       <br />
-                      就可以控制开发节奏。
+                      {t('repos.emptyHint')}
                     </p>
                     <button className="text-button" onClick={() => setModal('repo')}>
-                      接入第一个仓库 <Plus size={14} />
+                      {t('repos.first')} <Plus size={14} />
                     </button>
                   </div>
                 ) : (
@@ -749,11 +781,11 @@ function App() {
                   </span>
                 </div>
                 <div className="activity-heading">
-                  <h2>最近动态</h2>
+                  <h2>{t('activity.recent')}</h2>
                   <button
                     className="icon-button"
-                    title="同步 GitHub"
-                    aria-label="同步 GitHub"
+                    title={t('activity.sync')}
+                    aria-label={t('activity.sync')}
                     disabled={busy}
                     onClick={() => void act(() => api('/sync', {}))}
                   >
@@ -774,7 +806,7 @@ function App() {
                       </div>
                     ))}
                   {!state.events.some((e) => e.projectId === project.id) && (
-                    <p className="muted">项目动态会显示在这里。</p>
+                    <p className="muted">{t('activity.empty')}</p>
                   )}
                 </div>
               </aside>
@@ -798,8 +830,8 @@ function App() {
       </main>
       {modal === 'project' && (
         <Modal
-          title="创建项目"
-          subtitle="一个项目，一个负责交付的 PM。"
+          title={t('project.create')}
+          subtitle={t('project.subtitle')}
           onClose={() => setModal(null)}
         >
           <ProjectForm
@@ -816,7 +848,7 @@ function App() {
       )}
       {modal === 'repo' && project && (
         <Modal
-          title="接入仓库"
+          title={t('repo.connect')}
           subtitle="关联已有本地 checkout 与 GitHub 仓库。接入后默认不开工。"
           onClose={() => setModal(null)}
         >
@@ -833,8 +865,8 @@ function App() {
       )}
       {modal === 'settings' && state && (
         <Modal
-          title="运行设置"
-          subtitle="控制资源与默认执行档位。修改只影响后续运行。"
+          title={t('settings.title')}
+          subtitle={t('settings.subtitle')}
           wide
           onClose={() => setModal(null)}
         >
@@ -1014,10 +1046,11 @@ function Metric({
   suffix?: string;
   live?: boolean;
 }) {
+  const { number } = useLocale();
   return (
     <div className="metric">
       <div className="metric-value">
-        {value}
+        {number(value)}
         <span>{suffix}</span>
         {live && value > 0 && <span className="pulse-dot" />}
       </div>
@@ -1047,6 +1080,7 @@ function Modal({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  const { t } = useLocale();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
@@ -1056,6 +1090,7 @@ function Modal({
   return (
     <dialog
       ref={ref}
+      aria-label={title}
       className={`modal ${wide ? 'wide' : ''}`}
       onCancel={onClose}
       onClick={(e) => {
@@ -1067,8 +1102,9 @@ function Modal({
           <div>
             <h2>{title}</h2>
             <p>{subtitle}</p>
+            <LanguageControl />
           </div>
-          <button className="icon-button" aria-label="关闭窗口" onClick={onClose}>
+          <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
             <X size={19} />
           </button>
         </header>
@@ -1084,25 +1120,62 @@ function ProjectForm({
   submit: (b: { name: string; description: string }) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
+  const [validation, setValidation] = useState<
+    'project.required' | 'project.nameLength' | 'project.goalLength'
+  >();
   return (
     <form
       className="form"
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
-        void submit({ name: String(f.get('name')), description: String(f.get('description')) });
+        const name = String(f.get('name'));
+        const description = String(f.get('description'));
+        const issue = !name.trim()
+          ? 'project.required'
+          : name.trim().length > 100
+            ? 'project.nameLength'
+            : description.length > 3000
+              ? 'project.goalLength'
+              : undefined;
+        setValidation(issue);
+        if (issue) return;
+        void submit({ name, description });
       }}
     >
       <label>
-        项目名称
-        <input name="name" placeholder="例如：我的产品" required maxLength={100} autoFocus />
+        {t('project.name')}
+        <input
+          name="name"
+          placeholder={t('project.namePlaceholder')}
+          required
+          maxLength={100}
+          autoFocus
+          aria-invalid={validation === 'project.required' || validation === 'project.nameLength'}
+          aria-describedby={
+            validation && validation !== 'project.goalLength' ? 'project-validation' : undefined
+          }
+        />
       </label>
       <label>
-        项目目标
-        <textarea name="description" placeholder="这个项目希望解决什么问题？" maxLength={3000} />
+        {t('project.goal')}
+        <textarea
+          name="description"
+          placeholder={t('project.goalPlaceholder')}
+          maxLength={3000}
+          aria-invalid={validation === 'project.goalLength'}
+          aria-describedby={validation === 'project.goalLength' ? 'project-validation' : undefined}
+        />
       </label>
+      {validation && (
+        <p id="project-validation" role="alert">
+          {t(validation)}
+        </p>
+      )}
       <button className="primary-button" disabled={busy}>
-        创建项目 <ArrowUpRight size={16} />
+        {t('project.create')} <ArrowUpRight size={16} />
       </button>
     </form>
   );
@@ -1114,6 +1187,7 @@ function RepoForm({
   submit: (b: { path: string; github: string; authorized: boolean }) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
   return (
     <form
       className="form"
@@ -1152,7 +1226,7 @@ function RepoForm({
         使用本机已登录的 GitHub 身份。系统会核对本地 origin；原 checkout 中的修改会保留。
       </p>
       <button className="primary-button" disabled={busy}>
-        {busy ? '正在核对仓库…' : '接入仓库'} <ArrowUpRight size={16} />
+        {busy ? '正在核对仓库…' : t('repo.connect')} <ArrowUpRight size={16} />
       </button>
     </form>
   );
@@ -1166,6 +1240,7 @@ function CommandsForm({
   submit: (b: unknown) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
   return (
     <form
       className="form"
@@ -1222,7 +1297,7 @@ function CommandsForm({
         <span>授权本地开发验证与 GitHub 工程交付操作（不含生产部署）</span>
       </label>
       <button className="primary-button" disabled={busy}>
-        保存配置
+        {t('common.saveConfig')}
       </button>
     </form>
   );
@@ -1236,6 +1311,7 @@ function SettingsForm({
   submit: (s: Settings) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
   const [settings, setSettings] = useState(structuredClone(initial));
   const [health, setHealth] = useState<any>();
   const [checking, setChecking] = useState(false);
@@ -1249,7 +1325,7 @@ function SettingsForm({
     >
       <div className="form-columns">
         <label>
-          全局 Dev 上限
+          {t('settings.devLimit')}
           <input
             type="number"
             min={1}
@@ -1260,7 +1336,7 @@ function SettingsForm({
           />
         </label>
         <label>
-          Review 会话上限
+          {t('settings.reviewLimit')}
           <input
             type="number"
             min={1}
@@ -1271,14 +1347,14 @@ function SettingsForm({
           />
         </label>
       </div>
-      <h3>模型分配</h3>
+      <h3>{t('settings.models')}</h3>
       <div className="profile-table">
-        {(Object.keys(profiles) as ProfileName[]).map((key) => (
+        {(Object.keys(profileKeys) as ProfileName[]).map((key) => (
           <div className="profile-row" key={key}>
-            <label htmlFor={`model-${key}`}>{profiles[key]}</label>
+            <label htmlFor={`model-${key}`}>{t(profileKeys[key])}</label>
             <input
               id={`model-${key}`}
-              aria-label={`${profiles[key]}模型`}
+              aria-label={t('settings.modelLabel', { profile: t(profileKeys[key]) })}
               required
               value={settings.profiles[key].model}
               onChange={(e) =>
@@ -1292,7 +1368,7 @@ function SettingsForm({
               }
             />
             <select
-              aria-label={`${profiles[key]}推理等级`}
+              aria-label={t('settings.effortLabel', { profile: t(profileKeys[key]) })}
               value={settings.profiles[key].effort}
               onChange={(e) =>
                 setSettings({
@@ -1325,13 +1401,13 @@ function SettingsForm({
           }}
         >
           <Radio size={15} />
-          {checking ? '正在检查…' : '检查 Codex 与 GitHub'}
+          {checking ? t('settings.checking') : t('settings.check')}
         </button>
         {health && (
           <div className="health-result">
             {health.error ?? (
               <>
-                <p>{health.codex.ok ? '✓ Codex 已连接' : '! ' + health.codex.error}</p>
+                <p>{health.codex.ok ? t('settings.connected') : '! ' + health.codex.error}</p>
                 <p>
                   {health.github.ok
                     ? `✓ GitHub · ${health.github.login}`
@@ -1339,7 +1415,7 @@ function SettingsForm({
                 </p>
                 {health.codex.models && (
                   <details>
-                    <summary>可用模型</summary>
+                    <summary>{t('settings.available')}</summary>
                     {health.codex.models.map((m: any) => (
                       <p key={m.id}>
                         {m.model} ·{' '}
@@ -1354,13 +1430,15 @@ function SettingsForm({
         )}
       </div>
       <button className="primary-button" disabled={busy}>
-        保存设置
+        {t('settings.save')}
       </button>
     </form>
   );
 }
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>
   </React.StrictMode>,
 );

@@ -1740,6 +1740,52 @@ time {
     padding: 20px 18px;
   }
 }
+.language-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 12px;
+}
+.language-control select {
+  width: auto;
+  max-width: 100%;
+}
+.sidebar-action,
+.connection,
+.metric-label,
+.tabs > button {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.sidebar-action > svg,
+.connection .status-dot {
+  flex-shrink: 0;
+}
+.tabs > button {
+  min-width: 0;
+  overflow-wrap: normal;
+}
+.tabs > button:not(:first-child) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.tabs > button > svg {
+  flex-shrink: 0;
+}
+@media (max-width: 850px) {
+  .sidebar .language-control {
+    flex-direction: column;
+    font-size: 10px;
+    gap: 4px;
+  }
+  .sidebar .language-control select {
+    width: 100%;
+    font-size: 10px;
+    padding: 6px 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *:before,
