@@ -967,10 +967,11 @@ export class Engine {
       // controlled retry; a failed, ambiguous or already-satisfied read never repeats the write.
       const reconciliation = await this.github.authorizeTaskPRRetry(t, guidance ? 'pm' : 'user');
       if (reconciliation.action === 'authorize')
-        this.store.event('task', '远端 Task PR 两条列举均无相关候选，确认一次受控发布重试', {
-          projectId: t.projectId,
-          taskId: t.id,
-        });
+        this.store.event(
+          'task',
+          '远端 Task PR 两条列举均无相关候选，本次恢复持有一笔一次性受控发布重试授权',
+          { projectId: t.projectId, taskId: t.id },
+        );
       else if (reconciliation.action === 'adopt')
         this.store.event(
           'task',

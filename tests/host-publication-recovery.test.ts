@@ -121,8 +121,8 @@ async function fixture() {
       marks = { starts, turns };
     },
     /** Model the accepted-request-with-lost-response variant of the same unknown outcome. */
-    loseResponse: () => {
-      github.loseWriteResponse = true;
+    loseResponse: (value = true) => {
+      github.loseWriteResponse = value;
     },
     failWrite: (value: boolean) => {
       github.failWrite = value ? new Error('gh (1): gh: Server Error (HTTP 502)') : undefined;
@@ -379,6 +379,42 @@ test('an incomplete read at resume keeps the outstanding authorization for a lat
     assert.equal(result.head, failed.head);
     assert.equal(f.starts(), 0);
     assert.equal(f.turns(), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('a creation whose response was lost is adopted at resume, never created twice', async () => {
+  const f = await fixture();
+  try {
+    // The remote accepted the creation; only the response was lost. This is the other half of
+    // the real incident, and the variant that must never produce a second PR.
+    f.loseResponse();
+    const lost = await f.cycle();
+    f.loseResponse(false);
+    assert.equal(lost.control, 'paused');
+    assert.match(lost.blocked!, /unexpected end of JSON input/);
+    assert.equal(f.operation()!.status, 'uncertain');
+    assert.equal(f.operation()!.result, undefined, 'the host never learned the result');
+    assert.equal(f.github.posted.length, 1);
+    assert.equal(f.github.writes, 1, 'the remote really did accept it');
+    assert.equal(lost.head, await f.ws.git(f.task().worktree!, ['rev-parse', 'HEAD']));
+    // Recovery must add no Dev work of its own; compare against the state after that first run.
+    f.mark();
+
+    // The visible PR is adopted on the next explicit resume, with no authorization and no write.
+    await f.engine.resume(f.task().id);
+    assert.equal(f.operation()!.reconciliation, undefined, 'a visible PR needs no authorization');
+    const result = await f.cycle();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+    assert.equal(result.pr, 41);
+    assert.equal(result.blocked, undefined);
+    assert.equal(f.github.posted.length, 1, 'the lost-response PR is adopted, not recreated');
+    assert.equal(f.github.writes, 1, 'and no second PR ever reached the remote');
+    assert.equal(result.retries, 0);
+    assert.equal(f.starts(), 0, 'adoption needs no Dev session');
+    assert.equal(f.turns(), 0);
+    assert.equal(await f.ws.git(f.task().worktree!, ['status', '--porcelain']), '');
   } finally {
     await f.close();
   }

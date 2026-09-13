@@ -58,6 +58,10 @@ export function pullFixture(input: {
 }
 
 export class FakeGitHub extends GitHub {
+  /** Kept separately because the adapter's own store reference is private to it. */
+  constructor(private readonly fakeStore: Store) {
+    super(fakeStore);
+  }
   /** PRs the fake remote holds; tests mutate this to model the real remote changing. */
   pulls: FakePull[] = [];
   /** Creation attempts the adapter POSTed, whether or not the remote accepted them. */
@@ -121,6 +125,10 @@ export class FakeGitHub extends GitHub {
     this.posted.push(body);
     if (this.failWrite) throw this.failWrite;
     this.writes++;
+    // The remote records the revision the branch was pushed at, so the created PR's head is the
+    // owning task's pinned head - exactly what GitHub would report back.
+    const headSha =
+      this.fakeStore.list('task').find((t) => t.branch === body.head)?.head ?? 'other';
     const pull = pullFixture({
       number: 41,
       slug: 'example/repo',
@@ -128,7 +136,7 @@ export class FakeGitHub extends GitHub {
       baseRef: body.base,
       body: body.body,
       headRef: body.head,
-      headSha: body.head === 'phantom/task' ? 'head' : 'other',
+      headSha,
       baseSha: 'base',
     });
     this.pulls.push(pull);

@@ -580,10 +580,10 @@ export class GitHub {
    * adopted on its own, because a later page may hold a second related candidate. Any failure,
    * truncation or bound leaves the scan incomplete, which raises rather than reading as absence.
    *
-   * A PR is adoptable only when its marker, head repository, head branch, base repository and
-   * base branch all agree with this task and it is open or already merged. Anything else is a
-   * related candidate that needs a human decision: it is never treated as absent (which would
-   * authorize a duplicate) and its body is never rewritten.
+   * A PR is adoptable only when its marker, head repository, head branch, the task's pinned head
+   * revision, base repository and base branch all agree with this task and it is open or already
+   * merged. Anything else is a related candidate that needs a human decision: it is never treated
+   * as absent (which would authorize a duplicate) and its body is never rewritten.
    */
   private async pullCandidates(task: Task): Promise<PullCandidates> {
     const repo = this.store.repo(task.repoId);
@@ -661,14 +661,16 @@ export class GitHub {
       return `PR #${pr.number} 的源仓库为 ${pr.head?.repo?.full_name ?? '未知'}，不是 ${slug}`;
     if (pr.head?.ref !== task.branch)
       return `PR #${pr.number} 的源分支为 ${pr.head?.ref ?? '未知'}，与任务分支 ${task.branch} 不一致`;
-    if (pr.head?.sha !== task.head)
-      return `PR #${pr.number} 的 revision 为 ${pr.head?.sha ?? '未知'}，与任务当前固定 revision ${task.head ?? '未知'} 不一致`;
     if (!pr.body?.includes(marker))
       return `PR #${pr.number} 位于任务分支但缺少任务标记，正文可能已被人工修改；既不能确认为本任务的发布，也不会被覆盖`;
     if (pr.base?.repo?.full_name !== slug)
       return `PR #${pr.number} 的目标仓库为 ${pr.base?.repo?.full_name ?? '未知'}，不是 ${slug}`;
     if (pr.base?.ref !== defaultBranch)
       return `PR #${pr.number} 的目标分支为 ${pr.base?.ref ?? '未知'}，与默认分支 ${defaultBranch} 不一致`;
+    // Checked last, because it is the least human-actionable reason: a PR whose body or target
+    // was changed needs a person's decision, while a revision mismatch is usually just stale.
+    if (pr.head?.sha !== task.head)
+      return `PR #${pr.number} 的 revision 为 ${pr.head?.sha ?? '未知'}，与任务当前固定 revision ${task.head ?? '未知'} 不一致`;
     if (pr.state === 'closed' && !isMerged(pr)) return `PR #${pr.number} 已关闭但未合并`;
     return `PR #${pr.number} 无法自动核对（state=${pr.state}, merged=${isMerged(pr)}）`;
   }
