@@ -19,6 +19,15 @@ export class IssueBodyConflict extends Fault {
   }
 }
 export class GitHubRejected extends Fault {}
+export function isTransientGitHubError(error: unknown): boolean {
+  const message = String(error);
+  return (
+    /gh \(\d+\):/.test(message) &&
+    /HTTP 50[234]\b|Something went wrong while executing your query|unexpected end of JSON input/i.test(
+      message,
+    )
+  );
+}
 export class GitHub {
   private operations = new Map<string, Promise<unknown>>();
   constructor(private store: Store) {}
@@ -35,7 +44,11 @@ export class GitHub {
         /\(HTTP (400|401|403|404|405|409|410|422|429)\)/.test(error.message)
       )
         throw new GitHubRejected(error.message, 502);
-      throw error;
+      const operation =
+        endpoint === 'graphql'
+          ? `GraphQL ${/^\s*mutation\b/.test((body as { query?: string })?.query ?? '') ? 'mutation' : 'query'}`
+          : `${method} ${endpoint}`;
+      throw new Error(`GitHub ${operation}: ${redact(String(error))}`, { cause: error });
     });
     return r.stdout.trim() ? JSON.parse(r.stdout) : (undefined as T);
   }

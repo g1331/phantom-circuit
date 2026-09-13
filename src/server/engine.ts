@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { Store, Fault, now, redact } from './store.ts';
 import { Codex, type ToolSpec } from './codex.ts';
-import { GitHub, IssueBodyConflict } from './github.ts';
+import { GitHub, IssueBodyConflict, isTransientGitHubError } from './github.ts';
 import { Workspaces } from './workspaces.ts';
 import { instructions, domainContext, taskPrompt } from './prompts.ts';
 import {
@@ -67,6 +67,8 @@ export class Engine {
   private ticking = false;
   private stopping = false;
   private syncAt = 0;
+  private syncRetryAt = 0;
+  private syncFailures = 0;
   private pmQueues = new Map<string, Promise<unknown>>();
   private mergeBusy = new Set<string>();
   private jobs = new Set<Promise<unknown>>();
@@ -802,10 +804,12 @@ export class Engine {
     });
   }
   private async syncCompletedIssue(task: Task): Promise<boolean> {
+    if (Date.now() < this.syncRetryAt) return false;
     try {
       await this.github.completeIssue(task);
       return true;
     } catch (e) {
+      if (this.deferSync(task, e)) return false;
       this.store.updateTask(task.id, { blocked: redact(String(e)) });
       this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
       if (e instanceof IssueBodyConflict && task.stage !== 'done') {
@@ -817,6 +821,18 @@ export class Engine {
       }
       return false;
     }
+  }
+  private deferSync(task: Task, error: unknown): boolean {
+    if (!isTransientGitHubError(error)) return false;
+    if (Date.now() < this.syncRetryAt) return true;
+    const seconds = Math.min(300, 60 * 2 ** Math.min(this.syncFailures++, 3));
+    this.syncRetryAt = Date.now() + seconds * 1000;
+    this.store.event(
+      'sync',
+      `GitHub 同步暂时不可用；${task.issue ? `#${task.issue} ` : ''}${task.title}：${redact(String(error))}\n${seconds} 秒后重试同步，任务状态与验收证据保留。`,
+      { taskId: task.id, projectId: task.projectId },
+    );
+    return true;
   }
   private historicalMergeAccepted(task: Task): boolean {
     if (task.mergeApproval)
@@ -842,7 +858,9 @@ export class Engine {
     );
   }
   async sync() {
+    if (Date.now() < this.syncRetryAt) return;
     for (const task of this.store.list('task')) {
+      if (Date.now() < this.syncRetryAt) return;
       if (!this.store.repo(task.repoId).authorized || task.stage === 'cancelled') continue;
       try {
         if (task.stage === 'done') {
@@ -897,10 +915,15 @@ export class Engine {
         }
         await this.github.syncStatus(this.store.task(task.id));
       } catch (e) {
+        if (this.deferSync(task, e)) return;
         if (task.stage === 'done') this.store.updateTask(task.id, { blocked: redact(String(e)) });
         this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
       }
     }
+    if (Date.now() < this.syncRetryAt) return;
+    if (this.syncFailures) this.store.event('sync', 'GitHub 同步已恢复，继续正常同步周期。');
+    this.syncFailures = 0;
+    this.syncRetryAt = 0;
   }
   private async collectFeedback(task: Task) {
     const feedback = await this.github.feedback(task);
