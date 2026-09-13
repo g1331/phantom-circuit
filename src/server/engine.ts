@@ -6,7 +6,14 @@ import { Codex, type ToolSpec } from './codex.ts';
 import { GitHub, IssueBodyConflict } from './github.ts';
 import { Workspaces } from './workspaces.ts';
 import { instructions, domainContext, taskPrompt } from './prompts.ts';
-import { commandSchema, taskInput, jsonSchema, reviewSchema, mergeSchema } from './schemas.ts';
+import {
+  priorityUpdateInput,
+  commandSchema,
+  taskInput,
+  jsonSchema,
+  reviewSchema,
+  mergeSchema,
+} from './schemas.ts';
 import { shellCommand } from './process.ts';
 import type { Message, Run, Task, ReviewResult } from '../shared/types.ts';
 
@@ -191,6 +198,18 @@ export class Engine {
       await mkdir(cwd, { recursive: true });
       const tools: ToolSpec[] = [
         {
+          name: 'set_task_priority',
+          description:
+            'Adjust only priority metadata of this project unfinished tasks within coordination authority. No preemption, resume, requirement or evidence changes. Use expectedVersion (legacy=0) and unique requestId for safe retries.',
+          inputSchema: jsonSchema(priorityUpdateInput),
+        },
+        {
+          name: 'explain_scheduling',
+          description:
+            'Read current project candidates, every eligibility gate and project rotation; no start time promise and no mutations.',
+          inputSchema: jsonSchema(z.object({}).strict()),
+        },
+        {
           name: 'revise_task',
           description:
             'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. Cannot revise an active or completed task.',
@@ -222,6 +241,16 @@ export class Engine {
         },
       ];
       const handler = async (name: string, args: unknown) => {
+        if (name === 'set_task_priority')
+          return this.store.setTaskPriority(projectId, args, {
+            actor: 'pm',
+            sourceMessageId: source?.id,
+            runId: run.id,
+          });
+        if (name === 'explain_scheduling') {
+          z.object({}).strict().parse(args);
+          return this.store.explainScheduling(projectId);
+        }
         if (name === 'revise_task') {
           if (!source || !['implement', 'feedback'].includes(source.intent ?? ''))
             throw new Fault('修改验收条件需要明确的用户实施或反馈消息');
@@ -266,12 +295,15 @@ export class Engine {
               throw new Fault('只能发布当前仓库中 PM 已接受的设计记录');
             return { path: d.path, content: d.content, version: d.version };
           });
-          const created = this.store.createTask({
-            ...taskData,
-            documentChanges,
-            projectId,
-            sourceMessageId: source.id,
-          });
+          const created = this.store.createTask(
+            {
+              ...taskData,
+              documentChanges,
+              projectId,
+              sourceMessageId: source.id,
+            },
+            { actor: 'pm', runId: run.id },
+          );
           // Publication is durable and reconciled separately; closed work switches do not prevent planning.
           return this.store.task(created.id);
         }

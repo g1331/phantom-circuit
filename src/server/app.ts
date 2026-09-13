@@ -82,6 +82,14 @@ export function createApp(
     reply.header('Set-Cookie', `phantom_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
     return { csrf };
   });
+  app.get('/api/projects/:id/scheduling', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.explainScheduling(id);
+  });
+  app.post('/api/projects/:id/task-priority', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.setTaskPriority(id, req.body, { actor: 'user' });
+  });
   app.get('/api/state', async () => store.snapshot());
   const providerId = (params: unknown) => z.object({ id: z.string() }).parse(params).id;
   app.get('/api/providers', async () => providers.list());

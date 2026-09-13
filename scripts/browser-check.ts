@@ -1,3 +1,4 @@
+import { checkPriority } from './browser-priority.ts';
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -596,8 +597,9 @@ try {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
-  assert.deepEqual(errors, []);
   await page.getByRole('button', { name: '关闭窗口' }).click();
+  await checkPriority(page, store, task, artifacts);
+  assert.deepEqual(errors, []);
   await checkProviders(page, artifacts);
   assert.deepEqual(errors, []);
   console.log(

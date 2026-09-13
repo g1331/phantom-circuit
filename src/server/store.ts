@@ -1,8 +1,16 @@
+import {
+  comparePriority,
+  priorityValues,
+  type PriorityLevel,
+  type PriorityChange,
+} from '../shared/priority.ts';
+import { creationPriorityInput, priorityUpdateInput } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
+  SchedulingExplanation,
   Project,
   Repo,
   Task,
@@ -69,6 +77,15 @@ export class Store {
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+    this.transaction(() => {
+      if (!this.db.prepare("SELECT value FROM meta WHERE key='priority-contract-v1'").get()) {
+        // Legacy claimNext used list('task') ORDER BY rowid for exact ties.
+        this.list('task').forEach((task, index) =>
+          this.put('task', task.id, { ...task, legacyPriorityOrder: index }),
+        );
+        this.db.prepare("INSERT INTO meta VALUES ('priority-contract-v1','1')").run();
+      }
+    });
     if (!this.get('settings', 'global')) this.put('settings', 'global', structuredClone(defaults));
   }
   close() {
@@ -255,10 +272,15 @@ export class Store {
       | 'dependencies'
       | 'kind'
       | 'complexity'
-      | 'priority'
     > &
-      Pick<Task, 'documentChanges'>,
+      Pick<Task, 'documentChanges'> & { priority: number | PriorityLevel; priorityReason?: string },
+    prioritySource?: Pick<PriorityChange, 'actor' | 'runId'>,
   ) {
+    const priorityInput = creationPriorityInput.parse(input);
+    const priority =
+      typeof priorityInput.priority === 'number'
+        ? priorityInput.priority
+        : priorityValues[priorityInput.priority];
     if (this.repo(input.repoId).projectId !== input.projectId)
       throw new Fault('任务仓库不属于当前项目');
     const source = this.get('message', input.sourceMessageId);
@@ -282,6 +304,24 @@ export class Store {
     const profile: ProfileName = input.complexity === 'complex' ? 'complex' : input.kind;
     const task: Task = {
       ...input,
+      priority,
+      priorityVersion: 0,
+      priorityReason: priorityInput.priorityReason,
+      priorityHistory: priorityInput.priorityReason
+        ? [
+            {
+              requestId: `create:${input.sourceMessageId}:${input.title}`,
+              expectedVersion: 0,
+              oldValue: null,
+              newValue: priority,
+              reason: priorityInput.priorityReason,
+              actor: prioritySource?.actor ?? 'pm',
+              runId: prioritySource?.runId,
+              sourceMessageId: input.sourceMessageId,
+              at: now(),
+            },
+          ]
+        : [],
       id: id(),
       profile,
       routingReason:
@@ -298,6 +338,51 @@ export class Store {
     this.put('task', task.id, task);
     this.event('task', `任务已准备：${task.title}`, { projectId: task.projectId, taskId: task.id });
     return task;
+  }
+  setTaskPriority(
+    projectId: string,
+    request: unknown,
+    source: Pick<PriorityChange, 'actor' | 'sourceMessageId' | 'runId'>,
+  ) {
+    const input = priorityUpdateInput.parse(request);
+    return this.transaction(() => {
+      const task = this.task(input.taskId);
+      if (task.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
+      const previous = task.priorityHistory?.find((entry) => entry.requestId === input.requestId);
+      if (previous) {
+        if (
+          previous.newValue !== priorityValues[input.level] ||
+          previous.reason !== input.reason ||
+          previous.actor !== source.actor ||
+          previous.expectedVersion !== input.expectedVersion
+        )
+          throw new Fault('Request ID already used with different input', 409);
+        return task;
+      }
+      if (['done', 'cancelled'].includes(task.stage)) throw new Fault('任务已经结束', 409);
+      if ((task.priorityVersion ?? 0) !== input.expectedVersion)
+        throw new Fault('Priority version conflict; refresh and retry', 409);
+      const at = now();
+      const entry: PriorityChange = {
+        ...source,
+        requestId: input.requestId,
+        expectedVersion: input.expectedVersion,
+        oldValue: task.priority,
+        newValue: priorityValues[input.level],
+        reason: input.reason,
+        at,
+      };
+      const updated: Task = {
+        ...task,
+        priority: entry.newValue,
+        priorityReason: entry.reason,
+        priorityVersion: input.expectedVersion + 1,
+        priorityHistory: [...(task.priorityHistory ?? []), entry],
+        updatedAt: at,
+      };
+      this.put('task', task.id, updated);
+      return updated;
+    });
   }
   recordDocument(
     projectId: string,
@@ -358,47 +443,94 @@ export class Store {
   activeRuns() {
     return this.list('run').filter((r) => r.status === 'running' || r.status === 'waiting');
   }
+  private schedulingSnapshot() {
+    const snapshot = {
+      projects: this.list('project'),
+      repos: this.list('repo'),
+      tasks: this.list('task'),
+      runs: this.list('run'),
+      settings: this.settings(),
+    };
+    const cursor = (
+      this.db.prepare("SELECT value FROM meta WHERE key='cursor'").get() as
+        { value: string } | undefined
+    )?.value;
+    const start = cursor ? Math.max(0, snapshot.projects.findIndex((p) => p.id === cursor) + 1) : 0;
+    const projects = [...snapshot.projects.slice(start), ...snapshot.projects.slice(0, start)];
+    const active = snapshot.runs.filter((r) => ['running', 'waiting'].includes(r.status));
+    const dev = active.filter((r) => r.role === 'dev');
+    const at = now();
+    return projects.map((project) => {
+      const tasks = snapshot.tasks
+        .filter((t) => t.projectId === project.id)
+        .sort(comparePriority)
+        .map((task) => {
+          const reasons: SchedulingExplanation['tasks'][number]['reasons'] = [];
+          const repo = snapshot.repos.find((r) => r.id === task.repoId)!;
+          if (task.control !== 'active') reasons.push({ code: 'paused' });
+          if (task.blocked) reasons.push({ code: 'blocked', detail: task.blocked });
+          if (task.pendingFeedback?.length) reasons.push({ code: 'feedback' });
+          if (!['ready', 'developing'].includes(task.stage))
+            reasons.push({ code: 'stage', detail: task.stage });
+          if (!repo.authorized) reasons.push({ code: 'unauthorized' });
+          if (repo.blocked) reasons.push({ code: 'repositoryBlocked', detail: repo.blocked });
+          if (task.stage === 'ready' && !repo.enabled) reasons.push({ code: 'workSwitch' });
+          for (const run of active.filter((r) => r.taskId === task.id))
+            reasons.push({ code: 'activeRun', detail: run.id });
+          for (const key of task.dependencies) {
+            const dependency = snapshot.tasks.find((t) => t.id === key);
+            if (dependency?.stage !== 'done')
+              reasons.push({ code: 'dependency', detail: dependency?.title ?? key });
+          }
+          if (dev.length >= snapshot.settings.globalDevLimit)
+            reasons.push({ code: 'globalCapacity' });
+          if (dev.filter((r) => r.projectId === project.id).length >= project.devLimit)
+            reasons.push({ code: 'projectCapacity' });
+          if (dev.filter((r) => r.repoId === repo.id).length >= repo.devLimit)
+            reasons.push({ code: 'repositoryCapacity' });
+          return {
+            taskId: task.id,
+            title: task.title,
+            priority: task.priority,
+            stage: task.stage,
+            reasons,
+          };
+        });
+      return {
+        projectId: project.id,
+        at,
+        projectOrder: projects.map((p) => p.id),
+        tasks,
+        candidates: tasks.filter((t) => !t.reasons.length).map((t) => t.taskId),
+      };
+    });
+  }
+  explainScheduling(projectId: string): SchedulingExplanation {
+    this.project(projectId);
+    this.db.exec('BEGIN');
+    try {
+      const result = this.schedulingSnapshot().find((p) => p.projectId === projectId)!;
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
   claimNext(): Run | undefined {
     return this.transaction(() => {
-      const active = this.activeRuns().filter((r) => r.role === 'dev');
-      const settings = this.settings();
-      if (active.length >= settings.globalDevLimit) return;
-      const projects = this.list('project');
-      const cursor = (
-        this.db.prepare("SELECT value FROM meta WHERE key='cursor'").get() as
-          { value: string } | undefined
-      )?.value;
-      const start = cursor ? Math.max(0, projects.findIndex((p) => p.id === cursor) + 1) : 0;
-      const tasks = this.list('task').sort(
-        (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt),
-      );
-      for (let offset = 0; offset < projects.length; offset++) {
-        const p = projects[(start + offset) % projects.length];
-        if (active.filter((r) => r.projectId === p.id).length >= p.devLimit) continue;
-        for (const t of tasks.filter((t) => t.projectId === p.id)) {
-          if (
-            t.control !== 'active' ||
-            t.blocked ||
-            t.pendingFeedback?.length ||
-            !['ready', 'developing'].includes(t.stage)
-          )
-            continue;
-          const repo = this.repo(t.repoId);
-          if (!repo.authorized || repo.blocked || (t.stage === 'ready' && !repo.enabled)) continue;
-          if (this.activeRuns().some((r) => r.taskId === t.id)) continue;
-          if (active.filter((r) => r.repoId === repo.id).length >= repo.devLimit) continue;
-          if (t.dependencies.some((key) => this.task(key).stage !== 'done')) continue;
-          t.stage = 'developing';
-          this.put('task', t.id, t);
-          const r = this.run('dev', p.id, t.profile, t);
-          this.db
-            .prepare(
-              "INSERT INTO meta VALUES ('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            )
-            .run(p.id);
-          return r;
-        }
-      }
+      const candidate = this.schedulingSnapshot().find((p) => p.candidates.length)?.candidates[0];
+      if (!candidate) return;
+      const task = this.task(candidate);
+      task.stage = 'developing';
+      this.put('task', task.id, task);
+      const run = this.run('dev', task.projectId, task.profile, task);
+      this.db
+        .prepare(
+          "INSERT INTO meta VALUES ('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(task.projectId);
+      return run;
     });
   }
   control(key: string, action: 'pause' | 'resume' | 'cancel') {

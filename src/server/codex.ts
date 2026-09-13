@@ -8,6 +8,7 @@ import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { command, terminate } from './process.ts';
 import { Fault, redact } from './store.ts';
 import type { Profile } from '../shared/types.ts';
+import { SecretTextStream } from './secret-text-stream.ts';
 
 export interface Model {
   id: string;
@@ -47,7 +48,7 @@ export class Codex extends EventEmitter {
   private fatal?: Error;
   private customProvider = false;
   private scrubSecret = (text: string) => text;
-  private discardStreams = (_threadId?: string) => {};
+  private finishStreams = () => {};
   async start(provider?: { id: string; baseUrl: string; apiKey: string }) {
     this.customProvider = provider !== undefined;
     let binary = 'codex';
@@ -65,25 +66,11 @@ export class Codex extends EventEmitter {
           : message,
       );
     };
-    const streams = new Map<string, { params: any; tail: string }>();
-    this.discardStreams = (threadId) => {
-      for (const [id, stream] of streams)
-        if (threadId === undefined || stream.params.threadId === threadId) streams.delete(id);
-    };
-    const flushStreams = (params: any, itemId?: string) => {
-      for (const [id, stream] of streams) {
-        if (
-          stream.params.threadId !== params.threadId ||
-          (itemId !== undefined && stream.params.itemId !== itemId)
-        )
-          continue;
-        streams.delete(id);
-        if (stream.tail)
-          deliver({
-            method: 'item/agentMessage/delta',
-            params: { ...stream.params, delta: stream.tail },
-          });
-      }
+    const deltas = new SecretTextStream(secret);
+    const completed = new SecretTextStream(secret, true);
+    this.finishStreams = () => {
+      deltas.finish();
+      completed.finish();
     };
     const scrub = (text: string) => redact(secret ? text.replaceAll(secret, '<REDACTED>') : text);
     if (provider) {
@@ -126,19 +113,23 @@ export class Codex extends EventEmitter {
         const raw = JSON.parse(line) as Wire;
         if (secret && raw.id === undefined && raw.method === 'item/agentMessage/delta') {
           const p = raw.params;
-          const id = JSON.stringify([p.threadId, p.turnId, p.itemId]);
-          const text = this.scrubSecret((streams.get(id)?.tail ?? '') + p.delta);
-          let held = Math.min(secret.length - 1, text.length);
-          while (held > 0 && !text.endsWith(secret.slice(0, held))) held--;
-          const delta = text.slice(0, text.length - held);
-          if (held) streams.set(id, { params: { ...p, delta: '' }, tail: text.slice(-held) });
-          else streams.delete(id);
-          raw.params = { ...p, delta };
-          if (!delta) return;
-        } else if (secret && raw.id === undefined) {
-          if (raw.method === 'item/completed') flushStreams(raw.params, raw.params.item.id);
-          if (raw.method === 'turn/completed') flushStreams(raw.params);
+          deltas.push(p.delta, (delta) => deliver({ ...raw, params: { ...p, delta } }));
+          return;
         }
+        if (
+          secret &&
+          raw.id === undefined &&
+          raw.method === 'item/completed' &&
+          raw.params.item.type === 'agentMessage' &&
+          typeof raw.params.item.text === 'string'
+        ) {
+          const p = raw.params;
+          completed.push(p.item.text, (text) =>
+            deliver({ ...raw, params: { ...p, item: { ...p.item, text } } }),
+          );
+          return;
+        }
+        if (raw.id === undefined && raw.method === 'turn/completed') this.finishStreams();
         deliver(raw);
       } catch {
         this.emit('diagnostic', scrub(line));
@@ -149,7 +140,9 @@ export class Codex extends EventEmitter {
       this.emit('diagnostic', scrub(line).slice(-3000)),
     );
     this.child.on('close', () => {
-      streams.clear();
+      this.finishStreams();
+      deltas.dispose();
+      completed.dispose();
       secret = '';
     });
     this.child.on('error', (e) => this.fail(e));
@@ -166,6 +159,7 @@ export class Codex extends EventEmitter {
     this.child.stdin.write(JSON.stringify(message) + '\n');
   }
   private fail(error: Error) {
+    this.finishStreams();
     this.fatal = error;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
@@ -323,7 +317,7 @@ export class Codex extends EventEmitter {
         this.off('notification', notification);
         this.off('failure', failure);
         signal?.removeEventListener('abort', abort);
-        this.discardStreams(threadId);
+        this.finishStreams();
         error ? reject(error) : resolve(this.scrubSecret(output));
       };
       const interrupt = async () => {
@@ -371,7 +365,7 @@ export class Codex extends EventEmitter {
     });
   }
   async stop() {
-    this.discardStreams();
+    this.finishStreams();
     if (this.child) await terminate(this.child);
   }
 }

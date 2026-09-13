@@ -21,7 +21,22 @@ async function streamingFixture(work: (codex: Codex) => Promise<void>) {
           const threadId = m.params.threadId;
           send({ method: 'turn/started', params: { threadId, turn: { id: 'turn' } } });
           const scenario = m.params.input[0].text;
-          const chunks = scenario === 'cancelled' ? ['ow'] : scenario === 'characters' ? Array.from('before ' + key + key + ' after')
+          if (scenario === 'terminal-completed') {
+            send({ method: 'item/completed', params: { threadId, turnId: 'turn', item: { id: 'final', type: 'agentMessage', text: 'ending ow' } } });
+            send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn', status: 'completed' } } });
+            return;
+          }
+          if (['cross-item', 'completed-only', 'normal-items'].includes(scenario)) {
+            const items = scenario === 'normal-items' ? [['first', 'ordinary ow'], ['second', 'ner text.']]
+              : [['first', key.slice(0, 8)], ['second', key.slice(8)]];
+            for (const [itemId, text] of items) {
+              if (scenario !== 'completed-only') send({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'turn', itemId, delta: text } });
+              send({ method: 'item/completed', params: { threadId, turnId: 'turn', item: { id: itemId, type: 'agentMessage', text } } });
+            }
+            send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn', status: 'completed' } } });
+            return;
+          }
+          const chunks = scenario === 'cancelled' || scenario === 'failed' ? ['ow'] : scenario === 'characters' ? Array.from('before ' + key + key + ' after')
             : scenario === 'prefix' ? ['ordinary ow', 'ner text ', 'ow']
             : ['before ', key.slice(0, 8), key.slice(8, 13), key.slice(13), ' after'];
           for (const delta of chunks)
@@ -29,7 +44,7 @@ async function streamingFixture(work: (codex: Codex) => Promise<void>) {
           if (scenario === 'cancelled') return;
           if (scenario === 'completed')
             send({ method: 'item/completed', params: { threadId, turnId: 'turn', item: { id: 'message', type: 'agentMessage', text: 'before ' + key + ' after' } } });
-          send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn', status: 'completed' } } });
+          send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn', status: scenario === 'failed' ? 'failed' : 'completed' } } });
         }
         if (m.method === 'fixture/exit') setImmediate(() => process.exit(0));
       });
@@ -66,11 +81,93 @@ test('streamed Provider keys are filtered before notifications and turn results 
   });
 });
 
+test('Provider keys split across completed items cannot be reconstructed from either notification outlet', async () => {
+  await streamingFixture(async (codex) => {
+    for (const scenario of ['cross-item', 'completed-only']) {
+      const deltas: string[] = [];
+      const items: string[] = [];
+      const attribution: unknown[] = [];
+      const listen = (method: string, p: any) => {
+        if (method === 'item/agentMessage/delta') deltas.push(p.delta);
+        if (method === 'item/completed') {
+          items.push(p.item.text);
+          attribution.push([p.threadId, p.turnId, p.item.id]);
+        }
+      };
+      codex.on('notification', listen);
+      try {
+        const result = await codex.turn('thread', scenario, { model: 'fixture', effort: 'low' });
+        assert.equal(deltas.join(''), scenario === 'cross-item' ? '<REDACTED>' : '');
+        assert.equal(items.join(''), '<REDACTED>');
+        assert.deepEqual(attribution, [
+          ['thread', 'turn', 'first'],
+          ['thread', 'turn', 'second'],
+        ]);
+        assert.ok(!result.includes('owner-stream-fixture-key'));
+      } finally {
+        codex.off('notification', listen);
+      }
+    }
+  });
+});
+
+test('delayed completed items preserve ordinary text, attribution and the final reply', async () => {
+  await streamingFixture(async (codex) => {
+    const items: unknown[] = [];
+    const deltas: string[] = [];
+    codex.on('notification', (method, p) => {
+      if (method === 'item/completed') items.push([p.threadId, p.turnId, p.item.id, p.item.text]);
+      if (method === 'item/agentMessage/delta') deltas.push(p.delta);
+    });
+    const result = await codex.turn('thread', 'normal-items', { model: 'fixture', effort: 'low' });
+    assert.deepEqual(items, [
+      ['thread', 'turn', 'first', 'ordinary ow'],
+      ['thread', 'turn', 'second', 'ner text.'],
+    ]);
+    assert.equal(deltas.join(''), 'ordinary owner text.');
+    assert.equal(result, 'ner text.');
+  });
+});
+
+test('terminal completed text masks an unresolved key prefix before returning', async () => {
+  await streamingFixture(async (codex) => {
+    const items: string[] = [];
+    codex.on('notification', (method, p) => {
+      if (method === 'item/completed') items.push(p.item.text);
+    });
+    assert.equal(
+      await codex.turn('thread', 'terminal-completed', { model: 'fixture', effort: 'low' }),
+      'ending <REDACTED>',
+    );
+    assert.deepEqual(items, ['ending <REDACTED>']);
+  });
+});
+
+test('failed turns mask candidate tails and do not carry them into the next turn', async () => {
+  await streamingFixture(async (codex) => {
+    const deltas: string[] = [];
+    codex.on('notification', (method, p) => {
+      if (method === 'item/agentMessage/delta') deltas.push(p.delta);
+    });
+    await assert.rejects(
+      codex.turn('thread', 'failed', { model: 'fixture', effort: 'low' }),
+      /Agent failed/,
+    );
+    assert.deepEqual(deltas, ['<REDACTED>']);
+    deltas.length = 0;
+    assert.equal(
+      await codex.turn('thread', 'fixture', { model: 'fixture', effort: 'low' }),
+      'before <REDACTED> after',
+    );
+    assert.equal(deltas.join(''), 'before <REDACTED> after');
+  });
+});
+
 test('stream filtering preserves ordinary prefixes and handles single-character chunks, repeated keys and final item text', async () => {
   await streamingFixture(async (codex) => {
     for (const [scenario, expected] of [
       ['characters', 'before <REDACTED><REDACTED> after'],
-      ['prefix', 'ordinary owner text ow'],
+      ['prefix', 'ordinary owner text <REDACTED>'],
       ['completed', 'before <REDACTED> after'],
     ]) {
       const deltas: string[] = [];
@@ -97,7 +194,7 @@ test('stream filtering preserves ordinary prefixes and handles single-character 
   });
 });
 
-test('cancelling a turn discards its withheld key prefix before the next turn', async () => {
+test('cancelling a turn masks its withheld key prefix before the next turn', async () => {
   await streamingFixture(async (codex) => {
     const deltas: string[] = [];
     codex.on('notification', (method, params) => {
@@ -114,7 +211,8 @@ test('cancelling a turn discards its withheld key prefix before the next turn', 
     await codex.request('fixture/barrier');
     abort.abort();
     await rejected;
-    assert.deepEqual(deltas, []);
+    assert.deepEqual(deltas, ['<REDACTED>']);
+    deltas.length = 0;
     const result = await codex.turn('thread', 'fixture', { model: 'fixture', effort: 'low' });
     assert.equal(result, 'before <REDACTED> after');
     assert.equal(deltas.join(''), result);
