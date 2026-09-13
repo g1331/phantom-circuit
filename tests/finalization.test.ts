@@ -527,17 +527,22 @@ test('fixed merge provenance survives a later tracking ref update and interrupte
   assert.equal(result.retries, 2);
 });
 
-test('concurrent baseline coordination and Engine ticks start only one conflict Dev', async (t) => {
+test('concurrent baseline coordination starts only one conflict Dev and no second merge', async (t) => {
   const f = await conflictingTask(t, async (cwd) => {
     await writeFile(join(cwd, 'value.txt'), 'after');
   });
   const states = await Promise.all([f.ws.prepareBase(f.task()), f.ws.prepareBase(f.task())]);
   assert.equal(states[0].status, 'conflicted');
-  assert.deepEqual(states[0], states[1]);
-  await Promise.all([f.engine.tick(), f.engine.tick()]);
+  assert.equal(states[1].status, 'conflicted');
+  if (states[0].status !== 'conflicted') return;
+  // Coordination alone records one pending merge and leaves the worktree at the old HEAD; the
+  // merge itself is created once, by the host commit at the end of the single Run.
+  assert.equal(f.store.task(f.task().id).pendingMerge!.id, states[0].merge.id);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
   const result = await f.run();
   assert.equal(result.stage, 'reviewing', result.blocked);
   assert.equal(f.turns(), 1);
+  assert.equal((await f.store.task(f.task().id).mergeHistory!.length), 1);
   assert.equal(
     (await f.git(f.path, ['show', '-s', '--format=%P', 'HEAD'])).stdout.trim(),
     `${f.oldHead} ${f.incoming}`,
@@ -682,6 +687,15 @@ test('legacy default merge uses its verified source even when the PR tracking re
   assert.equal(result.stage, 'reviewing', result.blocked);
   assert.equal(result.retries, 2);
   assert.equal(f.turns(), 1);
+  // The default-branch source must be the one verified from the remaining ref, not the task branch
+  // whose tracking ref was deleted.
+  const [merge] = f.store.task(f.task().id).mergeHistory!;
+  assert.equal(merge.sourceRef, 'refs/remotes/origin/main');
+  assert.equal(merge.sourceHead, f.incoming);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', 'HEAD'])).stdout.trim(),
+    `${f.oldHead} ${f.incoming}`,
+  );
 });
 
 test('legacy PR merge with a missing base is adopted before fetching another branch', async (t) => {

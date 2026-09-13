@@ -509,7 +509,11 @@ export class Engine {
         task.devPhase !== 'finalize',
       );
       let repaired = false;
+      let rounds = 0;
       while (coordinated.status === 'conflicted') {
+        // Each round merges the target ref once. Only a target ref that keeps moving can produce
+        // another conflict, so this is bounded rather than repeated indefinitely.
+        if (++rounds > 3) throw new Fault('基线协调连续 3 轮仍有新的冲突，已停止并保留现场');
         repaired = true;
         const merge = coordinated.merge;
         this.store.event(
@@ -538,7 +542,8 @@ export class Engine {
         task = this.store.updateTask(task.id, { devPhase: 'finalize' });
         coordinated = await this.workspaces.prepareBase(task, signal);
       }
-      if (coordinated.status === 'blocked') throw new Fault(`基线协调阻塞：${coordinated.reason}`);
+      if (coordinated.status === 'blocked')
+        throw new Fault(`基线协调阻塞：${coordinated.reason}`, coordinated.code);
       task = this.store.task(task.id);
       if (task.devPhase !== 'finalize' && !repaired) {
         await this.workspaces.install(task, signal);
@@ -560,7 +565,7 @@ export class Engine {
       this.store.updateTask(task.id, { head, base });
       if (!changed) {
         if (repaired || recoveringMerge)
-          throw new Fault('合并协调已完成，但相对目标基线没有可交付差异，需要 PM 核对');
+          throw new Fault('合并协调已完成，但相对目标基线没有可交付差异，已暂停等待 PM 核对');
         this.rework(current, '没有可交付的实现差异，请完成任务或向 PM 说明具体阻塞');
         return;
       }
@@ -1058,7 +1063,7 @@ export class Engine {
           t = this.verifyMergeSource(t, pr);
           if (
             pr.head.sha !== t.head &&
-            (await this.workspaces.hasRemoteTaskChanges(t, pr.head.sha))
+            (await this.workspaces.needsRemoteTaskAdoption(t, pr.head.sha))
           )
             t = this.store.updateTask(t.id, {
               stage: 'developing',

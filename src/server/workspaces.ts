@@ -6,9 +6,11 @@ import { Store, Fault, now, redact } from './store.ts';
 import type { Repo, Task, Evidence } from '../shared/types.ts';
 
 export type BaselineResult =
-  | { status: 'clean'; base: string }
+  | { status: 'clean' }
   | { status: 'conflicted'; merge: NonNullable<Task['pendingMerge']> }
-  | { status: 'blocked'; reason: string };
+  // `code` is the HTTP status of the originating fault, so a pause (409) or a timeout (504) keeps
+  // its meaning instead of being flattened into a generic coordination failure.
+  | { status: 'blocked'; reason: string; code: number };
 
 export class Workspaces {
   private locks = new Map<string, Promise<unknown>>();
@@ -230,7 +232,8 @@ export class Workspaces {
           }
         }
         await this.assertPackages(task);
-        // The Dev cannot write the index. UU is expected until host staging below.
+        // Staging is the host's job and the Dev is told not to touch the index, so UU is expected
+        // here; `checkConflictEdits` above already refuses a Dev that rewrote the index anyway.
         this.store.updateTask(task.id, { pendingMerge: { ...pending, phase: 'committing' } });
       }
       if (paths.length || pending) {
@@ -483,11 +486,17 @@ export class Workspaces {
     }
     return merge;
   }
-  async hasRemoteTaskChanges(task: Task, remoteHead: string) {
+  /**
+   * Whether adopting the remote task branch's commits is the right next step for this resume.
+   * True only when the remote PR head really holds commits the local head does not have yet, so a
+   * PR that merely lags an unpublished local merge (or one already contained locally) is not
+   * mistaken for new remote work. An unfinished merge answers false: the local state cannot be
+   * compared safely until that merge is reconciled, and reconciliation must come first.
+   */
+  async needsRemoteTaskAdoption(task: Task, remoteHead: string) {
     return this.exclusive(`repo:${task.repoId}`, async () => {
       task = this.store.task(task.id);
       await this.assertTask(task);
-      // An unfinished merge must go through its own reconciliation before fetching again.
       if (task.pendingMerge || (await this.mergeHead(task)) || (await this.unmerged(task)))
         return false;
       const head = await this.git(task.worktree!, ['rev-parse', 'HEAD']);
@@ -523,7 +532,7 @@ export class Workspaces {
         if (pending) return { status: 'conflicted', merge: pending };
         task = this.store.task(task.id);
         if (!advance && (!task.targetBase || task.targetBase === task.integratedBase))
-          return { status: 'clean', base: task.base! };
+          return { status: 'clean' };
         const repo = this.store.repo(task.repoId);
         // Inspect unfinished merges before fetching or starting another merge.
         await this.git(
@@ -603,9 +612,15 @@ export class Workspaces {
           );
         }
         this.store.updateTask(task.id, { base, integratedBase: base, targetBase: base });
-        return { status: 'clean', base };
+        return { status: 'clean' };
       } catch (e) {
-        return { status: 'blocked', reason: String(e) };
+        // Keep the fault's own message and status: a pause or a timeout must not be reported as a
+        // generic coordination failure.
+        return {
+          status: 'blocked',
+          reason: e instanceof Error ? e.message : String(e),
+          code: e instanceof Fault ? e.status : 400,
+        };
       }
     });
   }
