@@ -13,6 +13,12 @@ export interface PullState {
   base: { sha: string };
   body: string;
 }
+export class IssueBodyConflict extends Fault {
+  constructor() {
+    super('GitHub Issue 正文发生变化，完成同步暂停，需要 PM 核对', 409);
+  }
+}
+export class GitHubRejected extends Fault {}
 export class GitHub {
   private operations = new Map<string, Promise<unknown>>();
   constructor(private store: Store) {}
@@ -22,7 +28,15 @@ export class GitHub {
       ['api', endpoint, '--method', method, ...(body === undefined ? [] : ['--input', '-'])],
       undefined,
       body === undefined ? undefined : JSON.stringify(body),
-    );
+    ).catch((error: unknown) => {
+      // gh reports explicit HTTP rejections in stderr. Transport failures remain uncertain.
+      if (
+        error instanceof Error &&
+        /\(HTTP (400|401|403|404|405|409|410|422|429)\)/.test(error.message)
+      )
+        throw new GitHubRejected(error.message, 502);
+      throw error;
+    });
     return r.stdout.trim() ? JSON.parse(r.stdout) : (undefined as T);
   }
   async gql<T = any>(query: string, variables: unknown = {}): Promise<T> {
@@ -84,7 +98,7 @@ export class GitHub {
       this.store.put('operation', key, {
         id: key,
         kind,
-        status: 'uncertain',
+        status: e instanceof GitHubRejected ? 'failed' : 'uncertain',
         error: redact(String(e)),
       });
       throw e;
@@ -207,11 +221,7 @@ export class GitHub {
         }),
     );
     const marker = `<!-- phantom-task:${task.id} -->`;
-    const deps = task.dependencies.map((key) => {
-      const t = this.store.task(key);
-      return t.issueUrl ?? t.title;
-    });
-    const body = `${marker}\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [ ] ${x}`).join('\n')}\n\n## Blocked by\n${deps.length ? deps.map((x) => `- ${x}`).join('\n') : 'None (can start immediately)'}\n`;
+    const body = this.issueBody(task, false);
     const issue = await this.operation(
       `issue:${task.id}`,
       'create-issue',
@@ -285,7 +295,7 @@ export class GitHub {
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     const endpoint = `repos/${repo.github}/issues/${task.issue}`;
-    const body = `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [ ] ${x}`).join('\n')}\n\n## Blocked by\n${task.dependencies.map((key) => this.store.task(key).issueUrl ?? key).join('\n') || 'None (can start immediately)'}\n`;
+    const body = this.issueBody(task, false);
     const result = await this.operation(
       `revise-issue:${task.id}:${task.sourceMessageId}`,
       'revise-issue',
@@ -294,6 +304,50 @@ export class GitHub {
         return issue.body === body ? issue : undefined;
       },
       () => this.api(endpoint, 'PATCH', { body }),
+    );
+    this.store.updateTask(task.id, { issueBody: result.body });
+    return result;
+  }
+  private issueBody(task: Task, completed: boolean) {
+    const deps = task.dependencies.map((key) => {
+      const dependency = this.store.task(key);
+      return `- ${dependency.issueUrl ?? dependency.title}`;
+    });
+    return `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [${completed ? 'x' : ' '}] ${x}`).join('\n')}\n\n## Blocked by\n${deps.join('\n') || 'None (can start immediately)'}\n`;
+  }
+  async completeIssue(task: Task) {
+    const repo = this.store.repo(task.repoId);
+    this.authorize(repo);
+    if (!task.issue || !task.issueBody?.startsWith(`<!-- phantom-task:${task.id} -->`))
+      throw new Fault('Issue 缺少 Phantom 正文归属记录，需要 PM 核对', 409);
+    const endpoint = `repos/${repo.github}/issues/${task.issue}`;
+    const body = this.issueBody(task, true);
+    const key = `complete-issue:${task.id}:${task.head}:${task.base}`;
+    const current = await this.api(endpoint);
+    if (current.body !== body && current.body !== task.issueBody) throw new IssueBodyConflict();
+    if (
+      this.store.get('operation', key)?.status === 'done' &&
+      (current.body !== body || current.state !== 'closed')
+    )
+      throw new IssueBodyConflict();
+    const result = await this.operation(
+      key,
+      'complete-issue',
+      async () => {
+        const issue = await this.api(endpoint);
+        if (issue.body !== body && issue.body !== task.issueBody) throw new IssueBodyConflict();
+        return issue.body === body && issue.state === 'closed' ? issue : undefined;
+      },
+      async () => {
+        const issue = await this.api(endpoint, 'PATCH', {
+          body,
+          state: 'closed',
+          state_reason: 'completed',
+        });
+        if (issue.body !== body || issue.state !== 'closed')
+          throw new Fault('GitHub 尚未确认 Issue 已勾选并关闭', 409);
+        return issue;
+      },
     );
     this.store.updateTask(task.id, { issueBody: result.body });
     return result;
