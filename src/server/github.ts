@@ -9,8 +9,8 @@ export interface PullState {
   merged: boolean;
   mergeable: boolean | null;
   mergeable_state: string;
-  head: { sha: string };
-  base: { sha: string };
+  head: { sha: string; ref?: string; repo?: { full_name: string } };
+  base: { sha: string; repo?: { full_name: string } };
   body: string;
 }
 export class IssueBodyConflict extends Fault {

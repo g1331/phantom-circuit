@@ -98,6 +98,26 @@ export interface Task {
   prUrl?: string;
   head?: string;
   base?: string;
+  integratedBase?: string;
+  targetBase?: string;
+  mergeSourceBranch?: string;
+  pendingMerge?: {
+    id: string;
+    origin: 'legacy' | 'host';
+    runId?: string;
+    previousRunIds?: string[];
+    outsideDigest?: string;
+    indexDigest?: string;
+    oldHead: string;
+    sourceHead: string;
+    sourceRef: string;
+    targetBase: string;
+    integratedBase: string;
+    phase: 'merging' | 'conflicted' | 'editing' | 'edited' | 'committing';
+    conflictPaths: string[];
+  };
+  mergeHistory?: (NonNullable<Task['pendingMerge']> & { head: string })[];
+  revisionHistory?: { head?: string; base?: string; tests: Evidence[]; reviews: ReviewResult[] }[];
   mergeApproval?: { head: string; base: string };
   reviews: ReviewResult[];
   tests: Evidence[];

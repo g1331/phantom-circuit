@@ -58,7 +58,7 @@ export function command(
     child.stdout.on('data', (d) => (stdout = (stdout + d.toString()).slice(-2_000_000)));
     child.stderr.on('data', (d) => (stderr = (stderr + d.toString()).slice(-100_000)));
     child.on('error', (e) => done(e));
-    child.on('close', (code) => done(undefined, code ?? 1));
+    child.on('close', (code) => done(undefined, code ?? -1));
     child.stdin.on('error', () => {});
     if (input) child.stdin.end(input);
     else child.stdin.end();
