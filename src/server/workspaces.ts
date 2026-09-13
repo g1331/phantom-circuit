@@ -330,7 +330,7 @@ export class Workspaces {
       // External test runners only expose text for nested process/OS failures.
       if (
         r.code !== 0 &&
-        /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC)['"]|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问/i.test(
+        /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问/i.test(
           r.stderr + '\n' + r.stdout,
         )
       )
