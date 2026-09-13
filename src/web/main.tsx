@@ -39,6 +39,7 @@ import type {
 import { stageLabels } from '../shared/types.ts';
 import { api, session } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
+import { ProviderSettings } from './providers.tsx';
 import './style.css';
 
 const time = (value: string) =>
@@ -838,6 +839,7 @@ function App() {
           wide
           onClose={() => setModal(null)}
         >
+          <ProviderSettings />
           <SettingsForm
             initial={state.settings}
             busy={busy}

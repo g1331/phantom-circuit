@@ -1749,3 +1749,10 @@ time {
     scroll-behavior: auto !important;
   }
 }
+.provider-settings { border-block: 1px solid var(--line); padding-block: 20px; margin-bottom: 20px; display: grid; gap: 14px; min-width: 0; }
+.provider-detail { display: grid; gap: 14px; min-width: 0; }
+.provider-toolbar, .provider-actions { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.provider-toolbar label { flex: 1; min-width: 0; }
+.provider-secret { display: grid; gap: 10px; min-width: 0; }
+.provider-secret output { overflow-wrap: anywhere; white-space: pre-wrap; font-family: monospace; }
+.provider-detail input, .provider-toolbar select, .provider-detail select { width: 100%; min-width: 0; }

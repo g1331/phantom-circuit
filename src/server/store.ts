@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
   Project,
   Repo,
@@ -49,6 +50,7 @@ export const defaults: Settings = {
   },
 };
 type Entities = {
+  provider: Provider;
   project: Project;
   repo: Repo;
   task: Task;
@@ -61,7 +63,7 @@ type Entities = {
 export class Store {
   private db: DatabaseSync;
   readonly changes = new EventEmitter();
-  constructor(file: string) {
+  constructor(readonly file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
@@ -71,6 +73,10 @@ export class Store {
   }
   close() {
     this.db.close();
+  }
+  deleteProvider(key: string) {
+    this.db.prepare('DELETE FROM documents WHERE kind=? AND id=?').run('provider', key);
+    this.changes.emit('change');
   }
   get<K extends keyof Entities>(kind: K, key: string): Entities[K] | undefined {
     const row = this.db
@@ -148,6 +154,7 @@ export class Store {
   }
   snapshot(): Snapshot {
     return {
+      providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),

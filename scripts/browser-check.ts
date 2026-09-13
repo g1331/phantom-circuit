@@ -8,6 +8,7 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
+import { checkProviders } from './provider-browser-check.ts';
 
 const artifacts = resolve('test-results');
 await mkdir(artifacts, { recursive: true });
@@ -595,6 +596,9 @@ try {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
+  assert.deepEqual(errors, []);
+  await page.getByRole('button', { name: '关闭窗口' }).click();
+  await checkProviders(page, artifacts);
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, dark/light, 390px responsive; screenshots in test-results/.',
