@@ -46,6 +46,8 @@ export class Codex extends EventEmitter {
   private toolHandler?: (name: string, args: unknown) => Promise<unknown>;
   private fatal?: Error;
   private customProvider = false;
+  private scrubSecret = (text: string) => text;
+  private discardStreams = (_threadId?: string) => {};
   async start(provider?: { id: string; baseUrl: string; apiKey: string }) {
     this.customProvider = provider !== undefined;
     let binary = 'codex';
@@ -53,6 +55,36 @@ export class Codex extends EventEmitter {
     const env = { ...process.env };
     let keyName: string | undefined;
     let secret = provider?.apiKey ?? '';
+    this.scrubSecret = (text) => (secret ? text.replaceAll(secret, '<REDACTED>') : text);
+    const deliver = (message: Wire) => {
+      void this.receive(
+        secret
+          ? JSON.parse(JSON.stringify(message), (_key, value) =>
+              typeof value === 'string' ? this.scrubSecret(value) : value,
+            )
+          : message,
+      );
+    };
+    const streams = new Map<string, { params: any; tail: string }>();
+    this.discardStreams = (threadId) => {
+      for (const [id, stream] of streams)
+        if (threadId === undefined || stream.params.threadId === threadId) streams.delete(id);
+    };
+    const flushStreams = (params: any, itemId?: string) => {
+      for (const [id, stream] of streams) {
+        if (
+          stream.params.threadId !== params.threadId ||
+          (itemId !== undefined && stream.params.itemId !== itemId)
+        )
+          continue;
+        streams.delete(id);
+        if (stream.tail)
+          deliver({
+            method: 'item/agentMessage/delta',
+            params: { ...stream.params, delta: stream.tail },
+          });
+      }
+    };
     const scrub = (text: string) => redact(secret ? text.replaceAll(secret, '<REDACTED>') : text);
     if (provider) {
       if (!/^[a-zA-Z0-9_-]+$/.test(provider.id)) throw new Fault('Provider id 无效');
@@ -90,10 +122,24 @@ export class Codex extends EventEmitter {
     }
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       try {
-        const message = JSON.parse(line, (_key, value) =>
-          secret && typeof value === 'string' ? value.replaceAll(secret, '<REDACTED>') : value,
-        ) as Wire;
-        void this.receive(message);
+        // Match the raw stream before per-value redaction: a key can span arbitrary deltas.
+        const raw = JSON.parse(line) as Wire;
+        if (secret && raw.id === undefined && raw.method === 'item/agentMessage/delta') {
+          const p = raw.params;
+          const id = JSON.stringify([p.threadId, p.turnId, p.itemId]);
+          const text = this.scrubSecret((streams.get(id)?.tail ?? '') + p.delta);
+          let held = Math.min(secret.length - 1, text.length);
+          while (held > 0 && !text.endsWith(secret.slice(0, held))) held--;
+          const delta = text.slice(0, text.length - held);
+          if (held) streams.set(id, { params: { ...p, delta: '' }, tail: text.slice(-held) });
+          else streams.delete(id);
+          raw.params = { ...p, delta };
+          if (!delta) return;
+        } else if (secret && raw.id === undefined) {
+          if (raw.method === 'item/completed') flushStreams(raw.params, raw.params.item.id);
+          if (raw.method === 'turn/completed') flushStreams(raw.params);
+        }
+        deliver(raw);
       } catch {
         this.emit('diagnostic', scrub(line));
       }
@@ -103,6 +149,7 @@ export class Codex extends EventEmitter {
       this.emit('diagnostic', scrub(line).slice(-3000)),
     );
     this.child.on('close', () => {
+      streams.clear();
       secret = '';
     });
     this.child.on('error', (e) => this.fail(e));
@@ -276,7 +323,8 @@ export class Codex extends EventEmitter {
         this.off('notification', notification);
         this.off('failure', failure);
         signal?.removeEventListener('abort', abort);
-        error ? reject(error) : resolve(output);
+        this.discardStreams(threadId);
+        error ? reject(error) : resolve(this.scrubSecret(output));
       };
       const interrupt = async () => {
         if (turnId) await this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
@@ -323,6 +371,7 @@ export class Codex extends EventEmitter {
     });
   }
   async stop() {
+    this.discardStreams();
     if (this.child) await terminate(this.child);
   }
 }

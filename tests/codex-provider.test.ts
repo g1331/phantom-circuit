@@ -3,6 +3,124 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { Codex } from '../src/server/codex.ts';
 
+async function streamingFixture(work: (codex: Codex) => Promise<void>) {
+  let exited!: Promise<void>;
+  const codex = new Codex((_binary, _args, options) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `
+      const key = process.env[Object.keys(process.env).find(k => k.startsWith('PHANTOM_PROVIDER_KEY_'))];
+      const send = value => console.log(JSON.stringify(value));
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const m = JSON.parse(line);
+        if (m.id === undefined) return;
+        send({ id: m.id, result: { turn: { id: 'turn' } } });
+        if (m.method === 'turn/start') {
+          const threadId = m.params.threadId;
+          send({ method: 'turn/started', params: { threadId, turn: { id: 'turn' } } });
+          const scenario = m.params.input[0].text;
+          const chunks = scenario === 'cancelled' ? ['ow'] : scenario === 'characters' ? Array.from('before ' + key + key + ' after')
+            : scenario === 'prefix' ? ['ordinary ow', 'ner text ', 'ow']
+            : ['before ', key.slice(0, 8), key.slice(8, 13), key.slice(13), ' after'];
+          for (const delta of chunks)
+            send({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'turn', itemId: 'message', delta } });
+          if (scenario === 'cancelled') return;
+          if (scenario === 'completed')
+            send({ method: 'item/completed', params: { threadId, turnId: 'turn', item: { id: 'message', type: 'agentMessage', text: 'before ' + key + ' after' } } });
+          send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn', status: 'completed' } } });
+        }
+        if (m.method === 'fixture/exit') setImmediate(() => process.exit(0));
+      });
+    `,
+      ],
+      options,
+    );
+    exited = new Promise((resolve) => child.on('close', () => resolve()));
+    return child;
+  });
+  try {
+    await codex.start({
+      id: 'stream-fixture',
+      baseUrl: 'http://localhost:9876/v1',
+      apiKey: 'owner-stream-fixture-key',
+    });
+    await work(codex);
+  } finally {
+    await codex.request('fixture/exit');
+    await exited;
+    await codex.stop();
+  }
+}
+
+test('streamed Provider keys are filtered before notifications and turn results reach consumers', async () => {
+  await streamingFixture(async (codex) => {
+    const deltas: string[] = [];
+    codex.on('notification', (method, params) => {
+      if (method === 'item/agentMessage/delta') deltas.push(params.delta);
+    });
+    const result = await codex.turn('thread', 'fixture', { model: 'fixture', effort: 'low' });
+    assert.equal(deltas.join(''), 'before <REDACTED> after');
+    assert.equal(result, 'before <REDACTED> after');
+  });
+});
+
+test('stream filtering preserves ordinary prefixes and handles single-character chunks, repeated keys and final item text', async () => {
+  await streamingFixture(async (codex) => {
+    for (const [scenario, expected] of [
+      ['characters', 'before <REDACTED><REDACTED> after'],
+      ['prefix', 'ordinary owner text ow'],
+      ['completed', 'before <REDACTED> after'],
+    ]) {
+      const deltas: string[] = [];
+      const completed: string[] = [];
+      const atCompletion: string[] = [];
+      const listen = (method: string, p: any) => {
+        if (method === 'item/agentMessage/delta') deltas.push(p.delta);
+        if (method === 'item/completed') completed.push(p.item.text);
+        if (method === 'turn/completed') atCompletion.push(deltas.join(''));
+      };
+      codex.on('notification', listen);
+      try {
+        assert.equal(
+          await codex.turn('thread', scenario, { model: 'fixture', effort: 'low' }),
+          expected,
+        );
+        assert.equal(deltas.join(''), expected);
+        assert.deepEqual(atCompletion, [expected], 'flush must precede completion');
+        if (scenario === 'completed') assert.deepEqual(completed, [expected]);
+      } finally {
+        codex.off('notification', listen);
+      }
+    }
+  });
+});
+
+test('cancelling a turn discards its withheld key prefix before the next turn', async () => {
+  await streamingFixture(async (codex) => {
+    const deltas: string[] = [];
+    codex.on('notification', (method, params) => {
+      if (method === 'item/agentMessage/delta') deltas.push(params.delta);
+    });
+    const abort = new AbortController();
+    const cancelled = codex.turn(
+      'thread',
+      'cancelled',
+      { model: 'fixture', effort: 'low' },
+      abort.signal,
+    );
+    const rejected = assert.rejects(cancelled, /执行已暂停/);
+    await codex.request('fixture/barrier');
+    abort.abort();
+    await rejected;
+    assert.deepEqual(deltas, []);
+    const result = await codex.turn('thread', 'fixture', { model: 'fixture', effort: 'low' });
+    assert.equal(result, 'before <REDACTED> after');
+    assert.equal(deltas.join(''), result);
+  });
+});
+
 test('custom Codex launch uses argument overrides and a child-only key binding; official launch stays unchanged', async () => {
   const secret = 'process-private-fixture';
   const inherited = { ...process.env };
