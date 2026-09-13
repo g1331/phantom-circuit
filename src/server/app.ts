@@ -8,9 +8,17 @@ import { Store, Fault, redact } from './store.ts';
 import { Engine } from './engine.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
+import { Providers } from './providers.ts';
 import { commandSchema, limit, settingsSchema } from './schemas.ts';
 
-export function createApp(store: Store, engine: Engine, previews: Previews, port = 4317) {
+export function createApp(
+  store: Store,
+  engine: Engine,
+  previews: Previews,
+  port = 4317,
+  createCodex: () => Codex = () => new Codex(),
+) {
+  const providers = new Providers(store, createCodex);
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
   const token = randomBytes(32).toString('hex');
   const csrf = randomBytes(32).toString('hex');
@@ -20,11 +28,23 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     '127.0.0.1:5173',
     'localhost:5173',
   ]);
-  app.setErrorHandler((error, _req, reply) => {
-    const status = error instanceof Fault ? error.status : error instanceof z.ZodError ? 400 : 500;
+  app.setErrorHandler((error, req, reply) => {
+    const providerRequest = req.url.startsWith('/api/providers');
+    const status =
+      error instanceof Fault
+        ? error.status
+        : error instanceof z.ZodError ||
+            (providerRequest && (error as { statusCode?: number }).statusCode === 400)
+          ? 400
+          : 500;
     reply
       .code(status)
-      .send({ error: redact(error instanceof Error ? error.message : String(error)) });
+      .send({
+        error:
+          providerRequest && !(error instanceof Fault)
+            ? 'Provider 请求无效，请检查输入或稍后重试'
+            : redact(error instanceof Error ? error.message : String(error)),
+      });
   });
   app.addHook('onRequest', async (req, reply) => {
     if (!allowed.has(req.headers.host ?? '')) throw new Fault('不允许的 Host', 403);
@@ -71,6 +91,24 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     return store.setTaskPriority(id, req.body, { actor: 'user' });
   });
   app.get('/api/state', async () => store.snapshot());
+  const providerId = (params: unknown) => z.object({ id: z.string() }).parse(params).id;
+  app.get('/api/providers', async () => providers.list());
+  app.get('/api/providers/:id', async (req) => providers.get(providerId(req.params)));
+  app.post('/api/providers', async (req) => providers.save(req.body));
+  app.patch('/api/providers/:id', async (req) => providers.save(req.body, providerId(req.params)));
+  app.delete('/api/providers/:id', async (req) => providers.remove(providerId(req.params)));
+  app.post('/api/providers/:id/models', async (req) => providers.models(providerId(req.params)));
+  app.post('/api/providers/:id/reveal-key', async (req) => {
+    if (
+      !z
+        .object({})
+        .strict()
+        .safeParse(req.body ?? {}).success
+    )
+      throw new Fault('显示密钥请求不接受额外字段');
+    if (req.headers['sec-fetch-site'] === 'cross-site') throw new Fault('不允许的跨站请求', 403);
+    return { apiKey: await providers.reveal(providerId(req.params)) };
+  });
   app.get('/api/events', async (req, reply) => {
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -201,7 +239,7 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     const results = await Promise.allSettled([
       engine.github.identity(),
       (async () => {
-        const c = new Codex();
+        const c = createCodex();
         try {
           await c.start();
           return await c.models();

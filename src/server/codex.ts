@@ -3,9 +3,12 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { command, terminate } from './process.ts';
 import { Fault, redact } from './store.ts';
 import type { Profile } from '../shared/types.ts';
+import { SecretTextStream } from './secret-text-stream.ts';
 
 export interface Model {
   id: string;
@@ -26,6 +29,15 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>;
 }
 export class Codex extends EventEmitter {
+  constructor(
+    private launch: (
+      binary: string,
+      args: string[],
+      options: SpawnOptionsWithoutStdio,
+    ) => ChildProcessWithoutNullStreams = spawn,
+  ) {
+    super();
+  }
   private child?: ChildProcessWithoutNullStreams;
   private seq = 0;
   private pending = new Map<
@@ -34,9 +46,48 @@ export class Codex extends EventEmitter {
   >();
   private toolHandler?: (name: string, args: unknown) => Promise<unknown>;
   private fatal?: Error;
-  async start() {
+  private customProvider = false;
+  private scrubSecret = (text: string) => text;
+  private finishStreams = () => {};
+  async start(provider?: { id: string; baseUrl: string; apiKey: string }) {
+    this.customProvider = provider !== undefined;
     let binary = 'codex';
     let args = ['app-server', '--stdio'];
+    const env = { ...process.env };
+    let keyName: string | undefined;
+    let secret = provider?.apiKey ?? '';
+    this.scrubSecret = (text) => (secret ? text.replaceAll(secret, '<REDACTED>') : text);
+    const deliver = (message: Wire) => {
+      void this.receive(
+        secret
+          ? JSON.parse(JSON.stringify(message), (_key, value) =>
+              typeof value === 'string' ? this.scrubSecret(value) : value,
+            )
+          : message,
+      );
+    };
+    const deltas = new SecretTextStream(secret);
+    const completed = new SecretTextStream(secret, true);
+    this.finishStreams = () => {
+      deltas.finish();
+      completed.finish();
+    };
+    const scrub = (text: string) => redact(secret ? text.replaceAll(secret, '<REDACTED>') : text);
+    if (provider) {
+      if (!/^[a-zA-Z0-9_-]+$/.test(provider.id)) throw new Fault('Provider id 无效');
+      keyName = `PHANTOM_PROVIDER_KEY_${randomUUID().replaceAll('-', '_')}`;
+      env[keyName] = secret;
+      const config = {
+        model_provider: provider.id,
+        [`model_providers.${provider.id}.name`]: provider.id,
+        [`model_providers.${provider.id}.base_url`]: provider.baseUrl,
+        [`model_providers.${provider.id}.env_key`]: keyName,
+        [`model_providers.${provider.id}.wire_api`]: 'responses',
+        [`model_providers.${provider.id}.requires_openai_auth`]: false,
+      };
+      for (const [name, value] of Object.entries(config))
+        args.push('-c', `${name}=${JSON.stringify(value)}`);
+    }
     if (process.platform === 'win32') {
       const paths = (await command('where.exe', ['codex'])).stdout.trim().split(/\r?\n/);
       const entry = paths
@@ -46,16 +97,54 @@ export class Codex extends EventEmitter {
       binary = process.execPath;
       args = [entry, ...args];
     }
-    this.child = spawn(binary, args, { windowsHide: true, stdio: 'pipe', shell: false });
+    try {
+      this.child = this.launch(binary, args, {
+        windowsHide: true,
+        stdio: 'pipe',
+        shell: false,
+        env,
+      });
+    } finally {
+      if (keyName) delete env[keyName];
+    }
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       try {
-        const message = JSON.parse(line) as Wire;
-        void this.receive(message);
+        // Match the raw stream before per-value redaction: a key can span arbitrary deltas.
+        const raw = JSON.parse(line) as Wire;
+        if (secret && raw.id === undefined && raw.method === 'item/agentMessage/delta') {
+          const p = raw.params;
+          deltas.push(p.delta, (delta) => deliver({ ...raw, params: { ...p, delta } }));
+          return;
+        }
+        if (
+          secret &&
+          raw.id === undefined &&
+          raw.method === 'item/completed' &&
+          raw.params.item.type === 'agentMessage' &&
+          typeof raw.params.item.text === 'string'
+        ) {
+          const p = raw.params;
+          completed.push(p.item.text, (text) =>
+            deliver({ ...raw, params: { ...p, item: { ...p.item, text } } }),
+          );
+          return;
+        }
+        if (raw.id === undefined && raw.method === 'turn/completed') this.finishStreams();
+        deliver(raw);
       } catch {
-        this.emit('diagnostic', redact(line));
+        this.emit('diagnostic', scrub(line));
       }
     });
-    this.child.stderr.on('data', (d) => this.emit('diagnostic', redact(d.toString()).slice(-3000)));
+    // Buffer complete lines so a key split across stderr chunks cannot escape redaction.
+    createInterface({ input: this.child.stderr }).on('line', (line) =>
+      this.emit('diagnostic', scrub(line).slice(-3000)),
+    );
+    this.child.on('close', () => {
+      this.finishStreams();
+      deltas.dispose();
+      completed.dispose();
+      secret = '';
+    });
     this.child.on('error', (e) => this.fail(e));
     this.child.on('exit', (code) => this.fail(new Error(`Codex 进程退出 (${code})`)));
     this.child.stdin.on('error', (e) => this.fail(e));
@@ -70,6 +159,7 @@ export class Codex extends EventEmitter {
     this.child.stdin.write(JSON.stringify(message) + '\n');
   }
   private fail(error: Error) {
+    this.finishStreams();
     this.fatal = error;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
@@ -157,6 +247,8 @@ export class Codex extends EventEmitter {
     return all;
   }
   async validate(profile: Profile) {
+    // Discovery is advisory for custom upstreams; thread setup still verifies effective configuration.
+    if (this.customProvider) return;
     const model = (await this.models()).find(
       (m) => m.model === profile.model || m.id === profile.model,
     );
@@ -225,7 +317,8 @@ export class Codex extends EventEmitter {
         this.off('notification', notification);
         this.off('failure', failure);
         signal?.removeEventListener('abort', abort);
-        error ? reject(error) : resolve(output);
+        this.finishStreams();
+        error ? reject(error) : resolve(this.scrubSecret(output));
       };
       const interrupt = async () => {
         if (turnId) await this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
@@ -272,6 +365,7 @@ export class Codex extends EventEmitter {
     });
   }
   async stop() {
+    this.finishStreams();
     if (this.child) await terminate(this.child);
   }
 }

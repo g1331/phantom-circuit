@@ -9,6 +9,25 @@ export interface Profile {
   model: string;
   effort: string;
 }
+export interface Provider {
+  id: string;
+  kind: 'codex' | 'custom';
+  name: string;
+  baseUrl?: string;
+  hasKey: boolean;
+}
+export const officialProvider: Provider = {
+  id: 'codex',
+  kind: 'codex',
+  name: 'Codex 官方登录',
+  hasKey: false,
+};
+export interface ProviderModel {
+  id: string;
+  reasoningEfforts?: string[];
+}
+export type ModelDiscovery =
+  { ok: true; models: ProviderModel[] } | { ok: false; code: string; error: string };
 export interface Settings {
   globalDevLimit: number;
   reviewLimit: number;
@@ -219,6 +238,7 @@ export interface Operation {
   reconciliation?: Reconciliation;
 }
 export interface Snapshot {
+  providers: Provider[];
   projects: Project[];
   repos: Repo[];
   tasks: Task[];
