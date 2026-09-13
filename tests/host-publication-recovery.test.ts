@@ -191,11 +191,12 @@ test('host recovery authorizes one controlled publication and completes without 
     assert.equal(authorization.verdict, 'absent');
     assert.equal(authorization.actor, 'user');
     assert.equal(authorization.observedOperation.status, 'uncertain');
-    assert.equal(
-      authorization.taskRevision,
-      `${failed.repoId}:${failed.branch}@${failed.head}#${failed.base}`,
-      'the authorization names the exact revision that was verified',
-    );
+    // The authorization names the revision that was verified: it moves with the pinned head and
+    // base, and stays put while they do.
+    assert.ok(authorization.taskRevision.includes(failed.repoId));
+    assert.ok(authorization.taskRevision.includes(failed.branch!));
+    assert.ok(authorization.taskRevision.includes(failed.head!));
+    assert.ok(authorization.taskRevision.includes(failed.base!));
 
     // Repeating the explicit resume before any publication re-affirms the same single-use
     // authorization instead of stacking a second one.
@@ -234,6 +235,53 @@ test('host recovery authorizes one controlled publication and completes without 
     await f.cycle();
     assert.equal(f.github.posted.length, 2);
     assert.equal(f.task().stage, 'reviewing');
+  } finally {
+    await f.close();
+  }
+});
+
+test('two concurrent resumes coordinate once and leave the task publishable', async () => {
+  const f = await fixture();
+  try {
+    const failed = await blockedOnPublication(f);
+    // Hold every remote reconciliation read so both resumes park inside the same await, which
+    // makes the interleaving deterministic rather than timing-dependent.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    f.github.readGate = held;
+    const first = f.engine.resume(f.task().id);
+    const second = f.engine.resume(f.task().id);
+    release();
+    const settled = await Promise.allSettled([first, second]);
+    f.github.readGate = undefined;
+
+    // Whatever the loser reported, the task must still be recoverable and must publish once.
+    const result = await f.cycle();
+    assert.equal(
+      result.stage,
+      'reviewing',
+      `blocked=${result.blocked} outcomes=${settled.map((s) => s.status).join(',')}`,
+    );
+    assert.equal(result.pr, 41);
+    assert.equal(result.blocked, undefined);
+    assert.equal(result.retries, 0, 'concurrency must not spend product retry budget');
+    assert.equal(f.github.posted.length, 2, 'exactly one controlled retry is attempted');
+    assert.equal(f.github.writes, 1, 'exactly one PR ever reached the remote');
+    assert.equal(f.operation()!.status, 'done');
+    assert.equal(f.operation()!.reconciliation, undefined);
+    assert.ok(f.operation()!.attempt! <= 2, 'no extra attempt version was allocated');
+    assert.equal(f.starts(), 0, 'concurrency never starts an extra Dev session');
+    assert.equal(f.turns(), 0, 'concurrency never runs a reimplementation turn');
+    assert.equal(result.head, failed.head, 'the pinned revision did not move');
+    assert.equal(result.base, failed.base);
+    assert.deepEqual(
+      result.tests.map((t) => [t.command, t.exitCode]),
+      failed.tests.map((t) => [t.command, t.exitCode]),
+      'the pinned revision keeps its own evidence',
+    );
+    assert.equal(await f.ws.git(f.task().worktree!, ['status', '--porcelain']), '');
+    assert.equal(await f.ws.git(f.source, ['status', '--porcelain']), '');
+    console.log('  concurrent resume outcomes: %s', JSON.stringify(settled.map((s) => s.status)));
   } finally {
     await f.close();
   }

@@ -8,16 +8,32 @@ interface PullRef {
   ref?: string;
   repo?: { full_name?: string } | null;
 }
+/**
+ * A pull request resource. Only the single-PR endpoint
+ * (`GET /repos/{owner}/{repo}/pulls/{number}`) returns `merged`, `mergeable` and
+ * `mergeable_state`; the listing endpoints return the "Pull Request Simple" schema, which
+ * carries `merged_at` and `merge_commit_sha` instead. Merge state must therefore be read with
+ * `isMerged`, never from `merged` alone, or a merged PR obtained from a listing looks unmerged.
+ */
 export interface PullState {
   number: number;
   html_url: string;
   state: string;
-  merged: boolean;
-  mergeable: boolean | null;
-  mergeable_state: string;
+  /** Single-PR endpoint only. */
+  merged?: boolean;
+  /** Listing endpoints only; set exactly when the PR has been merged. */
+  merged_at?: string | null;
+  /** Single-PR endpoint only. */
+  mergeable?: boolean | null;
+  /** Single-PR endpoint only. */
+  mergeable_state?: string;
   head: PullRef;
   base: PullRef;
   body: string;
+}
+/** Merge state that is correct for both the listing and the single-PR resource shapes. */
+export function isMerged(pr: Pick<PullState, 'merged' | 'merged_at'>): boolean {
+  return pr.merged === true || pr.merged_at != null;
 }
 export interface GhResult {
   stdout: string;
@@ -165,15 +181,21 @@ export class GitHub {
     // cannot interleave with another caller in this process.
     const current = this.store.get('operation', key);
     if (current?.status === 'done') return current.result as T;
+    // Every external write attempt gets a new, monotonically increasing version. A repeated
+    // failure restores an identical status and error, so the version is what distinguishes one
+    // attempt from the next.
+    const observedAttempt = current?.attempt ?? 0;
+    const attempt = observedAttempt + 1;
     if (current?.status === 'uncertain' || current?.status === 'pending') {
       const authorization = current.reconciliation;
       if (authorization?.verdict !== 'absent')
         throw new Fault(`外部操作结果不明，需核对后恢复：${kind}`, 409);
-      // The authorization belongs to the exact operation revision and task revision that were
-      // verified. Anything else - a moved branch, a relocated publish, an operation that changed
-      // state while the remote read ran - must be reconciled again before any write.
+      // The authorization belongs to the exact operation attempt and task revision that were
+      // verified. Anything else - a moved branch, a relocated publish, an attempt that already
+      // ran and failed again with the same error - must be reconciled again before any write.
       if (
         authorization.taskRevision !== binding ||
+        authorization.observedAttempt !== observedAttempt ||
         authorization.observedOperation.status !== current.status ||
         (authorization.observedOperation.error ?? '') !== (current.error ?? '')
       )
@@ -185,16 +207,17 @@ export class GitHub {
         kind,
         status: 'uncertain',
         error: current.error,
+        attempt: observedAttempt,
       });
       this.store.event(
         'operation',
         `${kind}：已核实的远端缺失结论允许一次受控重试（核对方 ${authorization.actor}，任务版本 ${authorization.taskRevision}）：${authorization.evidence}`,
       );
     }
-    this.store.put('operation', key, { id: key, kind, status: 'pending' });
+    this.store.put('operation', key, { id: key, kind, status: 'pending', attempt });
     try {
       const result = await write();
-      this.store.put('operation', key, { id: key, kind, status: 'done', result });
+      this.store.put('operation', key, { id: key, kind, status: 'done', result, attempt });
       return result;
     } catch (e) {
       this.store.put('operation', key, {
@@ -202,6 +225,7 @@ export class GitHub {
         kind,
         status: e instanceof GitHubRejected ? 'failed' : 'uncertain',
         error: redact(String(e)),
+        attempt,
       });
       throw e;
     }
@@ -397,7 +421,7 @@ export class GitHub {
       actor: Reconciliation['actor'];
       evidence: string;
       taskRevision: string;
-      observed: { status: Operation['status']; error?: string };
+      observed: { status: Operation['status']; error?: string; attempt: number };
     },
   ) {
     const old = this.store.get('operation', key);
@@ -405,7 +429,11 @@ export class GitHub {
     if (old.status === 'done') throw new Fault('外部操作已有结果，不需要重新创建', 409);
     if (old.status !== 'uncertain' && old.status !== 'pending')
       throw new Fault('外部操作已被明确拒绝，可直接重试', 409);
-    if (old.status !== input.observed.status || (old.error ?? '') !== (input.observed.error ?? ''))
+    if (
+      old.status !== input.observed.status ||
+      (old.error ?? '') !== (input.observed.error ?? '') ||
+      (old.attempt ?? 0) !== input.observed.attempt
+    )
       throw new Fault('核对期间外部操作状态已变化，需要重新核对', 409);
     // A second authorization for the same task revision is refused, so concurrent reconciliations
     // cannot stack. One bound to a revision that no longer applies is superseded instead - only
@@ -417,6 +445,7 @@ export class GitHub {
       verdict: 'absent',
       actor: input.actor,
       observedOperation: { status: old.status, ...(old.error ? { error: old.error } : {}) },
+      observedAttempt: input.observed.attempt,
       taskRevision: input.taskRevision,
       evidence: redact(input.evidence).slice(0, 500),
       at: now(),
@@ -434,11 +463,13 @@ export class GitHub {
   /**
    * Classify every PR that could be this task's publication.
    *
-   * Two independent reads are required to answer, because each covers what the other misses: the
-   * branch query also returns a PR on this branch whose marker was stripped from the body, and
-   * the repository-wide marker sweep also returns a PR whose head branch has since moved. Either
-   * read failing - transport, a later page, a malformed body - propagates, so an incomplete
-   * answer is never read as "absent".
+   * Two independent reads are required, because each covers a case the other misses: the branch
+   * query also returns a PR on this branch whose marker was stripped from the body, and the
+   * repository-wide marker sweep also returns a PR whose head branch has since moved. They do not
+   * cover the intersection - a PR whose marker was stripped *and* whose head branch was renamed
+   * appears in neither - so an empty result means "no related candidate is visible to these two
+   * reads", not "no related PR exists". Either read failing - transport, a later page, a
+   * malformed body - propagates, so an incomplete answer is never read as "absent".
    *
    * A PR is adoptable only when its marker, head repository, head branch, base repository and
    * base branch all agree with this task and it is open or already merged. Anything else is a
@@ -467,7 +498,7 @@ export class GitHub {
         pr.head?.ref === task.branch &&
         pr.base?.repo?.full_name === repo.github &&
         pr.base?.ref === repo.defaultBranch &&
-        (pr.state === 'open' || pr.merged === true),
+        (pr.state === 'open' || isMerged(pr)),
     );
     if (adoptable.length === 1 && prs.length === 1) return { related: prs, adoptable: adoptable[0] };
     return {
@@ -495,12 +526,12 @@ export class GitHub {
       return `PR #${pr.number} 的目标仓库为 ${pr.base?.repo?.full_name ?? '未知'}，不是 ${slug}`;
     if (pr.base?.ref !== defaultBranch)
       return `PR #${pr.number} 的目标分支为 ${pr.base?.ref ?? '未知'}，与默认分支 ${defaultBranch} 不一致`;
-    if (pr.state === 'closed' && pr.merged !== true) return `PR #${pr.number} 已关闭但未合并`;
-    return `PR #${pr.number} 无法自动核对（state=${pr.state}, merged=${String(pr.merged)}）`;
+    if (pr.state === 'closed' && !isMerged(pr)) return `PR #${pr.number} 已关闭但未合并`;
+    return `PR #${pr.number} 无法自动核对（state=${pr.state}, merged=${isMerged(pr)}）`;
   }
   /**
-   * The PR this task may adopt with no write, or undefined when the remote read proved no related
-   * candidate exists. A related candidate that cannot be adopted raises a blocker: it must never
+   * The PR this task may adopt with no write, or undefined when the two reads above found no
+   * related candidate. A related candidate that cannot be adopted raises a blocker: it must never
    * be read as "absent", which would let an authorized retry create a duplicate.
    */
   async findTaskPR(task: Task): Promise<PullState | undefined> {
@@ -513,14 +544,18 @@ export class GitHub {
   }
   /**
    * Explicit host coordination for an unresolved create-pr. The host re-reads the remote task
-   * branch across all PR states and authorizes exactly one controlled retry only when that read
-   * proves no related PR exists. An unreadable, failing or ambiguous read authorizes nothing; a
-   * PR that does exist is reported for adoption instead, and the normal lookup then adopts it.
+   * branch across all PR states and all pages and authorizes exactly one controlled retry only
+   * when that read finds no related candidate. An unreadable, failing, ambiguous or incomplete
+   * read authorizes nothing; a PR that does exist is reported for adoption instead, and the
+   * normal lookup then adopts it.
    *
    * Repeating the coordination for the revision already verified re-affirms the one outstanding
    * authorization rather than stacking a second one. A revision that has since moved supersedes
    * it, because this call has just re-read the remote for the new revision; without that, a task
    * whose head moved after a verification could never be recovered again.
+   *
+   * The remote read is asynchronous, so the operation record is re-read afterwards: the answer
+   * describes the record as it stands now, never a snapshot the read may have outlived.
    */
   async authorizeTaskPRRetry(
     task: Task,
@@ -531,12 +566,19 @@ export class GitHub {
     const observed = {
       status: operation.status,
       ...(operation.error ? { error: operation.error } : {}),
+      attempt: operation.attempt ?? 0,
     };
     const taskRevision = this.taskRevision(task);
     const candidates = await this.pullCandidates(task);
     if (candidates.review) throw this.reviewFault(candidates.review);
     if (candidates.adoptable) return { action: 'adopt', pr: candidates.adoptable };
-    const existing = operation.reconciliation;
+    // Re-read the operation: the remote read above is asynchronous, and a competing resume or a
+    // publication may have consumed, completed or replaced this authorization while it ran. Only
+    // the record as it stands now may be re-affirmed or superseded.
+    const live = this.store.get('operation', operation.id);
+    if (!live || (live.status !== 'uncertain' && live.status !== 'pending'))
+      return { action: 'none' };
+    const existing = live.reconciliation;
     if (existing?.verdict === 'absent' && existing.taskRevision === taskRevision)
       return { action: 'authorize', evidence: existing.evidence };
     const repo = this.store.repo(task.repoId);

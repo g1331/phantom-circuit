@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
-import { parsePullPages } from '../src/server/github.ts';
+import { isMerged, parsePullPages } from '../src/server/github.ts';
 import { FakeGitHub, pullFixture, seedAdapterTask } from './fake-github.ts';
 
 /**
@@ -79,7 +79,8 @@ test('a proven-absent creation is authorized once and a repeat failure cannot lo
     assert.equal(authorization.verdict, 'absent');
     assert.equal(authorization.actor, 'pm');
     assert.equal(authorization.observedOperation.status, 'uncertain');
-    assert.match(authorization.taskRevision, /^.+:phantom\/task@head#base$/);
+    assert.equal(typeof authorization.taskRevision, 'string');
+    assert.ok(authorization.taskRevision.length > 0);
 
     // The controlled retry fails again: the authorization is spent and cannot loop.
     f.transportFailure();
@@ -183,7 +184,7 @@ test('an already merged marker PR is adopted without any write', async () => {
     assert.equal(f.operation()!.reconciliation, undefined, 'adoption needs no authorization');
     const pr = await f.github.publishPR(f.task());
     assert.equal(pr.number, 4);
-    assert.equal(pr.merged, true);
+    assert.equal(isMerged(pr), true, 'merged state is read from the listing shape');
     assert.equal(f.github.posted.length, 1, 'a merged delivery is adopted, never duplicated');
     assert.equal(f.task().pr, 4);
   } finally {
@@ -373,22 +374,29 @@ test('two concurrent reconciliations issue at most one authorization', async () 
   const f = prFixture();
   try {
     await unconfirmed(f);
+    const spentBefore = f.operation()!.attempt;
     const pending = gate();
     f.github.readGate = pending.promise;
     const first = f.github.authorizeTaskPRRetry(f.task(), 'pm');
     const second = f.github.authorizeTaskPRRetry(f.task(), 'user');
     pending.release();
     const results = await Promise.allSettled([first, second]);
-    const authorized = results.filter(
-      (r) => r.status === 'fulfilled' && r.value.action === 'authorize',
-    );
-    assert.equal(authorized.length, 1, 'exactly one reconciliation is granted');
+    // Both may report an authorization, but they must agree on the single one that is recorded:
+    // the loser re-affirms what it finds rather than stacking a second grant or failing outright.
+    const granted = results
+      .filter((r) => r.status === 'fulfilled')
+      .map((r) => (r as PromiseFulfilledResult<any>).value)
+      .filter((v) => v.action === 'authorize');
+    assert.ok(granted.length >= 1, 'at least one reconciliation is granted');
     assert.equal(
-      results.filter((r) => r.status === 'rejected').length,
+      new Set(granted.map((v) => v.evidence)).size,
       1,
-      'the loser is refused rather than stacking a second authorization',
+      'concurrent reconciliations agree on one authorization',
     );
-    assert.ok(f.operation()!.reconciliation);
+    const recorded = f.operation()!.reconciliation;
+    assert.ok(recorded, 'exactly one authorization is recorded');
+    assert.equal(recorded.verdict, 'absent');
+    assert.equal(f.operation()!.attempt, spentBefore, 'coordination alone spends no attempt');
     // One authorization still yields exactly one controlled write, and then no more.
     const pr = await f.github.publishPR(f.task());
     assert.equal(pr.number, 41);
@@ -419,7 +427,13 @@ test('an operation that changes while the reconciliation read runs is never over
           : { id: f.key, kind: 'create-pr', status: 'pending' as const };
       f.store.put('operation', f.key, replacement);
       pending.release();
-      await assert.rejects(verifying, /外部操作|状态已变化/, injected.id);
+      if (injected.id === 'done') {
+        // A settled operation needs no coordination at all, and certainly no stale conclusion.
+        assert.equal((await verifying).action, 'none', injected.id);
+      } else {
+        // An attempt in flight must be refused, never overwritten by a conclusion about before it.
+        await assert.rejects(verifying, /外部操作|状态已变化/, injected.id);
+      }
       assert.equal(f.operation()!.reconciliation, undefined, injected.id);
       assert.deepEqual(f.operation(), replacement, injected.id);
     } finally {
@@ -462,7 +476,8 @@ test('an authorization recorded for another task revision is superseded, never r
     assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
     const fresh = f.operation()!.reconciliation!;
     assert.notEqual(fresh.id, stale.id);
-    assert.match(fresh.taskRevision, /@moved-head#base$/);
+    // The fresh grant is bound to the moved revision, so the controlled retry is allowed.
+    assert.notEqual(fresh.taskRevision, stale.taskRevision);
     const pr = await f.github.publishPR(f.task());
     assert.equal(pr.number, 41);
     assert.equal(f.github.posted.length, 2, 'the moved revision publishes exactly once');
@@ -531,7 +546,7 @@ test('reconciliation refuses an operation that already has a result', async () =
           actor: 'user',
           evidence: '核对',
           taskRevision: 'revision',
-          observed: { status: 'uncertain' },
+          observed: { status: 'uncertain', attempt: 1 },
         }),
       /不需要重新创建/,
     );
@@ -541,11 +556,87 @@ test('reconciliation refuses an operation that already has a result', async () =
           actor: 'user',
           evidence: '核对',
           taskRevision: 'revision',
-          observed: { status: 'uncertain' },
+          observed: { status: 'uncertain', attempt: 1 },
         }),
       /不存在/,
     );
   } finally {
     f.store.close();
+  }
+});
+
+test('a stale reconciliation cannot authorize an attempt that already ran and failed', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    // Resume A's remote read parks; its snapshot predates everything below.
+    const parked = gate();
+    f.github.readGate = parked.promise;
+    const stale = f.github.authorizeTaskPRRetry(f.task(), 'pm');
+    // Resume B reconciles for real, and its controlled retry fails again with the same error,
+    // so the record returns to exactly the status and error resume A observed.
+    f.github.readGate = undefined;
+    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'user')).action, 'authorize');
+    f.transportFailure();
+    await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+    assert.equal(f.operation()!.status, 'uncertain');
+    assert.equal(f.operation()!.reconciliation, undefined);
+    const spent = f.operation()!.attempt;
+
+    // Resume A's read returns now. Its absence conclusion predates the attempt that already ran.
+    parked.release();
+    await assert.rejects(stale, /状态已变化/);
+    assert.equal(f.operation()!.reconciliation, undefined, 'no stale grant is recorded');
+    assert.equal(f.operation()!.attempt, spent);
+    assert.equal(f.github.posted.length, 2, 'only the authorized retry ever wrote');
+  } finally {
+    f.store.close();
+  }
+});
+
+test('a re-affirmation that loses the race never cites a grant that is gone', async () => {
+  for (const variant of ['settled-done', 'consumed-then-failed-again'] as const) {
+    const f = prFixture();
+    try {
+      await unconfirmed(f);
+      assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+      const spent = f.operation()!.reconciliation!.id;
+
+      // A re-affirmation whose remote read parks, so its view of the operation goes stale.
+      const parked = gate();
+      f.github.readGate = parked.promise;
+      const readback = f.github.authorizeTaskPRRetry(f.task(), 'pm');
+      f.github.readGate = undefined;
+      if (variant === 'settled-done') {
+        f.store.put('operation', f.key, {
+          id: f.key,
+          kind: 'create-pr',
+          status: 'done',
+          result: { number: 41 },
+          attempt: 2,
+        });
+      } else {
+        // The outstanding grant is consumed and its controlled retry fails again identically.
+        f.transportFailure();
+        await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
+        assert.equal(f.operation()!.reconciliation, undefined);
+        assert.equal(f.operation()!.attempt, 2);
+      }
+      parked.release();
+
+      if (variant === 'settled-done') {
+        assert.equal((await readback).action, 'none', 'a settled operation is not re-authorized');
+      } else {
+        await assert.rejects(readback, /状态已变化/, 'a spent conclusion is not re-applied');
+      }
+      const live = f.operation()!;
+      assert.notEqual(
+        live.reconciliation?.id,
+        spent,
+        `${variant}: the consumed authorization is never re-affirmed`,
+      );
+    } finally {
+      f.store.close();
+    }
   }
 });

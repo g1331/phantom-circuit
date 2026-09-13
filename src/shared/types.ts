@@ -155,6 +155,13 @@ export interface Reconciliation {
   actor: 'user' | 'pm';
   /** The unresolved operation revision the remote verification was performed against. */
   observedOperation: { status: Operation['status']; error?: string };
+  /**
+   * The attempt counter as it stood when the remote was verified. Status and error can leave and
+   * return to the same value - an authorized retry that fails again with the same error restores
+   * `{uncertain, error}` exactly - so they cannot identify an attempt on their own. This counter
+   * increments for every external write attempt and makes that returned-to state distinguishable.
+   */
+  observedAttempt: number;
   /** The task revision (repository, branch, head, base) the remote verification was about. */
   taskRevision: string;
   evidence: string;
@@ -167,10 +174,16 @@ export interface Operation {
   result?: unknown;
   error?: string;
   /**
+   * Monotonic count of external write attempts made for this operation. It changes even when a
+   * repeated failure restores an identical status and error, so it is the identity an
+   * authorization binds to.
+   */
+  attempt?: number;
+  /**
    * Durable, single-use authorization recorded only after an explicit host coordination step
    * re-read the remote state and proved this operation created no remote object. Automatic
    * lookups never write it, so an unresolved outcome is still never blindly repeated. It is
-   * bound to the operation revision and task revision it was verified against, and is consumed
+   * bound to the operation attempt and task revision it was verified against, and is consumed
    * before the controlled retry, so it can never be replayed for a revision nobody checked.
    */
   reconciliation?: Reconciliation;

@@ -8,13 +8,16 @@ import type { Task } from '../src/shared/types.ts';
  * and reconciliation - is the real implementation under test. No test in this suite talks to
  * github.com or performs a remote write.
  */
+/**
+ * The "Pull Request Simple" shape that GitHub's *listing* endpoints return. It deliberately
+ * carries `merged_at` and not `merged`: only the single-PR endpoint returns `merged`, so a fake
+ * that supplied it would let a listing bug pass unnoticed.
+ */
 export interface FakePull {
   number: number;
   html_url: string;
   state: string;
-  merged: boolean;
-  mergeable: boolean | null;
-  mergeable_state: string;
+  merged_at: string | null;
   head: { sha: string; ref: string; repo: { full_name: string } | null };
   base: { sha: string; ref: string; repo: { full_name: string } | null };
   body: string;
@@ -39,9 +42,7 @@ export function pullFixture(input: {
     number: input.number,
     html_url: `https://github.com/${input.slug}/pull/${input.number}`,
     state: input.state ?? 'open',
-    merged: input.merged ?? false,
-    mergeable: true,
-    mergeable_state: 'clean',
+    merged_at: input.merged ? '2026-09-13T00:00:00Z' : null,
     head: {
       sha: input.headSha ?? 'head',
       ref: input.headRef ?? input.branch,
@@ -121,7 +122,12 @@ export class FakeGitHub extends GitHub {
     });
     this.pulls.push(pull);
     if (this.loseWriteResponse) throw new Error('gh (1): unexpected end of JSON input');
-    return { stdout: JSON.stringify(pull), stderr: '', code: 0 };
+    // Creation answers with the single-PR resource, which is the shape that does carry `merged`.
+    return {
+      stdout: JSON.stringify({ ...pull, merged: false, mergeable: true, mergeable_state: 'clean' }),
+      stderr: '',
+      code: 0,
+    };
   }
 
   /** GitHub's own `head=owner:branch` filter, applied to the fake's holdings. */
