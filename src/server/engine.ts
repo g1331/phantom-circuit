@@ -962,6 +962,15 @@ export class Engine {
     )
       throw new Fault('正在停止任务，请稍后恢复', 409);
     try {
+      // An explicit resume is the host's supported reconciliation path for an external creation
+      // whose outcome is still unknown. Re-read the remote state here and authorize at most one
+      // controlled retry; a failed or inconclusive read raises a blocker instead of repeating a
+      // write whose outcome nobody verified.
+      if (await this.github.authorizeTaskPRRetry(t, guidance ? 'pm' : 'user'))
+        this.store.event('task', '已核对远端 Task PR 不存在，授权一次受控发布重试', {
+          projectId: t.projectId,
+          taskId: t.id,
+        });
       if (t.worktree) {
         await this.workspaces.assertTask(t);
         if (t.pr) {

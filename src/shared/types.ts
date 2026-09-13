@@ -147,12 +147,25 @@ export interface Event {
   runId?: string;
   message: string;
 }
+export interface Reconciliation {
+  /** Only a proven-absent remote object authorizes a retry; a present object is adopted instead. */
+  verdict: 'absent';
+  actor: 'user' | 'pm';
+  evidence: string;
+  at: string;
+}
 export interface Operation {
   id: string;
   kind: string;
   status: 'pending' | 'done' | 'uncertain' | 'failed';
   result?: unknown;
   error?: string;
+  /**
+   * Durable, single-use authorization recorded only after an explicit host coordination step
+   * re-read the remote state and proved this operation created no remote object. Automatic
+   * lookups never write it, so an unresolved outcome is still never blindly repeated.
+   */
+  reconciliation?: Reconciliation;
 }
 export interface Snapshot {
   projects: Project[];

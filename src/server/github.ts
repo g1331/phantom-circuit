@@ -1,6 +1,6 @@
 import { command } from './process.ts';
-import { Fault, Store, redact } from './store.ts';
-import type { Repo, Task, ReviewResult } from '../shared/types.ts';
+import { Fault, Store, now, redact } from './store.ts';
+import type { Operation, Reconciliation, Repo, Task, ReviewResult } from '../shared/types.ts';
 
 export interface PullState {
   number: number;
@@ -95,13 +95,25 @@ export class GitHub {
   ): Promise<T> {
     const old = this.store.get('operation', key);
     if (old?.status === 'done') return old.result as T;
+    // A read that cannot answer - transport failure, partial JSON, pagination error - throws
+    // and never counts as proof that the remote object is missing.
     const existing = await lookup();
     if (existing !== undefined) {
       this.store.put('operation', key, { id: key, kind, status: 'done', result: existing });
       return existing;
     }
-    if (old?.status === 'uncertain' || old?.status === 'pending')
-      throw new Fault(`外部操作结果不明，需核对后恢复：${kind}`, 409);
+    if (old?.status === 'uncertain' || old?.status === 'pending') {
+      const authorization = old.reconciliation;
+      if (authorization?.verdict !== 'absent')
+        throw new Fault(`外部操作结果不明，需核对后恢复：${kind}`, 409);
+      // Consume the single-use authorization before the controlled retry, so a repeated
+      // failure cannot loop and an interruption cannot reuse it.
+      this.store.put('operation', key, { id: key, kind, status: 'uncertain', error: old.error });
+      this.store.event(
+        'operation',
+        `${kind}：已核实的远端缺失结论允许一次受控重试（核对方 ${authorization.actor}）：${authorization.evidence}`,
+      );
+    }
     this.store.put('operation', key, { id: key, kind, status: 'pending' });
     try {
       const result = await write();
@@ -279,6 +291,62 @@ export class GitHub {
     }
     return issue;
   }
+  /** Operations of one kind whose remote outcome is still unknown to this host. */
+  unresolved(kind: string): Operation[] {
+    return this.store
+      .list('operation')
+      .filter((x) => x.kind === kind && ['uncertain', 'pending'].includes(x.status));
+  }
+  /**
+   * Record a durable, single-use authorization to retry a creation whose remote object an
+   * explicit coordination step proved absent. Only host coordination paths call this; the
+   * adapter's own lookups never do, so an unresolved outcome is never blindly repeated.
+   */
+  reconcileAbsent(key: string, input: { actor: Reconciliation['actor']; evidence: string }) {
+    const old = this.store.get('operation', key);
+    if (!old) throw new Fault('需要核对的外部操作不存在', 404);
+    if (old.status === 'done') throw new Fault('外部操作已有结果，不需要重新创建', 409);
+    if (old.status !== 'uncertain' && old.status !== 'pending')
+      throw new Fault('外部操作已被明确拒绝，可直接重试', 409);
+    const reconciliation: Reconciliation = {
+      verdict: 'absent',
+      actor: input.actor,
+      evidence: redact(input.evidence).slice(0, 500),
+      at: now(),
+    };
+    this.store.put('operation', key, { ...old, reconciliation });
+    return this.store.get('operation', key)!;
+  }
+  /** Authoritative read of this task's PR, matched by the Phantom marker on the task branch. */
+  async findTaskPR(task: Task): Promise<PullState | undefined> {
+    const repo = this.store.repo(task.repoId);
+    const owner = repo.github.split('/')[0];
+    return (
+      await this.paged(
+        `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(`${owner}:${task.branch}`)}&per_page=100`,
+      )
+    ).find((x: PullState) => x.body?.includes(`<!-- phantom-task:${task.id} -->`));
+  }
+  async unresolvedTaskPR(task: Task): Promise<Operation | undefined> {
+    return this.unresolved('create-pr').find((x) => x.id === `pr:${task.id}`);
+  }
+  /**
+   * Explicit host coordination for an unresolved create-pr. The host re-reads the remote task
+   * branch across all PR states and authorizes exactly one controlled retry only when that read
+   * proves the marker-bearing PR was never created. An unreadable or failing read authorizes
+   * nothing, and a PR that does exist is left for the normal lookup to adopt.
+   */
+  async authorizeTaskPRRetry(task: Task, actor: Reconciliation['actor']): Promise<boolean> {
+    const operation = await this.unresolvedTaskPR(task);
+    if (!operation) return false;
+    const repo = this.store.repo(task.repoId);
+    if ((await this.findTaskPR(task)) !== undefined) return false;
+    this.reconcileAbsent(operation.id, {
+      actor,
+      evidence: `恢复核对：${repo.github} 全部状态的 PR 查询未发现 <!-- phantom-task:${task.id} -->，任务分支 ${task.branch}；上次记录 ${operation.error ?? '无'}`,
+    });
+    return true;
+  }
   async publishPR(task: Task): Promise<PullState> {
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
@@ -287,12 +355,7 @@ export class GitHub {
     const result = await this.operation(
       `pr:${task.id}`,
       'create-pr',
-      async () =>
-        (
-          await this.paged(
-            `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(repo.github.split('/')[0] + ':' + task.branch)}&per_page=100`,
-          )
-        ).find((x) => x.body?.includes(marker)),
+      () => this.findTaskPR(task),
       () =>
         this.api(`repos/${repo.github}/pulls`, 'POST', {
           title: task.title,
