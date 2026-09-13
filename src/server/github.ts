@@ -667,8 +667,9 @@ export class GitHub {
       return `PR #${pr.number} 的目标仓库为 ${pr.base?.repo?.full_name ?? '未知'}，不是 ${slug}`;
     if (pr.base?.ref !== defaultBranch)
       return `PR #${pr.number} 的目标分支为 ${pr.base?.ref ?? '未知'}，与默认分支 ${defaultBranch} 不一致`;
-    // Checked last, because it is the least human-actionable reason: a PR whose body or target
-    // was changed needs a person's decision, while a revision mismatch is usually just stale.
+    // Checked after the body and target reasons, because it is the least human-actionable: a PR
+    // whose body or target was changed needs a person's decision, while a stale revision usually
+    // just needs the task to be reconciled again.
     if (pr.head?.sha !== task.head)
       return `PR #${pr.number} 的 revision 为 ${pr.head?.sha ?? '未知'}，与任务当前固定 revision ${task.head ?? '未知'} 不一致`;
     if (pr.state === 'closed' && !isMerged(pr)) return `PR #${pr.number} 已关闭但未合并`;

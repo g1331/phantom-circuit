@@ -121,7 +121,7 @@ async function fixture() {
       marks = { starts, turns };
     },
     /** Model the accepted-request-with-lost-response variant of the same unknown outcome. */
-    loseResponse: (value = true) => {
+    loseResponse: (value: boolean) => {
       github.loseWriteResponse = value;
     },
     failWrite: (value: boolean) => {
@@ -389,7 +389,7 @@ test('a creation whose response was lost is adopted at resume, never created twi
   try {
     // The remote accepted the creation; only the response was lost. This is the other half of
     // the real incident, and the variant that must never produce a second PR.
-    f.loseResponse();
+    f.loseResponse(true);
     const lost = await f.cycle();
     f.loseResponse(false);
     assert.equal(lost.control, 'paused');
@@ -412,6 +412,14 @@ test('a creation whose response was lost is adopted at resume, never created twi
     assert.equal(f.github.posted.length, 1, 'the lost-response PR is adopted, not recreated');
     assert.equal(f.github.writes, 1, 'and no second PR ever reached the remote');
     assert.equal(result.retries, 0);
+    // Adoption must not move the pinned revision or replace the evidence it was validated with.
+    assert.equal(result.head, lost.head);
+    assert.equal(result.base, lost.base);
+    assert.deepEqual(
+      result.tests.map((t) => [t.command, t.exitCode]),
+      lost.tests.map((t) => [t.command, t.exitCode]),
+      'the pinned revision keeps its own formal evidence',
+    );
     assert.equal(f.starts(), 0, 'adoption needs no Dev session');
     assert.equal(f.turns(), 0);
     assert.equal(await f.ws.git(f.task().worktree!, ['status', '--porcelain']), '');
