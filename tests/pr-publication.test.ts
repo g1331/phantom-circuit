@@ -244,6 +244,33 @@ test('a marker PR from another repository or branch blocks instead of authorizin
   }
 });
 
+test('a marker PR from an earlier revision of the task branch is not adopted', async () => {
+  const f = prFixture();
+  try {
+    await unconfirmed(f);
+    // Same branch, same marker, same base - but the delivery is not the pinned revision.
+    f.github.pulls = [
+      pullFixture({
+        number: 9,
+        slug: 'example/repo',
+        branch: 'phantom/task',
+        marker: f.marker,
+        headSha: 'an-earlier-revision',
+      }),
+    ];
+    await assert.rejects(
+      f.github.authorizeTaskPRRetry(f.task(), 'pm'),
+      /revision 为 an-earlier-revision.*固定 revision head/,
+    );
+    assert.equal(f.operation()!.reconciliation, undefined);
+    await assert.rejects(f.github.publishPR(f.task()), /revision 为 an-earlier-revision/);
+    assert.equal(f.github.posted.length, 1, 'an older revision never authorizes a duplicate');
+    assert.equal(f.task().pr, undefined, 'and is never adopted as this task delivery');
+  } finally {
+    f.store.close();
+  }
+});
+
 test('multiple related candidates block instead of authorizing', async () => {
   const f = prFixture();
   try {
@@ -703,7 +730,9 @@ test('a re-affirmation that loses the race never cites a grant that is gone', as
     try {
       await unconfirmed(f);
       assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+      // The grant that the parked read still believes in, and the attempt it was issued for.
       const spent = f.operation()!.reconciliation!.id;
+      const spentAttempt = f.operation()!.attempt;
 
       // A re-affirmation whose remote read parks, so its view of the operation goes stale.
       const parked = gate();
@@ -733,11 +762,18 @@ test('a re-affirmation that loses the race never cites a grant that is gone', as
         await assert.rejects(readback, /状态已变化/, 'a spent conclusion is not re-applied');
       }
       const live = f.operation()!;
-      assert.notEqual(
-        live.reconciliation?.id,
-        spent,
-        `${variant}: the consumed authorization is never re-affirmed`,
+      // Neither variant may leave any authorization behind: one settled, the other was consumed.
+      assert.equal(
+        live.reconciliation,
+        undefined,
+        `${variant}: authorization ${spent.slice(0, 8)} must not still be in force`,
       );
+      if (variant === 'consumed-then-failed-again')
+        assert.equal(
+          live.attempt,
+          spentAttempt! + 1,
+          'the grant was spent on the controlled retry, not silently dropped',
+        );
     } finally {
       f.store.close();
     }

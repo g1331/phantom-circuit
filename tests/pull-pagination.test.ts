@@ -93,6 +93,24 @@ test('the process output flag reports truncation without changing the cap', asyn
   assert.equal(long.stdout.at(-1), 'a', 'the tail is what survives, so a JSON front is lost');
 });
 
+test('multi-byte output survives chunk boundaries intact', async () => {
+  // 2.1M three-byte characters is past the cap in characters and ~6.3 MB of UTF-8, so the
+  // payload is split across many 64 KB chunks. Decoding must neither mangle a character that
+  // straddles a boundary nor mis-count the output.
+  const chars = 2_100_000;
+  const result = await command(process.execPath, [
+    '-e',
+    `process.stdout.write("\\u4e2d".repeat(${chars}))`,
+  ]);
+  assert.equal(result.truncated, true, 'more characters arrived than the cap holds');
+  assert.equal(result.stdout.length, OUTPUT_LIMIT);
+  assert.ok(
+    !result.stdout.includes('\ufffd'),
+    'no character was replaced, so nothing was corrupted at a chunk boundary',
+  );
+  assert.equal(result.stdout.at(-1), '\u4e2d', 'the retained tail is whole characters');
+});
+
 test('exhausting the page bound leaves the operation untouched and authorizes nothing', async () => {
   const store = new Store(':memory:');
   try {
@@ -104,8 +122,20 @@ test('exhausting the page bound leaves the operation untouched and authorizes no
     github.failWrite = undefined;
     const before = store.get('operation', key)!;
 
-    github.endlessPages = true;
+    // A full page every time, so neither listing can ever confirm its own end, and a count of
+    // the requests that actually went out.
+    const full = JSON.stringify(
+      [...Array(20).keys()].map((i) =>
+        pullFixture({ number: 100 + i, slug: 'example/repo', branch: 'phantom/other' }),
+      ),
+    );
+    let requests = 0;
+    github.readBody = () => {
+      requests++;
+      return full;
+    };
     await assert.rejects(github.authorizeTaskPRRetry(seed.task(), 'pm'), /最多 500 页的上限/);
+    assert.equal(requests, 500, 'the page budget is shared: one scan asks for 500 pages in total');
     const after = store.get('operation', key)!;
     assert.equal(after.reconciliation, undefined, 'no absence conclusion was recorded');
     assert.equal(after.status, 'uncertain', 'the unresolved operation is preserved');
@@ -115,8 +145,7 @@ test('exhausting the page bound leaves the operation untouched and authorizes no
     // went wrong and how far the read got, without pinning the exact sentence.
     const evidence = store.events().map((e) => e.message).join('\n');
     assert.match(evidence, /未能完成读取/);
-    assert.match(evidence, /已读取 \d+ 页/);
-    assert.match(evidence, /任务分支 \d+ 页、任务标记 \d+ 页/);
+    assert.match(evidence, /合计 \d+ 页/);
 
     await assert.rejects(github.publishPR(seed.task()), /查询未完成|核对后恢复/);
     assert.equal(github.posted.length, 1, 'an unread listing never reaches a creation');
@@ -157,7 +186,7 @@ test('exhausting the total time budget leaves the operation untouched and author
     assert.equal(after.attempt, before.attempt, 'no attempt was spent');
     const evidence = store.events().map((e) => e.message).join('\n');
     assert.match(evidence, /总时限/, 'the blocker names the bound that was hit');
-    assert.match(evidence, /已读取 \d+ 页/, 'and how far the read got');
+    assert.match(evidence, /合计 \d+ 页/, 'and how far the read got');
     await assert.rejects(github.publishPR(seed.task()), /查询未完成|核对后恢复/);
     assert.equal(github.posted.length, 1);
   } finally {

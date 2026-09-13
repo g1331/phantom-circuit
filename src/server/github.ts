@@ -71,7 +71,7 @@ export function parsePullPage(stdout: string): PullState[] {
 }
 /** Conservative page size: one page stays far below the process stdout limit. */
 const PULL_PAGE_SIZE = 20;
-/** A single coordination scan reads at most this many pages of either listing. */
+/** One coordination scan reads at most this many pages in total, across both listings. */
 const PULL_MAX_PAGES = 500;
 /** A single coordination scan must finish within this budget. */
 const PULL_SCAN_MS = 120_000;
@@ -79,12 +79,17 @@ const PULL_SCAN_MS = 120_000;
 interface PullScan {
   /** Retained PRs in page order, deduplicated by number. */
   kept: PullState[];
-  /** Page requests made. */
+  /** Page requests this listing made. */
   pages: number;
   /** Set when the listing was not read to its end; absent means the last page was confirmed. */
   incomplete?: string;
   /** The request failure that ended the scan, to be rethrown unchanged by the caller. */
   failure?: unknown;
+}
+/** What the two listings of one coordination scan share: a total page budget and a stop reason. */
+interface ScanBudget {
+  reason?: string;
+  pages: number;
 }
 /**
  * Whether an observed operation revision still describes the operation as it stands. Status and
@@ -250,7 +255,7 @@ export class GitHub {
       });
       this.store.event(
         'operation',
-        `${kind}：已核实的远端缺失结论允许一次受控重试（核对方 ${authorization.actor}，任务版本 ${authorization.taskRevision}）：${authorization.evidence}`,
+        `${kind}：经核对的远端候选缺失结论允许一次受控重试（核对方 ${authorization.actor}，任务版本 ${authorization.taskRevision}）：${authorization.evidence}`,
       );
     }
     this.store.put('operation', key, { id: key, kind, status: 'pending', attempt });
@@ -286,26 +291,30 @@ export class GitHub {
     base: string,
     retain: (pr: PullState) => boolean,
     deadline: number,
-    halt: { reason?: string },
+    budget: ScanBudget,
   ): Promise<PullScan> {
     const kept = new Map<number, PullState>();
     const result = () => ({ kept: [...kept.values()] });
     let pages = 0;
     /** End the scan as unread, recording the first reason so the sibling scan can stop too. */
     const stop = (incomplete: string): PullScan => {
-      halt.reason ??= incomplete;
+      budget.reason ??= incomplete;
       return { ...result(), pages, incomplete };
     };
     for (let page = 1; page <= PULL_MAX_PAGES; page++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
+        return stop(`已读取 ${budget.pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`);
+      // One page budget covers both listings, so the two together cannot exceed it.
+      if (budget.pages >= PULL_MAX_PAGES)
         return stop(
-          `已读取 ${pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`,
+          `已读取 ${budget.pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`,
         );
       // Once either listing is known unreadable the whole scan is settled, so the sibling stops
-      // at its next page boundary instead of reading up to its own bound for nothing.
-      if (halt.reason) return { ...result(), pages, incomplete: halt.reason };
+      // at its next page boundary instead of reading on for nothing.
+      if (budget.reason) return { ...result(), pages, incomplete: budget.reason };
       pages++;
+      budget.pages++;
       let response: GhResult;
       try {
         // Each request is bounded by whatever is left of the scan budget.
@@ -318,7 +327,7 @@ export class GitHub {
         // A failed request leaves the listing unread, and its own error is rethrown unchanged
         // because the caller's transport classification depends on it.
         const reason = `第 ${page} 页请求失败：${redact(String(error))}`;
-        halt.reason ??= reason;
+        budget.reason ??= reason;
         return { ...result(), pages, incomplete: reason, failure: error };
       }
       if (response.truncated)
@@ -333,7 +342,7 @@ export class GitHub {
       for (const pr of items) if (retain(pr)) kept.set(pr.number, pr);
       if (items.length < PULL_PAGE_SIZE) return { ...result(), pages };
     }
-    return stop(`已读取 ${pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`);
+    return stop(`已读取 ${budget.pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`);
   }
   async feedback(task: Task): Promise<{ key: string; text: string }[]> {
     if (!task.pr) return [];
@@ -580,32 +589,37 @@ export class GitHub {
     const repo = this.store.repo(task.repoId);
     const owner = repo.github.split('/')[0];
     const marker = `<!-- phantom-task:${task.id} -->`;
-    // One budget covers the whole coordination read; each listing has its own page bound. The
-    // sweep keeps only marker-bearing PRs, so unrelated bodies are never accumulated.
+    // One budget covers the whole coordination read: one deadline and one page allowance shared
+    // by both listings. The sweep keeps only marker-bearing PRs, so unrelated bodies are never
+    // accumulated.
     const deadline = Date.now() + PULL_SCAN_MS;
-    const halt: { reason?: string } = {};
+    const budget: ScanBudget = { pages: 0 };
     const [onBranch, sweep] = await Promise.all([
       this.scanPulls(
         `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(`${owner}:${task.branch}`)}`,
         () => true,
         deadline,
-        halt,
+        budget,
       ),
       this.scanPulls(
         `repos/${repo.github}/pulls?state=all`,
         (pr) => pr.body?.includes(marker) ?? false,
         deadline,
-        halt,
+        budget,
       ),
     ]);
-    const unread = onBranch.incomplete ? onBranch : sweep.incomplete ? sweep : undefined;
+    // Prefer the listing that actually failed, so its original error is rethrown rather than
+    // being replaced by the reason its sibling halted with.
+    const unread =
+      [onBranch, sweep].find((scan) => scan.failure) ??
+      (onBranch.incomplete ? onBranch : sweep.incomplete ? sweep : undefined);
     if (unread) {
       // The listings were not read to their end, so they cannot speak to absence. The operation
       // is left exactly as it stands: nothing is authorized and no creation is attempted. The
       // reason and the pages requested are kept as durable evidence either way.
       this.store.event(
         'operation',
-        `远端 Task PR 核对未能完成读取（任务分支 ${onBranch.pages} 页、任务标记 ${sweep.pages} 页）：${unread.incomplete}`,
+        `远端 Task PR 核对未能完成读取（任务分支 ${onBranch.pages} 页、任务标记 ${sweep.pages} 页，合计 ${budget.pages} 页）：${unread.incomplete}`,
       );
       if (unread.failure) throw unread.failure;
       throw new Fault(`远端 Task PR 查询未完成，需要核对后恢复：${unread.incomplete}`, 502);
@@ -620,6 +634,9 @@ export class GitHub {
         pr.body?.includes(marker) &&
         pr.head?.repo?.full_name === repo.github &&
         pr.head?.ref === task.branch &&
+        // The delivery must be the pinned revision itself, not just the branch it was pushed to:
+        // a PR left from an earlier revision is not this task's verified delivery.
+        pr.head?.sha === task.head &&
         pr.base?.repo?.full_name === repo.github &&
         pr.base?.ref === repo.defaultBranch &&
         (pr.state === 'open' || isMerged(pr)),
@@ -644,6 +661,8 @@ export class GitHub {
       return `PR #${pr.number} 的源仓库为 ${pr.head?.repo?.full_name ?? '未知'}，不是 ${slug}`;
     if (pr.head?.ref !== task.branch)
       return `PR #${pr.number} 的源分支为 ${pr.head?.ref ?? '未知'}，与任务分支 ${task.branch} 不一致`;
+    if (pr.head?.sha !== task.head)
+      return `PR #${pr.number} 的 revision 为 ${pr.head?.sha ?? '未知'}，与任务当前固定 revision ${task.head ?? '未知'} 不一致`;
     if (!pr.body?.includes(marker))
       return `PR #${pr.number} 位于任务分支但缺少任务标记，正文可能已被人工修改；既不能确认为本任务的发布，也不会被覆盖`;
     if (pr.base?.repo?.full_name !== slug)

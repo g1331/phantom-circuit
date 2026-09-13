@@ -80,7 +80,6 @@ export class FakeGitHub extends GitHub {
   failWrite: Error | undefined;
   /** Apply the creation, then fail - modelling a response lost after the remote committed it. */
   loseWriteResponse = false;
-  reads = 0;
   /** Creations the remote actually applied. */
   writes = 0;
 
@@ -90,7 +89,6 @@ export class FakeGitHub extends GitHub {
     const method = declared === -1 ? 'GET' : args[declared + 1];
     if (method === 'POST' && /\/pulls$/.test(endpoint)) return this.create(input);
     if (method !== 'GET') throw new Fault(`fake gh: unsupported ${method} ${endpoint}`, 502);
-    this.reads++;
     if (this.readGate) await this.readGate;
     if (this.failRead) throw this.failRead;
     if (/\/issues\/\d+$/.test(endpoint))

@@ -312,10 +312,14 @@ test('a listing that cannot be read to its end blocks with the reason and spends
     assert.equal(f.starts(), 0, 'no extra Dev session');
     assert.equal(f.turns(), 0);
 
-    // Ticks must not turn an unread listing into a retry loop either.
-    for (let i = 0; i < 4; i++) await f.cycle();
-    assert.equal(f.github.posted.length, 1);
-    assert.equal(f.operation()!.reconciliation, undefined);
+    // Ticks must not turn an unread listing into a retry loop either. Check the invariant at
+    // every step: the task stays paused, so no tick can claim it, and no grant or write appears.
+    for (let i = 0; i < 4; i++) {
+      assert.equal((await f.cycle()).control, 'paused', `tick ${i} must not resume the task`);
+      assert.equal(f.github.posted.length, 1, `tick ${i} must not create`);
+      assert.equal(f.operation()!.reconciliation, undefined, `tick ${i} must not authorize`);
+      assert.equal(f.store.activeRuns().length, 0, `tick ${i} must not start a Run`);
+    }
 
     // Once the listing can be read to its end, the same explicit resume recovers normally.
     await f.engine.resume(f.task().id);

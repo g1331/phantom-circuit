@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { Fault, redact } from './store.ts';
 
 export async function terminate(child: ChildProcess) {
@@ -34,6 +35,10 @@ export function command(
     let stdout = '',
       stderr = '',
       received = 0;
+    // Decode through StringDecoder so a multi-byte character split across two chunks is not
+    // mangled, which would corrupt structured output for no reason.
+    const outDecoder = new StringDecoder('utf8');
+    const errDecoder = new StringDecoder('utf8');
     let settled = false;
     let stopError: Error | undefined;
     const timer = setTimeout(() => {
@@ -56,17 +61,22 @@ export function command(
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
+      // Flush any bytes the decoders were still holding once all output has arrived.
+      const outTail = outDecoder.end();
+      received += outTail.length;
+      stdout = (stdout + outTail).slice(-OUTPUT_LIMIT);
+      stderr = (stderr + errDecoder.end()).slice(-100_000);
       if (error) reject(error);
       else if (throwOnError && code !== 0)
         reject(new Fault(redact(`${binary} (${code}): ${stderr || stdout}`).slice(-8000), 502));
       else resolve({ stdout, stderr, code, truncated: received > OUTPUT_LIMIT });
     }
     child.stdout.on('data', (d) => {
-      const text = d.toString();
+      const text = outDecoder.write(d);
       received += text.length;
       stdout = (stdout + text).slice(-OUTPUT_LIMIT);
     });
-    child.stderr.on('data', (d) => (stderr = (stderr + d.toString()).slice(-100_000)));
+    child.stderr.on('data', (d) => (stderr = (stderr + errDecoder.write(d)).slice(-100_000)));
     child.on('error', (e) => done(e));
     child.on('close', (code) => done(undefined, code ?? 1));
     child.stdin.on('error', () => {});
