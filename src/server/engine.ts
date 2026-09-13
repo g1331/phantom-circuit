@@ -945,6 +945,7 @@ export class Engine {
         .some(
           (r) =>
             r.taskId === t.id &&
+            r.role !== 'pm' &&
             (this.active.has(r.id) || r.status === 'running' || r.status === 'waiting'),
         )
     )

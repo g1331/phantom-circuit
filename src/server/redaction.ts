@@ -28,7 +28,15 @@ export function redact(value: string): string {
       /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/g,
       '<REDACTED>',
     )
-    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1<REDACTED>@')
+    .replace(/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^\s/@"']+@/gi, '$1<REDACTED>@')
+    .replace(
+      /(?<!\S)(--(?:proxy-)?user(?:=|\s+)|-[uU]\s*)("(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*'|[^\s"']+)/g,
+      (match, flag: string, argument: string) => {
+        // Other tools use -u for a URL. Its userinfo has already been removed above.
+        const value = argument.replace(/^["']|["']$/g, '');
+        return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? match : `${flag}<REDACTED>`;
+      },
+    )
     .replace(/\bBearer\s+[^\s"'`,;]+/gi, 'Bearer <REDACTED>')
     .replace(
       /(["'])((?:proxy-)?authorization|(?:set-)?cookie)\s*:\s*[^\r\n]*?\1/gi,
@@ -40,7 +48,11 @@ export function redact(value: string): string {
     )
     .replace(/(?<![\w"'])((?:authorization|(?:set-)?cookie)\s*[=:]\s*)[^\r\n]+/gi, '$1<REDACTED>')
     .replace(
-      /((?:["']?)(?:[\w]{1,64}[_-])?(?:api[_-]?key|accessToken|refreshToken|clientSecret|token|password|passwd|secret)["']?\s*(?:[=:]\s*|\s+))(?:("(?:\\.|[^"\\])*"|'[^']*')|[^\s,;&}\]]+)/gi,
+      /(?<![\w\\/:.-])(["']?(?:[\w]{1,64}[_-])?(?:api[_-]?key|accessToken|refreshToken|clientSecret|token|password|passwd|secret)["']?\s*[=:]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s,;&}\]]+)/gi,
+      '$1<REDACTED>',
+    )
+    .replace(
+      /(?<!\S)(--(?:[\w]{1,64}[_-])?(?:api[_-]?key|accessToken|refreshToken|clientSecret|token|password|passwd|secret)(?:=|\s+))("(?:\\.|[^"\\])*"|'[^']*'|[^\s,;&}\]]+)/gi,
       '$1<REDACTED>',
     );
 }
@@ -58,8 +70,8 @@ export function externalValue(value: unknown): unknown {
   const paths = (v: unknown): unknown => {
     if (typeof v === 'string')
       return v
-        .replace(/[A-Za-z]:[\\/][^\r\n"'<>]+/g, '<LOCAL_PATH>')
-        .replace(/\/(?:Users|home|tmp|var|private)\/[^\s"'<>]+/g, '<LOCAL_PATH>');
+        .replace(/(?<![\w+./\\-])[A-Za-z]:[\\/][^\r\n"'<>]+/g, '<LOCAL_PATH>')
+        .replace(/(?<![\w/.:])\/(?:Users|home|tmp|var|private)\/[^\s"'<>]+/g, '<LOCAL_PATH>');
     if (Array.isArray(v)) return v.map(paths);
     if (v && typeof v === 'object')
       return Object.fromEntries(Object.entries(v).map(([k, child]) => [k, paths(child)]));

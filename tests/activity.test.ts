@@ -11,6 +11,74 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { createApp } from '../src/server/app.ts';
 import { Previews } from '../src/server/preview.ts';
 
+test('credential commands retain ordinary paths and URLs through durable activity, events and HTTP', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-auth-'));
+  const file = join(root, 'state.sqlite');
+  const store = new Store(file);
+  const project = store.createProject('Auth diagnostics', '');
+  const run = store.run('pm', project.id, 'pm');
+  const path = String.raw`D:\projects\token tools\secret notes\worktree`;
+  const url = 'https://example.invalid/diagnostics';
+  const commands = [
+    `psql postgresql://alice:db-secret@localhost/app --file "${path}\\query.sql"`,
+    `redis-cli -u redis://alice:redis-secret@localhost/0`,
+    `curl --user alice:basic-secret ${url} --output "${path}\\result.txt"`,
+    `curl -u 'alice:short-secret' ${url}`,
+    `curl --user="alice:equals-secret" ${url}`,
+    `curl -ualice:attached-secret ${url}`,
+    `tool --token=flag-secret --password "space secret" ${url}`,
+    `type "${path}\\password notes.txt"`,
+  ];
+  for (const [index, command] of commands.entries()) {
+    store.activity(run, `command-${index}`, {
+      kind: 'command',
+      title: 'command',
+      status: 'completed',
+      details: { command, cwd: path },
+    });
+    store.event('command', command, { runId: run.id, projectId: project.id });
+  }
+  store.close();
+  const reopened = new Store(file);
+  const ws = new Workspaces(root, reopened);
+  const app = createApp(
+    reopened,
+    new Engine(reopened, new GitHub(reopened), ws, root),
+    new Previews(reopened, ws),
+  );
+  try {
+    const session = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+    const response = await app.inject({
+      url: '/api/state',
+      headers: {
+        host: '127.0.0.1:4317',
+        cookie: String(session.headers['set-cookie']).split(';')[0],
+      },
+    });
+    assert.equal(response.statusCode, 200);
+    for (const secret of [
+      'db-secret',
+      'redis-secret',
+      'basic-secret',
+      'short-secret',
+      'equals-secret',
+      'attached-secret',
+      'flag-secret',
+      'space secret',
+    ])
+      assert.ok(!response.body.includes(secret), secret);
+    const activities = response.json().activities;
+    assert.ok(activities.every((a: any) => a.details.cwd === path));
+    assert.ok(activities[0].details.command.includes('localhost/app'));
+    assert.ok(activities[0].details.command.includes(path));
+    for (const index of [2, 3, 4, 5, 6]) assert.ok(activities[index].details.command.includes(url));
+    assert.equal(activities[7].details.command, commands[7]);
+  } finally {
+    await app.close();
+    reopened.close();
+  }
+});
+
 test('PM protocol activity follows its message and Run, survives reopen, and retains diagnostic paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-activity-'));
   const file = join(root, 'state.sqlite');

@@ -54,7 +54,7 @@ try {
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   const project = store.list('project')[0];
   const activityRun = store.run('pm', project.id, 'pm');
-  const diagnosticPath = String.raw`D:\Orbit Studio\.phantom\workspaces\task-alpha\src\entry.ts`;
+  const diagnosticPath = String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha\src\entry.ts`;
   store.activity(activityRun, 'trigger', {
     kind: 'trigger',
     title: '用户消息',
@@ -66,9 +66,10 @@ try {
     title: '执行命令',
     status: 'running',
     details: {
-      command: `type "${diagnosticPath}"`,
-      cwd: String.raw`D:\Orbit Studio\.phantom\workspaces\task-alpha`,
-      output: 'Authorization: Bearer browser-secret',
+      command: `curl --user alice:browser-basic-secret https://example.invalid --output "${diagnosticPath}"`,
+      cwd: String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha`,
+      output:
+        'Authorization: Bearer browser-secret\npsql postgresql://alice:browser-db-secret@localhost/app',
     },
   });
   const activity = page.locator('.pm-activity').filter({ hasText: '执行命令' });
@@ -76,6 +77,9 @@ try {
   await activity.locator('summary').click();
   assert.ok((await activity.textContent())?.includes(diagnosticPath));
   assert.ok(!(await page.locator('body').textContent())?.includes('browser-secret'));
+  assert.ok(!(await activity.textContent())?.includes('browser-basic-secret'));
+  assert.ok(!(await activity.textContent())?.includes('browser-db-secret'));
+  assert.ok((await activity.textContent())?.includes('https://example.invalid'));
   await page.getByText(/最后活动.*已运行/).waitFor();
   await page.clock.install();
   await page.clock.fastForward(61000);
