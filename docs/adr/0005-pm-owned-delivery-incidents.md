@@ -1,0 +1,3 @@
+# Make delivery incidents PM-owned
+
+When a Dev or Review Run or a host delivery step fails unexpectedly, Phantom Circuit creates a durable Incident and schedules the PM exactly once to assess it instead of relying on the user to notice a generic error. The PM must resolve it with bounded technical guidance, leave the affected Task paused with a specific blocker, or request a user decision only when product behavior, external access or authorization is genuinely unresolved. Incidents preserve redacted causal evidence and remain visibly linked to the Run; ordinary Review findings and expected product rework continue through their existing lifecycle.

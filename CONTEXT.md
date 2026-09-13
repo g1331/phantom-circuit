@@ -36,3 +36,9 @@ _Avoid_: Global defaults, Provider
 
 **PM activity**: A durable, user-visible record of why the PM started acting and which observable step it is performing.
 _Avoid_: Hidden chain of thought, raw log
+
+**Incident**: A durable, actionable record of an unexpected Run or delivery failure that requires PM assessment or user-visible escalation.
+_Avoid_: Event, Review finding
+
+**Clarification**: An unresolved product decision that the PM has explicitly asked the user to settle before affected Tasks are published or revised.
+_Avoid_: Technical question, confirmation
