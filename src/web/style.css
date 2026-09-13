@@ -1213,6 +1213,25 @@ time {
   font-size: 12px;
   line-height: 1.9;
 }
+.markdown-body {
+  overflow-wrap: anywhere;
+}
+.markdown-body p {
+  white-space: pre-wrap;
+}
+.markdown-body .markdown-task {
+  list-style: none;
+}
+.markdown-task label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+}
+.markdown-task input {
+  width: auto;
+  flex: none;
+  accent-color: var(--accent);
+}
 .preserve {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

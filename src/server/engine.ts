@@ -778,18 +778,35 @@ export class Engine {
       return false;
     }
   }
+  private historicalMergeAccepted(task: Task): boolean {
+    if (task.mergeApproval)
+      return task.mergeApproval.head === task.head && task.mergeApproval.base === task.base;
+    // The legacy host entered merge-pr only after PM acceptance. A matching durable
+    // result is a witness of that path; the done stage by itself is not evidence.
+    const operation = this.store.get('operation', `merge:${task.id}:${task.head}`);
+    const result = z
+      .object({
+        number: z.number(),
+        merged: z.literal(true),
+        head: z.object({ sha: z.string() }),
+        base: z.object({ sha: z.string() }),
+      })
+      .safeParse(operation?.result);
+    return (
+      operation?.kind === 'merge-pr' &&
+      operation.status === 'done' &&
+      result.success &&
+      result.data.number === task.pr &&
+      result.data.head.sha === task.head &&
+      result.data.base.sha === task.base
+    );
+  }
   async sync() {
     for (const task of this.store.list('task')) {
       if (!this.store.repo(task.repoId).authorized || task.stage === 'cancelled') continue;
       try {
         if (task.stage === 'done') {
-          if (
-            !task.pr ||
-            !task.issue ||
-            !mergeReady(task) ||
-            task.mergeApproval?.head !== task.head ||
-            task.mergeApproval?.base !== task.base
-          ) {
+          if (!task.pr || !task.issue || !mergeReady(task) || !this.historicalMergeAccepted(task)) {
             throw new Fault(
               '历史 Task 完成同步缺少固定 revision 的测试、双轴 Review 或 PM 验收证据，需要 PM 核对',
               409,

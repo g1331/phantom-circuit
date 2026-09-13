@@ -420,3 +420,86 @@ test('an externally merged PR without pinned PM acceptance cannot complete its I
     f.store.close();
   }
 });
+
+function legacyCompletion(f: ReturnType<typeof fixture>) {
+  const { mergeApproval: _approval, completionDeliveryPending: _delivery, ...legacy } = f.task();
+  f.store.put('task', legacy.id, { ...legacy, stage: 'done' });
+  const id = `merge:${legacy.id}:${legacy.head}`;
+  f.store.put('operation', id, {
+    id,
+    kind: 'merge-pr',
+    status: 'done',
+    result: { number: 2, merged: true, head: { sha: 'head' }, base: { sha: 'base' } },
+  });
+  return id;
+}
+
+test('legacy persisted done task without new fields reconciles its historical host merge witness', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-legacy-'));
+  const f = fixture('.', root, join(root, 'state.sqlite'));
+  legacyCompletion(f);
+  f.reopen();
+  const engine = f.engine();
+  try {
+    assert.equal(Object.hasOwn(f.task(), 'mergeApproval'), false);
+    await engine.sync();
+    assert.match(f.remote.body, /- \[x\] Works\n- \[x\] Persists/);
+    assert.equal(f.remote.state, 'closed');
+    assert.equal(f.task().issueBody, f.remote.body);
+    await engine.sync();
+    assert.equal(f.writes(), 1);
+    assert.equal(f.messages().length, 0);
+  } finally {
+    await engine.stop();
+    f.store.close();
+  }
+});
+
+for (const invalid of [
+  'pending',
+  'uncertain',
+  'kind',
+  'missing-result',
+  'pr',
+  'head',
+  'base',
+  'unmerged',
+  'tests',
+  'reviews',
+  'drift',
+] as const) {
+  test(`legacy persisted compensation refuses ${invalid} evidence`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'phantom-legacy-refusal-'));
+    const f = fixture('.', root, join(root, 'state.sqlite'));
+    const key = legacyCompletion(f);
+    const op = f.store.get('operation', key)!;
+    const result = op.result as {
+      number: number;
+      merged: boolean;
+      head: { sha: string };
+      base: { sha: string };
+    };
+    if (invalid === 'pending' || invalid === 'uncertain') op.status = invalid;
+    if (invalid === 'kind') op.kind = 'create-pr';
+    if (invalid === 'missing-result') op.result = undefined;
+    if (invalid === 'pr') result.number = 99;
+    if (invalid === 'head' || invalid === 'base') result[invalid].sha = 'different';
+    if (invalid === 'unmerged') f.unmerged();
+    if (invalid === 'tests') f.patch({ tests: [] });
+    if (invalid === 'reviews') f.patch({ reviews: [] });
+    if (invalid === 'drift') f.remote.body += '\nExternal edit';
+    f.store.put('operation', key, op);
+    f.reopen();
+    const engine = f.engine();
+    try {
+      await engine.sync();
+      assert.equal(f.writes(), 0);
+      assert.equal(f.task().stage, 'done');
+      assert.ok(f.task().blocked);
+      assert.equal(f.messages().length, 0);
+    } finally {
+      await engine.stop();
+      f.store.close();
+    }
+  });
+}

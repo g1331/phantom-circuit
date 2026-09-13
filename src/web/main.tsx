@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { Markdown } from './markdown.tsx';
 import {
   Activity,
   ArrowDownLeft,
@@ -850,13 +851,21 @@ function App() {
           onClose={() => setTaskDetail(undefined)}
         >
           <div className="task-detail">
-            <p className="preserve">{detail.spec}</p>
-            <h3>验收条件</h3>
-            <ul>
-              {detail.acceptance.map((x, i) => (
-                <li key={i}>{x}</li>
-              ))}
-            </ul>
+            {detail.issueBody ? (
+              <section aria-label="Task Issue 正文">
+                <Markdown text={detail.issueBody} />
+              </section>
+            ) : (
+              <>
+                <Markdown text={detail.spec} />
+                <h3>验收条件</h3>
+                <ul>
+                  {detail.acceptance.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </>
+            )}
             {detail.dependencies.length > 0 && (
               <>
                 <h3>等待任务</h3>

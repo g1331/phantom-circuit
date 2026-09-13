@@ -84,7 +84,10 @@ try {
       priority: 0,
     });
   const done = makeTask('完成首次项目创建体验');
-  store.updateTask(done.id, { stage: 'done' });
+  store.updateTask(done.id, {
+    stage: 'done',
+    issueBody: `<!-- phantom-task:${done.id} -->\n## What to build\n持久化的 Issue 正文。\n\n## Acceptance criteria\n- [x] 可以创建项目\n- [x] 空状态引导清晰\n\n## Blocked by\nNone (can start immediately)\n`,
+  });
   const task = makeTask('简化仓库接入与授权提示');
   store.updateTask(task.id, { stage: 'developing' });
   store.run('dev', project.id, 'frontend', task);
@@ -111,6 +114,28 @@ try {
   await page.getByRole('heading', { name: '验收条件' }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '03-task-detail.png'), fullPage: true });
   await page.getByRole('button', { name: '关闭窗口' }).click();
+  for (const refresh of [false, true]) {
+    if (refresh) {
+      await page.reload();
+      await page.getByRole('tab', { name: '任务', exact: false }).click();
+    }
+    await page.getByRole('button', { name: /完成首次项目创建体验/ }).click();
+    const issue = page.getByRole('region', { name: 'Task Issue 正文' });
+    await issue.waitFor({ timeout: 5000 });
+    assert.equal(await issue.getByText('持久化的 Issue 正文。').count(), 1);
+    assert.equal(await issue.getByRole('checkbox').count(), 2);
+    for (const criterion of ['可以创建项目', '空状态引导清晰']) {
+      assert.equal(await issue.getByRole('checkbox', { name: criterion }).isChecked(), true);
+      assert.equal(await issue.getByRole('checkbox', { name: criterion }).isDisabled(), true);
+    }
+    assert.equal((await issue.innerText()).includes('phantom-task:'), false);
+    if (refresh)
+      await page.screenshot({
+        path: resolve(artifacts, '07-completed-issue-reloaded.png'),
+        fullPage: true,
+      });
+    await page.getByRole('button', { name: '关闭窗口' }).click();
+  }
   await page.getByLabel('搜索任务').fill('不会匹配');
   await page.getByText('还没有匹配的任务').waitFor();
   await page.getByLabel('搜索任务').fill('');
