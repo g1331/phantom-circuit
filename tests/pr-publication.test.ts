@@ -421,26 +421,37 @@ test('a failing, partial or malformed read authorizes nothing', async () => {
 });
 
 test('an incomplete read neither consumes nor replaces an outstanding authorization', async () => {
-  const f = prFixture();
-  try {
-    await unconfirmed(f);
-    assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
-    const granted = f.operation()!.reconciliation!;
-    // The listing becomes unreadable after the authorization was issued.
-    f.github.pulls = unrelated(21);
-    f.github.failPage = 2;
-    await assert.rejects(f.github.publishPR(f.task()), /HTTP 502/);
-    const live = f.operation()!;
-    assert.equal(live.reconciliation!.id, granted.id, 'the authorization survives unread');
-    assert.equal(live.reconciliation!.verdict, 'absent');
-    assert.equal(f.github.posted.length, 1, 'an unread listing never reaches a creation');
-    // Once the listing can be read again the same single-use authorization still works.
-    f.github.failPage = undefined;
-    assert.equal((await f.github.publishPR(f.task())).number, 41);
-    assert.equal(f.github.posted.length, 2, 'no authorization was lost or duplicated');
-    assert.equal(live.status, 'uncertain');
-  } finally {
-    f.store.close();
+  for (const unreadable of ['later page fails', 'later page is truncated', 'page bound'] as const) {
+    const f = prFixture();
+    try {
+      await unconfirmed(f);
+      assert.equal((await f.github.authorizeTaskPRRetry(f.task(), 'pm')).action, 'authorize');
+      const granted = f.operation()!.reconciliation!;
+      // The listing becomes unreadable after the authorization was issued.
+      if (unreadable === 'page bound') f.github.endlessPages = true;
+      else {
+        f.github.pulls = unrelated(21);
+        if (unreadable === 'later page fails') f.github.failPage = 2;
+        else f.github.truncatePage = 2;
+      }
+      await assert.rejects(f.github.publishPR(f.task()), /HTTP 502|核对后恢复/, unreadable);
+      const live = f.operation()!;
+      assert.equal(live.reconciliation!.id, granted.id, unreadable);
+      assert.equal(live.reconciliation!.verdict, 'absent', unreadable);
+      assert.equal(live.status, 'uncertain', unreadable);
+      assert.equal(f.github.posted.length, 1, unreadable);
+
+      // Once the listing can be read again the same single-use authorization still works.
+      f.github.failPage = undefined;
+      f.github.truncatePage = undefined;
+      f.github.endlessPages = false;
+      assert.equal((await f.github.publishPR(f.task())).number, 41, unreadable);
+      assert.equal(f.github.posted.length, 2, unreadable);
+      assert.equal(f.operation()!.status, 'done', unreadable);
+      assert.equal(f.operation()!.reconciliation, undefined, unreadable);
+    } finally {
+      f.store.close();
+    }
   }
 });
 

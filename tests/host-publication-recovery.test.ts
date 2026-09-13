@@ -335,6 +335,51 @@ test('a listing that cannot be read to its end blocks with the reason and spends
   }
 });
 
+test('an incomplete read at resume keeps the outstanding authorization for a later resume', async () => {
+  const f = await fixture();
+  try {
+    const failed = await blockedOnPublication(f);
+    // An explicit resume verifies absence and records the one outstanding authorization.
+    await f.engine.resume(f.task().id);
+    const granted = f.operation()!.reconciliation;
+    assert.ok(granted, 'the first resume authorized the controlled retry');
+
+    // A later resume cannot read the listing to its end. The grant must survive that untouched.
+    f.github.endlessPages = true;
+    await assert.rejects(f.engine.resume(f.task().id), /最多 500 页的上限/);
+    f.github.endlessPages = false;
+    assert.equal(f.operation()!.reconciliation!.id, granted.id, 'the grant was not replaced');
+    assert.equal(f.operation()!.reconciliation!.verdict, 'absent');
+    assert.equal(f.task().retries, 0, 'an unread listing spends no product retry budget');
+    assert.equal(f.github.posted.length, 1, 'and reaches no creation');
+    assert.equal(f.github.writes, 0);
+    assert.equal(f.starts(), 0, 'no extra Dev session');
+    assert.equal(f.turns(), 0);
+
+    // The same single-use grant still publishes exactly once when the listing is readable again.
+    // A second explicit resume re-affirms that grant rather than replacing or spending it.
+    f.github.endlessPages = false;
+    await f.engine.resume(f.task().id);
+    assert.equal(
+      f.operation()!.reconciliation!.id,
+      granted.id,
+      'coordination re-affirms the outstanding grant instead of stacking a new one',
+    );
+    const result = await f.cycle();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+    assert.equal(result.pr, 41);
+    assert.equal(f.github.posted.length, 2);
+    assert.equal(f.github.writes, 1);
+    assert.equal(f.operation()!.reconciliation, undefined, 'the grant was consumed exactly once');
+    assert.equal(result.retries, 0);
+    assert.equal(result.head, failed.head);
+    assert.equal(f.starts(), 0);
+    assert.equal(f.turns(), 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test('an unreadable remote at resume leaves a concrete blocker and authorizes nothing', async () => {
   const f = await fixture();
   try {
@@ -496,7 +541,7 @@ test('a remote delivery created before the crash is adopted on resume, not recre
 test('a revision that moves after verification converges in one more resume, never duplicating', async () => {
   const f = await fixture();
   try {
-    await blockedOnPublication(f);
+    const failed = await blockedOnPublication(f);
     await f.engine.resume(f.task().id);
     const stale = f.operation()!.reconciliation!;
 
@@ -506,7 +551,15 @@ test('a revision that moves after verification converges in one more resume, nev
     const refused = await f.cycle();
     assert.equal(refused.control, 'paused');
     assert.match(refused.blocked!, /核对结论与当前任务版本不一致/);
-    assert.notEqual(refused.head, stale.taskRevision);
+    assert.notEqual(refused.head, failed.head, 'the revision really did move');
+    assert.ok(
+      stale.taskRevision.includes(failed.head!),
+      'the stale conclusion names the revision that was verified',
+    );
+    assert.ok(
+      !stale.taskRevision.includes(refused.head!),
+      'and not the revision the task now has, which is why it was refused',
+    );
     assert.equal(f.github.posted.length, 1, 'the stale conclusion never reached the remote');
 
     await f.engine.resume(f.task().id);

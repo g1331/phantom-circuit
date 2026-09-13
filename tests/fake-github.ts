@@ -62,8 +62,6 @@ export class FakeGitHub extends GitHub {
   pulls: FakePull[] = [];
   /** Creation attempts the adapter POSTed, whether or not the remote accepted them. */
   posted: Record<string, any>[] = [];
-  /** How many PRs the fake returns per page; a small value forces a candidate onto a later page. */
-  pageSize = 20;
   /** Thrown by every read, modelling a transport or permissions failure. */
   failRead: Error | undefined;
   /** Thrown only by the branch-scoped query, leaving the repository query successful. */
@@ -108,7 +106,8 @@ export class FakeGitHub extends GitHub {
     if (/[?&]head=/.test(endpoint) && this.failBranchRead) throw this.failBranchRead;
     if (!/\/pulls\?/.test(endpoint)) throw new Fault(`fake gh: unsupported read ${endpoint}`, 502);
     const page = Number(/[?&]page=(\d+)/.exec(endpoint)?.[1] ?? '1');
-    const size = Number(/[?&]per_page=(\d+)/.exec(endpoint)?.[1] ?? this.pageSize);
+    // GitHub's own default page size, used only if a caller forgot to ask for one.
+    const size = Number(/[?&]per_page=(\d+)/.exec(endpoint)?.[1] ?? '30');
     if (this.readBody) return { stdout: this.readBody(endpoint), stderr: '', code: 0 };
     if (this.failPage === page) throw new Error('gh (1): gh: Server Error (HTTP 502)');
     const items = this.page(this.matching(endpoint), page, size);

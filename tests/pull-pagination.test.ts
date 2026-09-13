@@ -111,11 +111,12 @@ test('exhausting the page bound leaves the operation untouched and authorizes no
     assert.equal(after.status, 'uncertain', 'the unresolved operation is preserved');
     assert.equal(after.error, before.error);
     assert.equal(after.attempt, before.attempt, 'no attempt was spent');
-    // The reason and the pages read are kept as durable evidence.
-    assert.match(
-      store.events().map((e) => e.message).join('\n'),
-      /未能完成读取（任务分支 \d+ 页、任务标记 \d+ 页）：已读取 \d+ 页仍未确认末页/,
-    );
+    // The reason and the pages read are kept as durable evidence: the blocker must name what
+    // went wrong and how far the read got, without pinning the exact sentence.
+    const evidence = store.events().map((e) => e.message).join('\n');
+    assert.match(evidence, /未能完成读取/);
+    assert.match(evidence, /已读取 \d+ 页/);
+    assert.match(evidence, /任务分支 \d+ 页、任务标记 \d+ 页/);
 
     await assert.rejects(github.publishPR(seed.task()), /查询未完成|核对后恢复/);
     assert.equal(github.posted.length, 1, 'an unread listing never reaches a creation');
@@ -154,10 +155,9 @@ test('exhausting the total time budget leaves the operation untouched and author
     const after = store.get('operation', key)!;
     assert.equal(after.reconciliation, undefined, 'no absence conclusion was recorded');
     assert.equal(after.attempt, before.attempt, 'no attempt was spent');
-    assert.match(
-      store.events().map((e) => e.message).join('\n'),
-      /达到 120 秒总时限/,
-    );
+    const evidence = store.events().map((e) => e.message).join('\n');
+    assert.match(evidence, /总时限/, 'the blocker names the bound that was hit');
+    assert.match(evidence, /已读取 \d+ 页/, 'and how far the read got');
     await assert.rejects(github.publishPR(seed.task()), /查询未完成|核对后恢复/);
     assert.equal(github.posted.length, 1);
   } finally {

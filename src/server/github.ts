@@ -1,6 +1,13 @@
 import { command } from './process.ts';
 import { Fault, Store, id, now, redact } from './store.ts';
-import type { Operation, Reconciliation, Repo, Task, ReviewResult } from '../shared/types.ts';
+import type {
+  Operation,
+  OperationAttempt,
+  Reconciliation,
+  Repo,
+  Task,
+  ReviewResult,
+} from '../shared/types.ts';
 
 /** The identity fields reconciliation needs; GitHub returns them on every PR resource. */
 interface PullRef {
@@ -72,10 +79,27 @@ const PULL_SCAN_MS = 120_000;
 interface PullScan {
   /** Retained PRs in page order, deduplicated by number. */
   kept: PullState[];
-  /** Pages actually read. */
+  /** Page requests made. */
   pages: number;
   /** Set when the listing was not read to its end; absent means the last page was confirmed. */
   incomplete?: string;
+  /** The request failure that ended the scan, to be rethrown unchanged by the caller. */
+  failure?: unknown;
+}
+/**
+ * Whether an observed operation revision still describes the operation as it stands. Status and
+ * error alone are not enough: a repeat failure restores them exactly, so the attempt counter is
+ * what makes a superseded conclusion distinguishable from a current one.
+ */
+function describesOperation(
+  observed: { status: string; error?: string; attempt?: number },
+  current: { status: string; error?: string; attempt?: number },
+): boolean {
+  return (
+    observed.status === current.status &&
+    (observed.error ?? '') === (current.error ?? '') &&
+    (observed.attempt ?? 0) === (current.attempt ?? 0)
+  );
 }
 /**
  * The outcome of asking the host to reconcile an unresolved external creation. `adopt` and
@@ -212,9 +236,7 @@ export class GitHub {
       // ran and failed again with the same error - must be reconciled again before any write.
       if (
         authorization.taskRevision !== binding ||
-        authorization.observedAttempt !== observedAttempt ||
-        authorization.observedOperation.status !== current.status ||
-        (authorization.observedOperation.error ?? '') !== (current.error ?? '')
+        !describesOperation(authorization.observedOperation, current)
       )
         throw new Fault('核对结论与当前任务版本不一致，需要重新核对远端结果', 409);
       // Consume the single-use authorization before the controlled retry, so a repeated failure
@@ -264,51 +286,54 @@ export class GitHub {
     base: string,
     retain: (pr: PullState) => boolean,
     deadline: number,
+    halt: { reason?: string },
   ): Promise<PullScan> {
     const kept = new Map<number, PullState>();
     const result = () => ({ kept: [...kept.values()] });
     let pages = 0;
+    /** End the scan as unread, recording the first reason so the sibling scan can stop too. */
+    const stop = (incomplete: string): PullScan => {
+      halt.reason ??= incomplete;
+      return { ...result(), pages, incomplete };
+    };
     for (let page = 1; page <= PULL_MAX_PAGES; page++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
-        return {
-          ...result(),
-          pages,
-          incomplete: `已读取 ${pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`,
-        };
-      // Each request is bounded by whatever is left of the scan budget; a request failure
-      // propagates as a read failure and is never read as an empty listing.
-      const response = await this.gh(
-        ['api', `${base}&per_page=${PULL_PAGE_SIZE}&page=${page}`],
-        undefined,
-        remaining,
-      );
+        return stop(
+          `已读取 ${pages} 页后达到 ${PULL_SCAN_MS / 1000} 秒总时限，尚未确认末页`,
+        );
+      // Once either listing is known unreadable the whole scan is settled, so the sibling stops
+      // at its next page boundary instead of reading up to its own bound for nothing.
+      if (halt.reason) return { ...result(), pages, incomplete: halt.reason };
+      pages++;
+      let response: GhResult;
+      try {
+        // Each request is bounded by whatever is left of the scan budget.
+        response = await this.gh(
+          ['api', `${base}&per_page=${PULL_PAGE_SIZE}&page=${page}`],
+          undefined,
+          remaining,
+        );
+      } catch (error) {
+        // A failed request leaves the listing unread, and its own error is rethrown unchanged
+        // because the caller's transport classification depends on it.
+        const reason = `第 ${page} 页请求失败：${redact(String(error))}`;
+        halt.reason ??= reason;
+        return { ...result(), pages, incomplete: reason, failure: error };
+      }
       if (response.truncated)
-        return {
-          ...result(),
-          pages,
-          incomplete: `第 ${page} 页响应超过进程输出上限被截断，尚未确认末页`,
-        };
+        return stop(`第 ${page} 页响应超过进程输出上限被截断，尚未确认末页`);
       let items: PullState[];
       try {
         items = parsePullPage(response.stdout);
       } catch (error) {
         // An unreadable page says nothing about the pages that follow it.
-        return {
-          ...result(),
-          pages,
-          incomplete: `第 ${page} 页响应无法核对（${(error as Error).message}），尚未确认末页`,
-        };
+        return stop(`第 ${page} 页响应无法核对（${(error as Error).message}），尚未确认末页`);
       }
-      pages++;
       for (const pr of items) if (retain(pr)) kept.set(pr.number, pr);
       if (items.length < PULL_PAGE_SIZE) return { ...result(), pages };
     }
-    return {
-      ...result(),
-      pages,
-      incomplete: `已读取 ${pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`,
-    };
+    return stop(`已读取 ${pages} 页仍未确认末页，达到单次核对最多 ${PULL_MAX_PAGES} 页的上限`);
   }
   async feedback(task: Task): Promise<{ key: string; text: string }[]> {
     if (!task.pr) return [];
@@ -494,7 +519,7 @@ export class GitHub {
       actor: Reconciliation['actor'];
       evidence: string;
       taskRevision: string;
-      observed: { status: Operation['status']; error?: string; attempt: number };
+      observed: OperationAttempt;
     },
   ) {
     const old = this.store.get('operation', key);
@@ -502,11 +527,7 @@ export class GitHub {
     if (old.status === 'done') throw new Fault('外部操作已有结果，不需要重新创建', 409);
     if (old.status !== 'uncertain' && old.status !== 'pending')
       throw new Fault('外部操作已被明确拒绝，可直接重试', 409);
-    if (
-      old.status !== input.observed.status ||
-      (old.error ?? '') !== (input.observed.error ?? '') ||
-      (old.attempt ?? 0) !== input.observed.attempt
-    )
+    if (!describesOperation(input.observed, old))
       throw new Fault('核对期间外部操作状态已变化，需要重新核对', 409);
     // A second authorization for the same task revision is refused, so concurrent reconciliations
     // cannot stack. One bound to a revision that no longer applies is superseded instead - only
@@ -517,8 +538,11 @@ export class GitHub {
       id: id(),
       verdict: 'absent',
       actor: input.actor,
-      observedOperation: { status: old.status, ...(old.error ? { error: old.error } : {}) },
-      observedAttempt: input.observed.attempt,
+      observedOperation: {
+        status: old.status,
+        ...(old.error ? { error: old.error } : {}),
+        attempt: old.attempt ?? 0,
+      },
       taskRevision: input.taskRevision,
       evidence: redact(input.evidence).slice(0, 500),
       at: now(),
@@ -559,27 +583,32 @@ export class GitHub {
     // One budget covers the whole coordination read; each listing has its own page bound. The
     // sweep keeps only marker-bearing PRs, so unrelated bodies are never accumulated.
     const deadline = Date.now() + PULL_SCAN_MS;
+    const halt: { reason?: string } = {};
     const [onBranch, sweep] = await Promise.all([
       this.scanPulls(
         `repos/${repo.github}/pulls?state=all&head=${encodeURIComponent(`${owner}:${task.branch}`)}`,
         () => true,
         deadline,
+        halt,
       ),
       this.scanPulls(
         `repos/${repo.github}/pulls?state=all`,
         (pr) => pr.body?.includes(marker) ?? false,
         deadline,
+        halt,
       ),
     ]);
-    const unread = onBranch.incomplete ?? sweep.incomplete;
+    const unread = onBranch.incomplete ? onBranch : sweep.incomplete ? sweep : undefined;
     if (unread) {
       // The listings were not read to their end, so they cannot speak to absence. The operation
-      // is left exactly as it stands: nothing is authorized and no creation is attempted.
+      // is left exactly as it stands: nothing is authorized and no creation is attempted. The
+      // reason and the pages requested are kept as durable evidence either way.
       this.store.event(
         'operation',
-        `远端 Task PR 核对未能完成读取（任务分支 ${onBranch.pages} 页、任务标记 ${sweep.pages} 页）：${unread}`,
+        `远端 Task PR 核对未能完成读取（任务分支 ${onBranch.pages} 页、任务标记 ${sweep.pages} 页）：${unread.incomplete}`,
       );
-      throw new Fault(`远端 Task PR 查询未完成，需要核对后恢复：${unread}`, 502);
+      if (unread.failure) throw unread.failure;
+      throw new Fault(`远端 Task PR 查询未完成，需要核对后恢复：${unread.incomplete}`, 502);
     }
     const related = new Map<number, PullState>();
     for (const pr of onBranch.kept) related.set(pr.number, pr);

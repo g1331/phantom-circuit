@@ -147,21 +147,31 @@ export interface Event {
   runId?: string;
   message: string;
 }
+/** One operation attempt, as it stood at a moment that mattered. */
+export interface OperationAttempt {
+  status: Operation['status'];
+  error?: string;
+  /**
+   * The attempt counter at that moment. Status and error can leave and return to the same value -
+   * an authorized retry that fails again with the same error restores `{uncertain, error}`
+   * exactly - so they cannot identify an attempt on their own. This counter increments for every
+   * external write attempt, which is what makes a returned-to state distinguishable.
+   */
+  attempt: number;
+}
 export interface Reconciliation {
-  /** Identity of this authorization; consumption compares and swaps on it. */
+  /** Stable id of this authorization, so a repeated coordination can be seen to re-affirm it. */
   id: string;
-  /** Only a proven-absent remote object authorizes a retry; a present object is adopted instead. */
+  /**
+   * Only an absent remote object authorizes a retry; a present object is adopted instead. This
+   * records what the listings read at `at` showed, not an absolute proof that no related PR
+   * exists - a PR whose marker was removed and whose head branch was also renamed is visible to
+   * neither listing. See `evidence` for the scope that was actually read.
+   */
   verdict: 'absent';
   actor: 'user' | 'pm';
-  /** The unresolved operation revision the remote verification was performed against. */
-  observedOperation: { status: Operation['status']; error?: string };
-  /**
-   * The attempt counter as it stood when the remote was verified. Status and error can leave and
-   * return to the same value - an authorized retry that fails again with the same error restores
-   * `{uncertain, error}` exactly - so they cannot identify an attempt on their own. This counter
-   * increments for every external write attempt and makes that returned-to state distinguishable.
-   */
-  observedAttempt: number;
+  /** The operation attempt the remote verification was performed against. */
+  observedOperation: OperationAttempt;
   /** The task revision (repository, branch, head, base) the remote verification was about. */
   taskRevision: string;
   evidence: string;
