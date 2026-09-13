@@ -11,6 +11,10 @@ import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Task } from '../src/shared/types.ts';
 
+/** A configured-command failure the host must read as an environment block, not product rework. */
+const environmentBlock =
+  'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
+
 async function fixture(
   t: TestContext,
   dev: (cwd: string) => Promise<void> = async () => {},
@@ -333,9 +337,8 @@ for (const failure of ['install', 'validation'] as const) {
       'task',
     );
     const commands = f.store.repo(f.repo.id).commands;
-    const fail = 'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
     f.store.patchRepo(f.repo.id, {
-      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: fail },
+      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: environmentBlock },
     });
     const paused = await f.run();
     assert.equal(paused.control, 'paused', paused.blocked);
@@ -1274,7 +1277,7 @@ test('recovering a recorded legacy merge twice repeats neither Dev nor merge nor
   f.store.patchRepo(f.repo.id, {
     commands: {
       ...commands,
-      install: 'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"',
+      install: environmentBlock,
     },
   });
   const paused = await f.run();

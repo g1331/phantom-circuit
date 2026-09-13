@@ -12,6 +12,15 @@ function describeRefs(refs: TrackingRef[]) {
   return refs.map(({ ref, tip }) => `${ref}=${tip}`).join(', ');
 }
 
+/** The last few coordination messages, bounded and single-line, for one pause diagnostic. */
+function describeEvents(events: { message: string }[]) {
+  const shown = events
+    .slice(-3)
+    .map((event) => event.message.replace(/[\r\n]+/g, ' ').slice(0, 160));
+  const hidden = events.length - shown.length;
+  return `${shown.join(' | ')}${hidden > 0 ? ` …（另有 ${hidden} 条）` : ''}`;
+}
+
 /**
  * Whether one durable merge-coordination event can be about a pending merge of `sourceHead` into
  * `head`. An event that names commits must name exactly those two; an event that names none - the
@@ -585,9 +594,7 @@ export class Workspaces {
     if (!coordination.length) return { reason: '宿主没有该任务的合并协调记录，来源无法核实' };
     if (!coordination.some((event) => conflictEventAgrees(event.message, head, sourceHead)))
       return {
-        reason: `宿主已有的合并协调记录都不指向该待完成合并（${coordination
-          .map((event) => event.message.replace(/[\r\n]+/g, ' '))
-          .join(' | ')}）`,
+        reason: `宿主已有的合并协调记录都不指向该待完成合并（${describeEvents(coordination)}）`,
       };
     return { sourceRef: advanced[0].ref, fork };
   }
