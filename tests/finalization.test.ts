@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, mkdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/server/store.ts';
@@ -11,7 +11,11 @@ import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Task } from '../src/shared/types.ts';
 
-async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = async () => {}) {
+async function fixture(
+  t: TestContext,
+  dev: (cwd: string) => Promise<void> = async () => {},
+  files: Record<string, string> = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-finalization-'));
   const source = join(root, 'source');
   const remote = join(root, 'remote.git');
@@ -21,6 +25,7 @@ async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = asy
   await git(source, ['config', 'user.name', 'Phantom Test']);
   await git(source, ['config', 'user.email', 'test@example.invalid']);
   await writeFile(join(source, 'value.txt'), 'before');
+  for (const [path, content] of Object.entries(files)) await writeFile(join(source, path), content);
   await writeFile(
     join(source, 'verify.cjs'),
     "require('node:assert/strict').equal(require('node:fs').readFileSync('value.txt','utf8'),'after');",
@@ -64,12 +69,25 @@ async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = asy
   await git(mirror, ['config', 'user.name', 'Phantom Test']);
   await git(mirror, ['config', 'user.email', 'test@example.invalid']);
   let turns = 0;
+  const prIdentity = {
+    headRepo: 'fixture/source',
+    baseRepo: 'fixture/source',
+    branch: prepared.branch!,
+  };
   class Remote extends GitHub {
     override async publishPR(task: Task) {
       store.updateTask(task.id, { pr: 2 });
       return this.pull(task);
     }
     override async pull(task: Task): Promise<PullState> {
+      const remoteHead = await command(
+        'git',
+        ['rev-parse', '--verify', '--quiet', `refs/heads/${task.branch}`],
+        remote,
+        undefined,
+        120000,
+        false,
+      );
       return {
         number: 2,
         html_url: '',
@@ -77,8 +95,12 @@ async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = asy
         merged: false,
         mergeable: true,
         mergeable_state: 'clean',
-        head: { sha: task.head! },
-        base: { sha: task.base! },
+        head: {
+          sha: remoteHead.code === 0 ? remoteHead.stdout.trim() : task.head!,
+          ref: prIdentity.branch,
+          repo: { full_name: prIdentity.headRepo },
+        },
+        base: { sha: task.base!, repo: { full_name: prIdentity.baseRepo } },
         body: '',
       };
     }
@@ -129,6 +151,7 @@ async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = asy
     path: prepared.worktree!,
     task: () => store.task(created.id),
     turns: () => turns,
+    prIdentity,
     git,
     async run() {
       await engine.tick();
@@ -142,6 +165,571 @@ async function fixture(t: TestContext, dev: (cwd: string) => Promise<void> = asy
     },
   };
 }
+
+test('legacy target base in MERGE_HEAD is resolved by editing only before installation', async (t) => {
+  const f = await fixture(t, async (cwd) => {
+    assert.match((await command('git', ['status', '--porcelain'], cwd)).stdout, /UU value.txt/);
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  await writeFile(join(f.path, 'value.txt'), 'task implementation');
+  await f.git(f.path, ['add', '.']);
+  await f.git(f.path, ['commit', '-m', 'Original implementation']);
+  const oldHead = (await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim();
+  await writeFile(join(f.source, 'value.txt'), 'default implementation');
+  await writeFile(join(f.source, 'retained.txt'), 'default feature');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Default changes']);
+  await f.git(f.source, ['push', 'origin', 'main']);
+  await f.ws.mirror(f.store.repo(f.repo.id));
+  const target = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  await command('git', ['merge', '--no-edit', target], f.path, undefined, 120000, false);
+  f.store.patchRepo(f.repo.id, {
+    commands: {
+      install:
+        "node -e \"const c=require('node:child_process');if(c.spawnSync('git',['rev-parse','--verify','MERGE_HEAD']).status===0)process.exit(9)\"",
+      build: '',
+      test: 'node verify.cjs',
+      start: '',
+      port: 3000,
+    },
+  });
+  f.store.updateTask(f.task().id, {
+    stage: 'developing',
+    control: 'paused',
+    devPhase: 'finalize',
+    base: target,
+    head: oldHead,
+    retries: 2,
+  });
+  await f.engine.resume(f.task().id);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 1);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', 'HEAD'])).stdout.trim(),
+    `${oldHead} ${target}`,
+  );
+  assert.equal((await f.git(f.path, ['status', '--porcelain'])).stdout, '');
+  assert.equal(await readFile(join(f.path, 'retained.txt'), 'utf8'), 'default feature');
+  assert.equal(result.tests[0].head, result.head);
+});
+
+async function conflictingTask(
+  t: TestContext,
+  dev: (cwd: string) => Promise<void>,
+  source: 'default' | 'task' = 'default',
+  legacy = false,
+  packages = false,
+) {
+  const manifests = packages ? ['package.json', 'package-lock.json'] : [];
+  const f = await fixture(
+    t,
+    dev,
+    Object.fromEntries(manifests.map((path) => [path, '{"name":"fixture"}\n'])),
+  );
+  await writeFile(join(f.path, 'value.txt'), 'original task');
+  for (const path of manifests)
+    await writeFile(join(f.path, path), '{"name":"fixture","taskFeature":true}\n');
+  await f.git(f.path, ['add', '.']);
+  await f.git(f.path, ['commit', '-m', 'Original task']);
+  const oldHead = (await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim();
+  if (source === 'task') {
+    await f.git(f.source, ['checkout', '-b', f.task().branch!]);
+    f.store.updateTask(f.task().id, { pr: 2 });
+  }
+  await writeFile(join(f.source, 'value.txt'), 'incoming feature');
+  for (const path of manifests)
+    await writeFile(join(f.source, path), '{"name":"fixture","defaultFeature":true}\n');
+  await writeFile(join(f.source, 'incoming.txt'), 'preserved incoming feature');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Incoming changes']);
+  await f.git(f.source, ['push', 'origin', source === 'task' ? f.task().branch! : 'main']);
+  const incoming = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  if (source === 'task') {
+    await f.git(f.source, ['checkout', 'main']);
+    await writeFile(join(f.source, 'later.txt'), 'default branch must wait');
+    await f.git(f.source, ['add', '.']);
+    await f.git(f.source, ['commit', '-m', 'Later default']);
+    await f.git(f.source, ['push', 'origin', 'main']);
+  }
+  if (legacy) {
+    await f.ws.mirror(f.store.repo(f.repo.id));
+    if (source === 'task')
+      await f.git(f.path, [
+        'fetch',
+        'origin',
+        `+refs/heads/${f.task().branch}:refs/remotes/origin/${f.task().branch}`,
+      ]);
+    await command('git', ['merge', '--no-edit', incoming], f.path, undefined, 120000, false);
+  }
+  f.store.updateTask(f.task().id, {
+    stage: 'developing',
+    head: oldHead,
+    base: legacy ? incoming : f.base,
+    devPhase: legacy ? 'finalize' : 'implement',
+    retries: 2,
+  });
+  return { ...f, oldHead, incoming };
+}
+
+for (const failure of ['install', 'validation'] as const) {
+  test(`resume keeps the merged finalize checkpoint after ${failure} fails before pushing an existing PR`, async (t) => {
+    const f = await conflictingTask(
+      t,
+      async (cwd) => {
+        await writeFile(join(cwd, 'value.txt'), 'after');
+      },
+      'task',
+    );
+    const commands = f.store.repo(f.repo.id).commands;
+    const fail = 'node -e "console.error(\'Error: EACCES: permission denied\');process.exit(1)"';
+    f.store.patchRepo(f.repo.id, {
+      commands: { ...commands, [failure === 'install' ? 'install' : 'test']: fail },
+    });
+    const paused = await f.run();
+    assert.equal(paused.control, 'paused', paused.blocked);
+    assert.equal(paused.devPhase, 'finalize');
+    assert.equal(paused.pendingMerge, undefined);
+    assert.equal(f.turns(), 1);
+    const merged = paused.head!;
+    assert.notEqual(merged, f.incoming);
+    assert.equal(
+      (await f.git(f.path, ['ls-remote', 'origin', `refs/heads/${paused.branch}`])).stdout.split(
+        /\s/,
+      )[0],
+      f.incoming,
+    );
+    f.store.patchRepo(f.repo.id, { commands });
+    await f.engine.resume(paused.id);
+    assert.equal(f.task().devPhase, 'finalize');
+    const result = await f.run();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+    assert.equal(result.head, merged);
+    assert.equal(result.pr, 2);
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 1);
+    assert.equal(result.tests[0].head, merged);
+    assert.equal(
+      (await f.git(f.path, ['ls-remote', 'origin', `refs/heads/${result.branch}`])).stdout.split(
+        /\s/,
+      )[0],
+      merged,
+    );
+  });
+}
+
+test('resume still coordinates genuinely new remote PR commits before another implementation turn', async (t) => {
+  const f = await fixture(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const first = await f.run();
+  assert.equal(first.stage, 'reviewing', first.blocked);
+  f.store.updateTask(first.id, { stage: 'developing', control: 'paused', devPhase: 'finalize' });
+  await f.git(f.source, ['fetch', 'origin', `refs/heads/${first.branch}`]);
+  await f.git(f.source, ['checkout', '-b', 'remote-edit', 'FETCH_HEAD']);
+  await writeFile(join(f.source, 'remote-feature.txt'), 'new remote work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Remote contribution']);
+  await f.git(f.source, ['push', 'origin', `HEAD:refs/heads/${first.branch}`]);
+  const incoming = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  await f.engine.resume(first.id);
+  assert.equal(f.task().devPhase, 'implement');
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(f.turns(), 2);
+  assert.equal(result.retries, 0);
+  assert.equal(await readFile(join(f.path, 'remote-feature.txt'), 'utf8'), 'new remote work');
+  assert.equal(
+    (await f.git(f.path, ['merge-base', '--is-ancestor', incoming, result.head!])).code,
+    0,
+  );
+});
+
+for (const source of ['default', 'task'] as const) {
+  test(`${source} conflict stops installation and another merge; repeated resume does not repeat Dev`, async (t) => {
+    const f = await conflictingTask(t, async () => {}, source);
+    f.store.patchRepo(f.repo.id, {
+      commands: {
+        install: "node -e \"require('node:fs').writeFileSync('installed.txt','bad')\"",
+        build: '',
+        test: 'node verify.cjs',
+        start: '',
+        port: 3000,
+      },
+    });
+    const result = await f.run();
+    assert.equal(result.control, 'paused', result.blocked);
+    assert.match(result.blocked!, /冲突.*value.txt/);
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 1);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    assert.equal((await f.git(f.path, ['rev-parse', 'MERGE_HEAD'])).stdout.trim(), f.incoming);
+    await assert.rejects(readFile(join(f.path, 'installed.txt')), /ENOENT/);
+    if (source === 'task') await assert.rejects(readFile(join(f.path, 'later.txt')), /ENOENT/);
+    await f.engine.resume(result.id);
+    const resumed = await f.run();
+    assert.equal(resumed.control, 'paused');
+    assert.equal(resumed.retries, 2);
+    assert.equal(f.turns(), 1);
+  });
+}
+
+test('successful remote task conflict preserves the PR and integrates default afterward', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async (cwd) => {
+      await writeFile(join(cwd, 'value.txt'), 'after');
+    },
+    'task',
+  );
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.pr, 2);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 1);
+  assert.equal(await readFile(join(f.path, 'incoming.txt'), 'utf8'), 'preserved incoming feature');
+  assert.equal(await readFile(join(f.path, 'later.txt'), 'utf8'), 'default branch must wait');
+  assert.equal((await f.git(f.path, ['merge-base', '--is-ancestor', f.oldHead, 'HEAD'])).code, 0);
+  assert.equal((await f.git(f.path, ['merge-base', '--is-ancestor', f.incoming, 'HEAD'])).code, 0);
+  assert.equal(result.tests[0].head, result.head);
+});
+
+test('committed merge with interrupted state persistence resumes without Dev or a second commit', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async () => {
+      throw new Error('must adopt completed merge');
+    },
+    'default',
+    true,
+  );
+  const coordinated = await f.ws.prepareBase(f.task());
+  assert.equal(coordinated.status, 'conflicted');
+  if (coordinated.status !== 'conflicted') return;
+  const previousRun = f.store.run('dev', f.task().projectId, f.task().profile, f.task());
+  await f.ws.claimConflict(f.task(), coordinated.merge.id, previousRun.id);
+  f.store.finishRun(previousRun.id, 'interrupted');
+  await writeFile(join(f.path, 'value.txt'), 'after');
+  f.store.updateTask(f.task().id, {
+    devPhase: 'implement',
+    pendingMerge: { ...f.task().pendingMerge!, phase: 'committing' },
+  });
+  await f.git(f.path, ['add', '.']);
+  await f.git(f.path, ['commit', '--no-edit']);
+  const committed = (await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim();
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.head, committed);
+  assert.equal(f.turns(), 0);
+  assert.equal(result.pendingMerge, undefined);
+});
+
+for (const change of [
+  'source',
+  'head',
+  'merge-head',
+  'branch',
+  'common-dir',
+  'repo',
+  'unknown-base',
+  'outside',
+  'index',
+] as const) {
+  test(`pending merge refuses ${change} drift and preserves the scene without retries`, async (t) => {
+    const f = await conflictingTask(
+      t,
+      async (cwd) => {
+        await writeFile(join(cwd, 'value.txt'), 'after');
+        if (change === 'outside') await writeFile(join(cwd, 'verify.cjs'), 'unexpected');
+        if (change === 'index') await command('git', ['add', '.'], cwd);
+      },
+      'default',
+      true,
+    );
+    if (!['source', 'outside', 'index'].includes(change)) {
+      const result = await f.ws.prepareBase(f.task());
+      assert.equal(result.status, 'conflicted');
+    }
+    if (change === 'source')
+      await f.git(f.mirror, ['update-ref', 'refs/remotes/origin/main', f.base]);
+    if (change === 'head') await f.git(f.path, ['update-ref', 'HEAD', f.base]);
+    if (change === 'merge-head') {
+      const metadata = (
+        await f.git(f.path, ['rev-parse', '--git-path', 'MERGE_HEAD'])
+      ).stdout.trim();
+      await writeFile(metadata, f.base + '\n');
+    }
+    if (change === 'branch') await f.git(f.path, ['symbolic-ref', 'HEAD', 'refs/heads/wrong']);
+    if (change === 'common-dir') {
+      const foreign = join(f.root, 'foreign.git');
+      await f.git(f.root, ['clone', '--bare', f.source, foreign]);
+      const foreignWorktree = join(f.root, 'foreign-worktree');
+      await f.git(foreign, ['worktree', 'add', '-b', f.task().branch!, foreignWorktree, 'main']);
+      const metadata = await open(join(f.path, '.git'), 'r+');
+      try {
+        await metadata.truncate(0);
+        await metadata.writeFile(await readFile(join(foreignWorktree, '.git')));
+      } finally {
+        await metadata.close();
+      }
+    }
+    if (change === 'repo')
+      f.store.updateTask(f.task().id, { projectId: f.store.createProject('Other', '').id });
+    if (change === 'unknown-base')
+      f.store.updateTask(f.task().id, {
+        pendingMerge: { ...f.task().pendingMerge!, integratedBase: 'invalid-object' },
+      });
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.match(
+      result.blocked!,
+      {
+        source: /来源证据不足/,
+        head: /HEAD.*不匹配/,
+        'merge-head': /MERGE_HEAD.*不匹配/,
+        branch: /分支不匹配/,
+        'common-dir': /Git 归属不匹配/,
+        repo: /项目归属不匹配/,
+        'unknown-base': /结果未知/,
+        outside: /冲突文件以外/,
+        index: /改变了 Git 索引/,
+      }[change],
+    );
+    if (!['head', 'branch', 'common-dir'].includes(change))
+      assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    if (!['outside', 'index', 'common-dir'].includes(change)) assert.equal(f.turns(), 0);
+  });
+}
+
+test('fixed merge provenance survives a later tracking ref update and interrupted Dev edits with UU', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async () => {
+      throw new Error('do not repeat interrupted Dev');
+    },
+    'default',
+    true,
+  );
+  const coordinated = await f.ws.prepareBase(f.task());
+  assert.equal(coordinated.status, 'conflicted');
+  if (coordinated.status !== 'conflicted') return;
+  const previous = f.store.run('dev', f.task().projectId, f.task().profile, f.task());
+  await f.ws.claimConflict(f.task(), coordinated.merge.id, previous.id);
+  f.store.finishRun(previous.id, 'interrupted');
+  await writeFile(join(f.path, 'value.txt'), 'after');
+  await f.git(f.mirror, ['update-ref', 'refs/remotes/origin/main', f.base]);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value.txt/);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(f.turns(), 0);
+  assert.equal(result.retries, 2);
+});
+
+test('concurrent baseline coordination starts only one conflict Dev and no second merge', async (t) => {
+  const f = await conflictingTask(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const states = await Promise.all([f.ws.prepareBase(f.task()), f.ws.prepareBase(f.task())]);
+  assert.equal(states[0].status, 'conflicted');
+  assert.equal(states[1].status, 'conflicted');
+  if (states[0].status !== 'conflicted') return;
+  // Coordination alone records one pending merge and leaves the worktree at the old HEAD; the
+  // merge itself is created once, by the host commit at the end of the single Run.
+  assert.equal(f.store.task(f.task().id).pendingMerge!.id, states[0].merge.id);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(f.turns(), 1);
+  assert.equal((await f.store.task(f.task().id).mergeHistory!.length), 1);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', 'HEAD'])).stdout.trim(),
+    `${f.oldHead} ${f.incoming}`,
+  );
+});
+
+for (const resolution of ['valid', 'markers', 'invalid-json'] as const) {
+  test(`legacy manifest and lockfile conflict with ${resolution} resolution is checked before install`, async (t) => {
+    const f = await conflictingTask(
+      t,
+      async (cwd) => {
+        await writeFile(join(cwd, 'value.txt'), 'after');
+        if (resolution === 'markers') return;
+        for (const path of ['package.json', 'package-lock.json'])
+          await writeFile(
+            join(cwd, path),
+            resolution === 'valid'
+              ? '{"name":"fixture","taskFeature":true,"defaultFeature":true}\n'
+              : '{invalid json}',
+          );
+      },
+      'default',
+      true,
+      true,
+    );
+    const installed = join(f.root, 'installed.txt');
+    f.store.patchRepo(f.repo.id, {
+      commands: {
+        install: `node -e "const f=require('node:fs');const c=require('node:child_process');if(c.spawnSync('git',['rev-parse','--verify','MERGE_HEAD']).status===0)process.exit(9);JSON.parse(f.readFileSync('package.json'));JSON.parse(f.readFileSync('package-lock.json'));f.writeFileSync('${installed.replaceAll('\\', '/')}', 'installed');"`,
+        build: '',
+        test: 'node verify.cjs',
+        start: '',
+        port: 3000,
+      },
+    });
+    const result = await f.run();
+    assert.equal(result.retries, 2);
+    if (resolution === 'valid') {
+      assert.equal(result.stage, 'reviewing', result.blocked);
+      assert.equal(await readFile(installed, 'utf8'), 'installed');
+      assert.deepEqual(JSON.parse(await readFile(join(f.path, 'package-lock.json'), 'utf8')), {
+        name: 'fixture',
+        taskFeature: true,
+        defaultFeature: true,
+      });
+    } else {
+      assert.equal(result.control, 'paused');
+      assert.match(
+        result.blocked!,
+        resolution === 'markers' ? /冲突标记.*package/ : /不可解析.*package/,
+      );
+      await assert.rejects(readFile(installed), /ENOENT/);
+      assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+      assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU package-lock.json/);
+    }
+  });
+}
+
+test('old validation and reviews remain historical while the merged revision receives new evidence', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async (cwd) => {
+      await writeFile(join(cwd, 'value.txt'), 'after');
+    },
+    'default',
+    true,
+  );
+  const tests = [
+    {
+      head: f.oldHead,
+      command: 'old failing test',
+      exitCode: 1,
+      output: 'old failure',
+      at: '2026-01-01',
+    },
+  ];
+  const reviews = [
+    {
+      axis: 'spec' as const,
+      head: f.oldHead,
+      base: f.base,
+      approved: true,
+      summary: 'old review',
+      findings: [],
+    },
+  ];
+  f.store.updateTask(f.task().id, { tests, reviews });
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.deepEqual(result.revisionHistory![0].tests, tests);
+  assert.deepEqual(result.revisionHistory![0].reviews, reviews);
+  assert.equal(result.tests[0].head, result.head);
+  assert.equal(result.tests[0].exitCode, 0);
+  assert.equal(result.reviews.length, 0);
+});
+
+for (const field of ['headRepo', 'baseRepo', 'branch'] as const) {
+  test(`remote Task merge requires the original PR ${field} identity`, async (t) => {
+    const f = await conflictingTask(t, async () => {}, 'task');
+    f.prIdentity[field] = 'unrelated';
+    const result = await f.run();
+    assert.equal(result.control, 'paused');
+    assert.match(result.blocked!, /原 PR.*归属不匹配/);
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 0);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  });
+}
+
+test('PM guidance can authorize a new conflict editing attempt without product rework', async (t) => {
+  let attempts = 0;
+  const f = await conflictingTask(t, async (cwd) => {
+    if (++attempts === 2) await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const first = await f.run();
+  assert.equal(first.control, 'paused');
+  const previousRun = first.pendingMerge!.runId!;
+  await f.engine.resume(first.id, {
+    guidance: 'Preserve incoming.txt and implement the agreed value after in value.txt.',
+    upgrade: false,
+  });
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 2);
+  assert.deepEqual(result.mergeHistory![0].previousRunIds, [previousRun]);
+});
+
+test('legacy default merge uses its verified source even when the PR tracking ref is absent', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async (cwd) => {
+      await writeFile(join(cwd, 'value.txt'), 'after');
+    },
+    'default',
+    true,
+  );
+  await f.git(f.path, ['push', 'origin', `HEAD:refs/heads/${f.task().branch}`]);
+  await f.git(f.path, ['update-ref', '-d', `refs/remotes/origin/${f.task().branch}`]);
+  f.store.updateTask(f.task().id, { pr: 2 });
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 1);
+  // The default-branch source must be the one verified from the remaining ref, not the task branch
+  // whose tracking ref was deleted.
+  const [merge] = f.store.task(f.task().id).mergeHistory!;
+  assert.equal(merge.sourceRef, 'refs/remotes/origin/main');
+  assert.equal(merge.sourceHead, f.incoming);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', 'HEAD'])).stdout.trim(),
+    `${f.oldHead} ${f.incoming}`,
+  );
+});
+
+test('legacy PR merge with a missing base is adopted before fetching another branch', async (t) => {
+  const f = await conflictingTask(
+    t,
+    async (cwd) => {
+      await writeFile(join(cwd, 'value.txt'), 'after');
+    },
+    'task',
+    true,
+  );
+  f.store.updateTask(f.task().id, { base: undefined, control: 'paused' });
+  await f.engine.resume(f.task().id);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.pr, 2);
+  assert.equal(result.retries, 2);
+  assert.equal(await readFile(join(f.path, 'later.txt'), 'utf8'), 'default branch must wait');
+});
+
+test('a pending merge cannot adopt edits when its recorded Dev Run is unknown', async (t) => {
+  const f = await conflictingTask(t, async () => {}, 'default', true);
+  assert.equal((await f.ws.prepareBase(f.task())).status, 'conflicted');
+  await writeFile(join(f.path, 'value.txt'), 'after');
+  f.store.updateTask(f.task().id, {
+    pendingMerge: { ...f.task().pendingMerge!, phase: 'editing', runId: 'unknown-run' },
+  });
+  const result = await f.run();
+  assert.equal(result.control, 'paused');
+  assert.match(result.blocked!, /冲突 Dev Run.*不匹配/);
+  assert.equal(result.retries, 2);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value.txt/);
+});
 
 for (const method of ['UI', 'PM'] as const) {
   test(`${method} resume adopts a legacy paused dirty worktree without another Dev turn`, async (t) => {
