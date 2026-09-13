@@ -28,6 +28,15 @@ test('credential commands retain ordinary paths and URLs through durable activit
     `curl -ualice:attached-secret ${url}`,
     `tool --token=flag-secret --password "space secret" ${url}`,
     `type "${path}\\password notes.txt"`,
+    `$env:API_KEY=ps-api-value; tool "${path}" ${url}`,
+    `$env:TOKEN = 'ps-token-value'; tool "${path}" ${url}`,
+    `$ENV:OPENAI_API_KEY = "ps-provider-value"; tool "${path}" ${url}`,
+    `\${env:SECRET} = 'ps-braced-value'; tool "${path}" ${url}`,
+    `$env:PASSWORD = 'ps-single''quote-value'; tool "${path}" ${url}`,
+    '$env:PASSWORD = "ps-double`"quote-value"; tool "' + path + '" ' + url,
+    `$env:AUTHORIZATION = 'Basic ps-auth-value'; tool "${path}" ${url}`,
+    `$env:COOKIE = 'session=ps-cookie-value'; tool "${path}" ${url}`,
+    `$env:PATH = '${path}'; tool ${url}`,
   ];
   for (const [index, command] of commands.entries()) {
     store.activity(run, `command-${index}`, {
@@ -65,6 +74,15 @@ test('credential commands retain ordinary paths and URLs through durable activit
       'attached-secret',
       'flag-secret',
       'space secret',
+      'ps-api-value',
+      'ps-token-value',
+      'ps-provider-value',
+      'ps-braced-value',
+      'ps-single',
+      'quote-value',
+      'ps-double',
+      'ps-auth-value',
+      'ps-cookie-value',
     ])
       assert.ok(!response.body.includes(secret), secret);
     const activities = response.json().activities;
@@ -73,6 +91,12 @@ test('credential commands retain ordinary paths and URLs through durable activit
     assert.ok(activities[0].details.command.includes(path));
     for (const index of [2, 3, 4, 5, 6]) assert.ok(activities[index].details.command.includes(url));
     assert.equal(activities[7].details.command, commands[7]);
+    for (const activity of activities.slice(8)) {
+      assert.ok(activity.details.command.includes(`tool`));
+      assert.ok(activity.details.command.includes(path));
+      assert.ok(activity.details.command.includes(url));
+    }
+    assert.equal(activities.at(-1).details.command, commands.at(-1));
   } finally {
     await app.close();
     reopened.close();

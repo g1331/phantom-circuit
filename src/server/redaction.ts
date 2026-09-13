@@ -23,7 +23,13 @@ export function redact(value: string): string {
       /* Plain text follows. */
     }
   }
+  // PowerShell uses a provider prefix; do not loosen the generic path-safe key boundary.
   return value
+    .replace(
+      /(\$(?:env:([\w]+)|\{env:([^}]+)\})\s*=\s*)("(?:`[\s\S]|[^"`])*"|'(?:''|[^'])*'|[^\s;|&]+)/gi,
+      (match, assignment: string, name: string | undefined, bracedName: string | undefined) =>
+        credentialKey.test(name ?? bracedName ?? '') ? `${assignment}<REDACTED>` : match,
+    )
     .replace(
       /\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/g,
       '<REDACTED>',
@@ -46,7 +52,10 @@ export function redact(value: string): string {
       /(["'](?:authorization|(?:set-)?cookie)["']\s*:\s*)("(?:\\.|[^"\\])*"|'[^']*')/gi,
       '$1"<REDACTED>"',
     )
-    .replace(/(?<![\w"'])((?:authorization|(?:set-)?cookie)\s*[=:]\s*)[^\r\n]+/gi, '$1<REDACTED>')
+    .replace(
+      /(?<![\w"'\\/:.-])((?:authorization|(?:set-)?cookie)\s*[=:]\s*)[^\r\n]+/gi,
+      '$1<REDACTED>',
+    )
     .replace(
       /(?<![\w\\/:.-])(["']?(?:[\w]{1,64}[_-])?(?:api[_-]?key|accessToken|refreshToken|clientSecret|token|password|passwd|secret)["']?\s*[=:]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s,;&}\]]+)/gi,
       '$1<REDACTED>',

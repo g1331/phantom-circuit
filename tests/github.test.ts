@@ -161,13 +161,16 @@ test('external publication redacts diagnostic paths and credentials without chan
   const path = String.raw`D:\owner\private\worktree\main.ts`;
   try {
     f.store.updateTask(f.task().id, {
-      spec: `Inspect "${path}"\nAuthorization: Bearer external-secret\npsql postgresql://alice:external-db-secret@localhost/app\ncurl --user alice:external-basic-secret https://example.invalid`,
+      spec: `Inspect "${path}"\nAuthorization: Bearer external-secret\npsql postgresql://alice:external-db-secret@localhost/app\ncurl --user alice:external-basic-secret https://example.invalid\n$env:API_KEY=external-ps-api; tool https://example.invalid\n$env:TOKEN = 'external-ps-token'; tool https://example.invalid`,
     });
     await f.github().reviseIssue(f.task());
     assert.ok(!f.remote().body.includes(path));
     assert.ok(!f.remote().body.includes('external-secret'));
     assert.ok(!f.remote().body.includes('external-db-secret'));
     assert.ok(!f.remote().body.includes('external-basic-secret'));
+    assert.ok(!f.remote().body.includes('external-ps-api'));
+    assert.ok(!f.remote().body.includes('external-ps-token'));
+    assert.ok(f.remote().body.includes('; tool https://example.invalid'));
     assert.ok(f.remote().body.includes('https://example.invalid'));
     assert.ok(f.task().spec.includes(path));
     await f.github().completeIssue(f.task());
