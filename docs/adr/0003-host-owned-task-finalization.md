@@ -1,0 +1,3 @@
+# Keep task finalization host-owned
+
+Dev sessions edit and inspect only their assigned task worktree; the host owns task-scoped staging, commit creation and configured validation. Git worktree metadata is shared outside the Dev writable root, so exposing the backing mirror would let one Dev affect other tasks, while host-owned finalization preserves task boundaries and can run Windows process cleanup with the required authority. The host must distinguish an unchanged worktree, an uncommitted implementation and a committed diff so environment failures pause instead of being reissued as missing work.

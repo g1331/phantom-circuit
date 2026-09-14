@@ -780,6 +780,178 @@ time {
 .message.user .message-content {
   color: var(--muted);
 }
+.markdown-rendered {
+  white-space: normal;
+}
+.markdown-block {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.markdown-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.markdown-block + .markdown-block {
+  margin-top: 16px;
+}
+.domain-documents {
+  padding: 24px 18px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.9;
+  min-width: 0;
+}
+.domain-documents h2 {
+  font-size: 16px;
+  margin: 0 0 16px;
+}
+.domain-documents details {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+.domain-documents summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.domain-documents .markdown-block {
+  margin-top: 16px;
+}
+.markdown-tools button {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.markdown-tools button[aria-pressed='true'] {
+  background: var(--raised);
+  color: var(--text);
+}
+.markdown-block .markdown-source {
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow: auto;
+  max-width: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 12px;
+  background: var(--input);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font:
+    12px/1.8 ui-monospace,
+    Consolas,
+    monospace;
+}
+.markdown-rendered > * {
+  margin: 0 0 1em;
+}
+.markdown-rendered > :last-child {
+  margin-bottom: 0;
+}
+.markdown-rendered :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 1.4em;
+  margin-bottom: 0.6em;
+  line-height: 1.5;
+  font-weight: 600;
+}
+.markdown-rendered > :first-child {
+  margin-top: 0;
+}
+.markdown-rendered h1 {
+  font-size: 1.5em;
+}
+.markdown-rendered h2 {
+  font-size: 1.3em;
+}
+.markdown-rendered :is(h3, h4, h5, h6) {
+  font-size: 1.1em;
+}
+.markdown-rendered :is(ul, ol) {
+  padding-left: 1.6em;
+}
+.markdown-rendered li + li {
+  margin-top: 0.3em;
+}
+.markdown-rendered li > p {
+  margin: 0.4em 0;
+}
+.markdown-rendered blockquote {
+  margin-left: 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+.markdown-rendered blockquote > :first-child {
+  margin-top: 0;
+}
+.markdown-rendered blockquote > :last-child {
+  margin-bottom: 0;
+}
+.markdown-rendered a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.markdown-rendered code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  background: var(--raised);
+}
+.markdown-rendered pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input);
+  line-height: 1.7;
+}
+.markdown-rendered pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+.markdown-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown-table:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.markdown-rendered table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+  white-space: nowrap;
+}
+.markdown-rendered :is(th, td) {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+}
+.markdown-rendered th {
+  background: var(--raised);
+  font-weight: 600;
+}
+.markdown-rendered img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-rendered hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
 .message.system {
   color: var(--danger);
 }
@@ -1331,7 +1503,7 @@ time {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-.task-detail pre {
+.task-detail details > pre {
   font:
     11px/1.8 ui-monospace,
     Consolas,

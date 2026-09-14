@@ -90,6 +90,7 @@ export interface Task {
   branch?: string;
   worktree?: string;
   devThreadId?: string;
+  devPhase?: 'implement' | 'finalize';
   issue?: number;
   issueUrl?: string;
   issueNodeId?: string;

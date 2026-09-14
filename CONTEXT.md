@@ -27,3 +27,12 @@ _Avoid_: User acceptance, turn completion
 
 **Experience feedback**: A user's observations of delivered behavior, used to initiate a related improvement or repair.
 _Avoid_: Code review
+
+**Provider**: An authenticated model upstream available to Phantom Circuit, either through the existing Codex login or a saved custom connection.
+_Avoid_: Model, profile
+
+**Project model profile**: A Project-owned assignment from each PM, Dev or Review role to a Provider, model and reasoning effort.
+_Avoid_: Global defaults, Provider
+
+**PM activity**: A durable, user-visible record of why the PM started acting and which observable step it is performing.
+_Avoid_: Hidden chain of thought, raw log

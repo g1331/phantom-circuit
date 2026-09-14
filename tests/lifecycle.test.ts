@@ -120,14 +120,10 @@ test('real worktrees, commits and tests complete a task through independent revi
     override async turn(_id: string, prompt: string, _p: Profile) {
       if (this.role === 'dev') {
         devTurns++;
-        await command('git', ['config', 'user.name', 'Phantom Test'], this.cwd);
-        await command('git', ['config', 'user.email', 'test@example.invalid'], this.cwd);
         await writeFile(
           join(this.cwd, 'sum.cjs'),
           `// Revision ${devTurns}\nmodule.exports=(a,b)=>a+b;\n`,
         );
-        await command('git', ['add', 'sum.cjs'], this.cwd);
-        await command('git', ['commit', '-m', `Implement sum ${devTurns}`], this.cwd);
         return 'Implemented';
       }
       if (this.role === 'review') {
@@ -152,6 +148,9 @@ test('real worktrees, commits and tests complete a task through independent revi
     }
   }
   const ws = new Workspaces(join(root, 'workspaces'), store);
+  const mirror = await ws.mirror(store.repo(repo.id));
+  await command('git', ['config', 'user.name', 'Phantom Test'], mirror);
+  await command('git', ['config', 'user.email', 'test@example.invalid'], mirror);
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new FakeCodex());
   try {
     for (let i = 0; i < 250 && store.task(task.id).stage !== 'done'; i++) {
