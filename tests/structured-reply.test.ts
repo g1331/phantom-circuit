@@ -271,10 +271,14 @@ for (const [name, wrap] of shapes)
   });
 
 test('a reply without JSON pauses the task with a readable domain reason instead of a SyntaxError', async () => {
-  const marker = 'Evidence is unavailable in this pinned worktree';
+  const first = 'Evidence is unavailable in this pinned worktree';
+  const second = 'Still prose after the explicit JSON-only instruction';
   const run = await lifecycle(
-    (kind, _prompt, json) =>
-      kind === 'review' ? `${marker}. ${'supporting detail '.repeat(400)}` : json,
+    (kind, prompt, json) => {
+      if (kind !== 'review') return json;
+      const marker = prompt.includes('Reply with ONLY one JSON object') ? second : first;
+      return `${marker}. ${'supporting detail '.repeat(400)}`;
+    },
     { feedback: true },
   );
   try {
@@ -288,8 +292,12 @@ test('a reply without JSON pauses the task with a readable domain reason instead
       /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse|ZodError|invalid_type/i,
     );
     assert.ok(
-      (task.blocked ?? '').includes(marker),
-      'the redacted raw reply must be retained as bounded evidence',
+      (task.blocked ?? '').includes(first),
+      'the redacted reply that failed first must be retained as bounded evidence',
+    );
+    assert.ok(
+      (task.blocked ?? '').includes(second),
+      'the redacted reply to the bounded re-ask must be retained as bounded evidence',
     );
     assert.ok(
       Buffer.byteLength(task.blocked ?? '') < 2560,
@@ -308,6 +316,62 @@ test('a reply without JSON pauses the task with a readable domain reason instead
       run.events().some((e) => e.type === 'blocked' && e.taskId === task.id),
       'the pause must be recorded as a PM-visible incident',
     );
+  } finally {
+    run.close();
+  }
+});
+
+test('a parser exception from a structured turn never reaches the task as raw JavaScript text', async () => {
+  const run = await lifecycle(() => {
+    throw new SyntaxError("Unexpected token 'E', \"Evidence i\"... is not valid JSON");
+  });
+  try {
+    const task = run.task();
+    assert.equal(task.control, 'paused');
+    assert.notEqual(task.stage, 'done');
+    assert.doesNotMatch(
+      task.blocked ?? '',
+      /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse/i,
+    );
+    assert.match(task.blocked ?? '', /无法解析的结构化输出/);
+    const run0 = run.store.list('run').find((r) => r.taskId === task.id && r.role === 'review');
+    assert.match(
+      run0?.error ?? '',
+      /SyntaxError/,
+      'the raw exception stays available in the Run record, not in task.blocked',
+    );
+  } finally {
+    run.close();
+  }
+});
+
+test('a parseable candidate that fails the schema does not hide the later valid verdict', async () => {
+  const run = await lifecycle((kind, _prompt, json) =>
+    kind === 'review'
+      ? `\`\`\`json\n{"note":"shape example only, not the verdict"}\n\`\`\`\nEvidence is taken from the pinned diff.\n${json}\n`
+      : json,
+    { feedback: true },
+  );
+  try {
+    const task = run.task();
+    assert.equal(task.stage, 'done', JSON.stringify({ blocked: task.blocked }));
+    assert.equal(run.turns.review.standards, 1, 'a stale example object must not force a re-ask');
+    assert.equal(run.turns.review.spec, 1);
+  } finally {
+    run.close();
+  }
+});
+
+test('prose containing many brace characters still yields the balanced verdict object', async () => {
+  const run = await lifecycle((kind, _prompt, json) =>
+    kind === 'review' ? `${'{ '.repeat(200)}Evidence is taken from the pinned diff. ${json}\n` : json,
+    { feedback: true },
+  );
+  try {
+    const task = run.task();
+    assert.equal(task.stage, 'done', JSON.stringify({ blocked: task.blocked }));
+    assert.equal(run.turns.review.standards, 1);
+    assert.equal(run.turns.review.spec, 1);
   } finally {
     run.close();
   }
