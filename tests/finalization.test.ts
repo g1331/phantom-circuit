@@ -327,6 +327,67 @@ async function advancedLegacyTask(
   return { ...f, advanced };
 }
 
+/**
+ * The scene ADR 0014 covers: the legacy host recorded a default-branch tip it had already moved
+ * past, so the recorded baseline is a later commit than `MERGE_HEAD` instead of the commit the
+ * merge started from. The default branch then advances once more after that record was written.
+ */
+async function advancedRecordedBaselineTask(
+  t: TestContext,
+  dev: (cwd: string) => Promise<void> = async () => {},
+  options: { record?: boolean } = {},
+) {
+  const f = await conflictingTask(t, dev, 'default', true);
+  if (options.record !== false)
+    f.store.event('merge-conflict', '需要 Dev 按双方意图解决合并冲突', {
+      projectId: f.task().projectId,
+      taskId: f.task().id,
+    });
+  await writeFile(join(f.source, 'recorded.txt'), 'recorded default work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Recorded default']);
+  await publishBranch(f, 'main');
+  const recorded = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  f.store.updateTask(f.task().id, { base: recorded });
+  await writeFile(join(f.source, 'later.txt'), 'advanced default work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Later default']);
+  await publishBranch(f, 'main');
+  const advanced = (await f.git(f.source, ['rev-parse', 'HEAD'])).stdout.trim();
+  const fork = (await f.git(f.path, ['merge-base', 'HEAD', f.incoming])).stdout.trim();
+  assert.notEqual(recorded, f.incoming);
+  assert.notEqual(advanced, recorded);
+  return { ...f, recorded, advanced, fork };
+}
+
+/**
+ * Both accepted legacy scenes, so every behaviour that must hold for either is expressed once: a
+ * recorded baseline that is `MERGE_HEAD` itself, and the later recorded tip ADR 0014 adds.
+ */
+const legacyBaselineScenes = [
+  ['a MERGE_HEAD baseline', advancedLegacyTask],
+  ['a later recorded baseline', advancedRecordedBaselineTask],
+] as const;
+
+/**
+ * An install command that leaves a marker behind, so "a paused coordination never installs" is an
+ * observable fact rather than a reading of the Engine's control flow.
+ */
+function installProbe(f: { root: string; store: Store; repo: { id: string } }) {
+  const marker = join(f.root, 'installed.txt');
+  f.store.patchRepo(f.repo.id, {
+    commands: {
+      ...f.store.repo(f.repo.id).commands,
+      install: `node -e "require('node:fs').writeFileSync('${marker.replaceAll('\\', '/')}','installed')"`,
+    },
+  });
+  return marker;
+}
+
+async function assertNoInstall(marker: string) {
+  await assert.rejects(readFile(marker), /ENOENT/);
+}
+
 for (const failure of ['install', 'validation'] as const) {
   test(`resume keeps the merged finalize checkpoint after ${failure} fails before pushing an existing PR`, async (t) => {
     const f = await conflictingTask(
@@ -1185,6 +1246,103 @@ test('advanced default branch adopts the recorded legacy merge and integrates th
   assert.equal(result.tests[0].head, result.head);
 });
 
+test("advanced recorded baseline adopts the legacy merge from this run's own evidence", async (t) => {
+  const f = await advancedRecordedBaselineTask(t, async () => {
+    throw new Error('adoption must not start Dev');
+  });
+  const installed = installProbe(f);
+  const retries = f.task().retries;
+  const result = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(result.status, 'conflicted');
+  if (result.status !== 'conflicted') return;
+  assert.equal(result.merge.origin, 'legacy');
+  assert.equal(result.merge.sourceRef, 'refs/remotes/origin/main');
+  assert.equal(result.merge.sourceHead, f.incoming);
+  assert.equal(result.merge.integratedBase, f.fork);
+  assert.equal(result.merge.targetBase, f.incoming);
+  // The persisted record is written from this run's evidence, never the stale recorded tip: a
+  // carried-over baseline would fail the later "source contains target baseline" check.
+  const stored = f.store.task(f.task().id);
+  assert.deepEqual(stored.pendingMerge, result.merge);
+  assert.equal(stored.targetBase, f.incoming);
+  assert.equal(stored.integratedBase, f.fork);
+  assert.notEqual(stored.targetBase, f.recorded);
+  // Adoption alone: no commit, no install, retries untouched, and the unmerged index kept.
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.equal((await f.git(f.path, ['rev-parse', 'MERGE_HEAD'])).stdout.trim(), f.incoming);
+  assert.equal(f.turns(), 0);
+  assert.equal(f.store.task(f.task().id).retries, retries);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline is read from targetBase as well as the legacy base', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  // A coordination written after #45 records the same baseline in `targetBase` instead of `base`.
+  f.store.updateTask(f.task().id, { base: undefined, targetBase: f.recorded });
+  const result = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(result.status, 'conflicted');
+  if (result.status !== 'conflicted') return;
+  assert.equal(result.merge.sourceRef, 'refs/remotes/origin/main');
+  assert.equal(result.merge.sourceHead, f.incoming);
+  assert.equal(result.merge.integratedBase, f.fork);
+  assert.equal(result.merge.targetBase, f.incoming);
+  assert.equal(f.store.task(f.task().id).targetBase, f.incoming);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+});
+
+test('advanced recorded baseline completes the legacy merge and then integrates the new default', async (t) => {
+  const f = await advancedRecordedBaselineTask(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  assert.equal(f.task().pendingMerge, undefined);
+  await f.engine.resume(f.task().id);
+  const result = await f.run();
+  assert.equal(result.stage, 'reviewing', result.blocked);
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 1);
+  assert.equal(result.pendingMerge, undefined);
+  const history = f.store.task(f.task().id).mergeHistory!;
+  assert.equal(history.length, 2);
+  assert.equal(history[0].origin, 'legacy');
+  assert.equal(history[0].sourceRef, 'refs/remotes/origin/main');
+  assert.equal(history[0].sourceHead, f.incoming);
+  assert.equal(history[0].targetBase, f.incoming);
+  assert.equal(history[0].integratedBase, f.fork);
+  assert.equal(
+    (await f.git(f.path, ['show', '-s', '--format=%P', history[0].head])).stdout.trim(),
+    `${f.oldHead} ${f.incoming}`,
+  );
+  assert.equal(history[1].sourceRef, 'refs/remotes/origin/main');
+  assert.equal(history[1].sourceHead, f.advanced);
+  assert.equal(await readFile(join(f.path, 'recorded.txt'), 'utf8'), 'recorded default work');
+  assert.equal(await readFile(join(f.path, 'later.txt'), 'utf8'), 'advanced default work');
+  assert.equal((await f.git(f.path, ['status', '--porcelain'])).stdout, '');
+  assert.equal(result.base, f.advanced);
+});
+
+test('advanced recorded baseline repeats neither Dev nor merge nor commit on a second recovery', async (t) => {
+  const f = await advancedRecordedBaselineTask(t, async () => {
+    throw new Error('recovery must not start Dev');
+  });
+  const retries = f.task().retries;
+  const first = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(first.status, 'conflicted');
+  const id = f.store.task(f.task().id).pendingMerge!.id;
+  // Recovering the same unfinished merge again reuses the persisted record, re-verifies the source
+  // and starts no merge, no commit and no Dev run.
+  const again = await f.ws.prepareBase(f.task(), undefined, false);
+  assert.equal(again.status, 'conflicted');
+  if (again.status !== 'conflicted') return;
+  assert.equal(again.merge.id, id);
+  assert.deepEqual(again.merge, first.merge);
+  assert.equal(f.store.activeRuns().length, 0);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.equal((await f.git(f.path, ['rev-parse', 'MERGE_HEAD'])).stdout.trim(), f.incoming);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  assert.equal(f.store.task(f.task().id).retries, retries);
+});
+
 test('advanced default branch leaves the legacy merge pending while no target baseline is recorded', async (t) => {
   const f = await advancedLegacyTask(t);
   f.store.updateTask(f.task().id, { base: undefined, targetBase: undefined });
@@ -1198,15 +1356,155 @@ test('advanced default branch leaves the legacy merge pending while no target ba
   assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
 });
 
-test('advanced default branch leaves the legacy merge pending while the recorded target differs', async (t) => {
-  const f = await advancedLegacyTask(t);
-  f.store.updateTask(f.task().id, { base: f.base });
+for (const lineage of ['an-ancestor', 'another-lineage'] as const) {
+  test(`advanced recorded baseline stays pending while the recorded target is ${lineage}`, async (t) => {
+    const f = await advancedRecordedBaselineTask(t);
+    const installed = installProbe(f);
+    // Neither a recorded baseline that MERGE_HEAD descends from nor one from an unrelated lineage
+    // is the later default tip ADR 0014 accepts.
+    f.store.updateTask(f.task().id, { base: lineage === 'an-ancestor' ? f.base : f.oldHead });
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 0);
+    assert.match(
+      result.blocked!,
+      lineage === 'an-ancestor'
+        ? /来源证据不足.*与宿主记录的目标基线 .* 不一致.*是 .* 的祖先/
+        : /来源证据不足.*与宿主记录的目标基线 .* 不一致.*没有祖先关系/,
+    );
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+    await assertNoInstall(installed);
+  });
+}
+
+test('advanced recorded baseline stays pending when the source no longer contains it', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const installed = installProbe(f);
+  // A rewritten default branch that still descends from MERGE_HEAD but dropped the recorded tip.
+  await f.git(f.source, ['checkout', '-b', 'rewritten-default', f.incoming]);
+  await writeFile(join(f.source, 'rewritten.txt'), 'rewritten default work');
+  await f.git(f.source, ['add', '.']);
+  await f.git(f.source, ['commit', '-m', 'Rewritten default']);
+  await f.git(f.source, ['push', '--force', 'origin', 'HEAD:refs/heads/main']);
+  await trackRef(f, 'main');
   const result = await f.run();
   assert.equal(result.control, 'paused', JSON.stringify(result));
   assert.equal(result.retries, 2);
   assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源证据不足.*与宿主记录的目标基线 .* 不一致/);
+  assert.match(result.blocked!, /来源证据不足.*已不再包含宿主记录的目标基线/);
   assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline stays pending when the recorded integrated base is not the fork', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const installed = installProbe(f);
+  f.store.updateTask(f.task().id, { integratedBase: f.oldHead });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*与已整合基线 .* 不一致/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline stays pending when the source was reverted onto MERGE_HEAD', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const installed = installProbe(f);
+  // A source reset back onto MERGE_HEAD no longer contains the recorded later tip, so ADR 0014's
+  // condition cannot hold even though the pointer now matches exactly.
+  await f.git(f.source, ['push', '--force', 'origin', `${f.incoming}:refs/heads/main`]);
+  await trackRef(f, 'main');
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源不包含目标基线/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline stays pending while no target baseline is recorded', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const installed = installProbe(f);
+  f.store.updateTask(f.task().id, { base: undefined, targetBase: undefined });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*没有已记录的目标基线/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline stays pending while no coordination event is recorded', async (t) => {
+  const f = await advancedRecordedBaselineTask(t, undefined, { record: false });
+  const installed = installProbe(f);
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*合并协调记录/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+test('advanced recorded baseline stays pending when the coordination event names another merge', async (t) => {
+  const f = await advancedRecordedBaselineTask(t, undefined, { record: false });
+  const installed = installProbe(f);
+  f.store.event('merge-conflict', `待完成合并 ${f.recorded} + ${f.recorded}；冲突文件：value.txt`, {
+    projectId: f.task().projectId,
+    taskId: f.task().id,
+  });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /来源证据不足.*都不指向该待完成合并/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+  await assertNoInstall(installed);
+});
+
+for (const drift of ['outside', 'index'] as const) {
+  test(`advanced recorded baseline refuses ${drift} drift from the conflict Dev`, async (t) => {
+    const f = await advancedRecordedBaselineTask(t, async (cwd) => {
+      await writeFile(join(cwd, 'value.txt'), 'after');
+      if (drift === 'outside') await writeFile(join(cwd, 'verify.cjs'), 'unexpected');
+      else await command('git', ['add', '.'], cwd);
+    });
+    const installed = installProbe(f);
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.match(result.blocked!, drift === 'outside' ? /冲突文件以外/ : /改变了 Git 索引/);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    await assertNoInstall(installed);
+  });
+}
+
+test('advanced recorded baseline stays pending when Git cannot answer the ancestry question', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const installed = installProbe(f);
+  // A MERGE_HEAD naming an object Git cannot resolve: the ancestry command fails instead of
+  // answering "not an ancestor", which must pause as an unknown Git result.
+  const metadata = (await f.git(f.path, ['rev-parse', '--git-path', 'MERGE_HEAD'])).stdout.trim();
+  await writeFile(metadata, '1234567890abcdef1234567890abcdef12345678\n');
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result));
+  assert.equal(result.retries, 2);
+  assert.equal(f.turns(), 0);
+  assert.match(result.blocked!, /祖先关系检查结果未知/);
+  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+  await assertNoInstall(installed);
 });
 
 test('advanced default branch leaves the legacy merge pending while target records conflict', async (t) => {
@@ -1259,39 +1557,47 @@ test('advanced default branch refuses a coordination record that names another m
   assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
 });
 
-for (const drift of ['head', 'orig-head'] as const) {
-  test(`advanced default branch leaves the legacy merge pending on ${drift} drift`, async (t) => {
-    const f = await advancedLegacyTask(t);
-    if (drift === 'head') f.store.updateTask(f.task().id, { head: f.base });
-    else {
-      const path = (await f.git(f.path, ['rev-parse', '--git-path', 'ORIG_HEAD'])).stdout.trim();
-      await writeFile(path, `${f.base}\n`);
-    }
+for (const scene of legacyBaselineScenes) {
+  for (const drift of ['head', 'orig-head'] as const) {
+    test(`advanced default branch leaves the legacy merge pending on ${drift} drift with ${scene[0]}`, async (t) => {
+      const f = await scene[1](t);
+      const installed = installProbe(f);
+      if (drift === 'head') f.store.updateTask(f.task().id, { head: f.base });
+      else {
+        const path = (await f.git(f.path, ['rev-parse', '--git-path', 'ORIG_HEAD'])).stdout.trim();
+        await writeFile(path, `${f.base}\n`);
+      }
+      const result = await f.run();
+      assert.equal(result.control, 'paused', JSON.stringify(result));
+      assert.equal(result.retries, 2);
+      assert.equal(f.turns(), 0);
+      assert.match(result.blocked!, drift === 'head' ? /HEAD 漂移/ : /ORIG_HEAD 不匹配/);
+      assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+      await assertNoInstall(installed);
+    });
+  }
+}
+
+for (const scene of legacyBaselineScenes) {
+  test(`advanced default branch refuses to guess between two allowed sources that both moved on with ${scene[0]}`, async (t) => {
+    const f = await scene[1](t);
+    const installed = installProbe(f);
+    f.store.updateTask(f.task().id, { pr: 2, mergeSourceBranch: f.task().branch });
+    // A second allowed source - the original PR branch - also advances past the pending merge head.
+    await f.git(f.source, ['checkout', '-b', 'task-advance', f.incoming]);
+    await writeFile(join(f.source, 'task-advance.txt'), 'task branch advance');
+    await f.git(f.source, ['add', '.']);
+    await f.git(f.source, ['commit', '-m', 'Task branch advance']);
+    await publishBranch(f, f.task().branch!);
     const result = await f.run();
     assert.equal(result.control, 'paused', JSON.stringify(result));
     assert.equal(result.retries, 2);
     assert.equal(f.turns(), 0);
-    assert.match(result.blocked!, drift === 'head' ? /HEAD 漂移/ : /ORIG_HEAD 不匹配/);
+    assert.match(result.blocked!, /来源歧义/);
     assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    await assertNoInstall(installed);
   });
 }
-
-test('advanced default branch refuses to guess between two allowed sources that both moved on', async (t) => {
-  const f = await advancedLegacyTask(t);
-  f.store.updateTask(f.task().id, { pr: 2, mergeSourceBranch: f.task().branch });
-  // A second allowed source - the original PR branch - also advances past the pending merge head.
-  await f.git(f.source, ['checkout', '-b', 'task-advance', f.incoming]);
-  await writeFile(join(f.source, 'task-advance.txt'), 'task branch advance');
-  await f.git(f.source, ['add', '.']);
-  await f.git(f.source, ['commit', '-m', 'Task branch advance']);
-  await publishBranch(f, f.task().branch!);
-  const result = await f.run();
-  assert.equal(result.control, 'paused', JSON.stringify(result));
-  assert.equal(result.retries, 2);
-  assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源歧义/);
-  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-});
 
 test('recovering a recorded legacy merge twice repeats neither Dev nor merge nor commit', async (t) => {
   const f = await advancedLegacyTask(t, async (cwd) => {
