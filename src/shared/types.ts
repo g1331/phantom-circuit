@@ -77,11 +77,20 @@ export interface Repo {
     error?: string;
   };
 }
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  width: number;
+  height: number;
+}
 export interface Message {
   id: string;
   projectId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  attachments?: ImageAttachment[];
   intent?: 'discuss' | 'implement' | 'feedback';
   createdAt: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';

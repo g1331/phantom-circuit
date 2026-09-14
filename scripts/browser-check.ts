@@ -1,6 +1,8 @@
 import { checkPriority } from './browser-priority.ts';
 import { chromium } from 'playwright';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
@@ -9,6 +11,7 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
+import { Codex } from '../src/server/codex.ts';
 import { checkProviders } from './provider-browser-check.ts';
 import { checkProfiles } from './profile-browser-check.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
@@ -16,8 +19,14 @@ import { profileProtocol } from '../tests/profile-protocol.ts';
 const artifacts = resolve('test-results');
 await mkdir(artifacts, { recursive: true });
 const store = new Store(':memory:');
+const imageState = await mkdtemp(join(tmpdir(), 'phantom-browser-images-'));
 const ws = new Workspaces(resolve('.cache/browser-workspaces'), store);
-const engine = new Engine(store, new GitHub(store), ws, resolve('.cache'));
+class OfflinePM extends Codex {
+  override async start() {
+    throw new Error('Browser fixture: PM offline');
+  }
+}
+const engine = new Engine(store, new GitHub(store), ws, imageState, () => new OfflinePM());
 const app = createApp(store, engine, new Previews(store, ws), 4318, profileProtocol);
 await app.listen({ host: '127.0.0.1', port: 4318 });
 const browser = await chromium.launch({
@@ -44,6 +53,66 @@ try {
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   const project = store.list('project')[0];
+  const imageFile = {
+    name: 'screenshot.png',
+    mimeType: 'image/png',
+    buffer: await readFile(resolve(artifacts, '01-empty-desktop.png')),
+  };
+  await page.getByLabel('选择图片').setInputFiles(imageFile);
+  await page.getByRole('img', { name: '待发送：screenshot.png' }).waitFor();
+  await page.getByRole('button', { name: '移除 screenshot.png' }).click();
+  assert.equal(await page.getByRole('img', { name: '待发送：screenshot.png' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '发送消息' }).isDisabled(), true);
+  await page
+    .getByLabel('选择图片')
+    .setInputFiles([imageFile, { ...imageFile, name: 'second.png' }]);
+  assert.equal(await page.locator('.image-drafts img').count(), 2);
+  let uploads = 0;
+  let releaseUpload!: () => void;
+  const uploadGate = new Promise<void>((resolve) => {
+    releaseUpload = resolve;
+  });
+  await page.route('**/api/projects/*/messages', async (route) => {
+    uploads++;
+    await uploadGate;
+    await route.continue();
+  });
+  await page.getByRole('button', { name: '发送消息' }).click();
+  assert.equal(await page.getByRole('button', { name: '发送消息' }).isDisabled(), true);
+  await page.keyboard.press('Control+Enter');
+  assert.equal(uploads, 1);
+  releaseUpload();
+  await page.locator('.message-images img').first().waitFor();
+  await page.unroute('**/api/projects/*/messages');
+  await page.reload();
+  await page.locator('.message-images img').first().waitFor();
+  assert.equal(await page.locator('.message-images img').count(), 2);
+  assert.equal(
+    await page
+      .locator('.message-images img')
+      .first()
+      .evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0),
+    true,
+  );
+  await page.getByRole('button', { name: '重新发送' }).first().click();
+  assert.equal(await page.locator('.message-images img').count(), 2);
+  await page
+    .getByLabel('选择图片')
+    .setInputFiles({ name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('broken') });
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await page.getByText('图片损坏、格式不支持或超过 2500 万像素限制', { exact: true }).waitFor();
+  assert.equal(await page.locator('.message-images img').count(), 2);
+  await page.getByRole('button', { name: '移除 broken.png' }).click();
+  await page
+    .getByLabel('选择图片')
+    .setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') });
+  await page.getByText('仅支持 PNG、JPEG、WebP 图片', { exact: true }).waitFor();
+  assert.equal(await page.locator('.image-drafts img').count(), 0);
+  await page.getByLabel('给 PM 的消息').fill('图片说明');
+  await page.getByLabel('选择图片').setInputFiles(imageFile);
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await page.getByText('图片说明', { exact: true }).waitFor();
+  await page.screenshot({ path: resolve(artifacts, '07-images-desktop.png'), fullPage: true });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'orbit-web',
@@ -583,6 +652,23 @@ try {
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
   await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByLabel('选择图片')
+    .setInputFiles(
+      Array.from({ length: 4 }, (_, i) => ({
+        ...imageFile,
+        name: `手机截图-${i}-很长的文件名用于验证换行.png`,
+      })),
+    );
+  assert.equal(await page.locator('.image-drafts img').count(), 4);
+  await page.screenshot({
+    path: resolve(artifacts, '08-images-mobile-preview.png'),
+    fullPage: true,
+  });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.getByLabel('给 PM 的消息').fill('窄屏图片反馈');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await page.getByText('窄屏图片反馈', { exact: true }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '05-mobile-light.png'), fullPage: true });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -607,11 +693,13 @@ try {
   await checkProfiles(page, store, artifacts);
   assert.deepEqual(errors, []);
   console.log(
-    'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, dark/light, 390px responsive; screenshots in test-results/.',
+    'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, image preview/removal, image-only and text/image send, upload errors, duplicate prevention, retry, four-image 390px layout, dark/light, 390px responsive; screenshots in test-results/.',
   );
 } finally {
   await page.close();
   await browser.close();
   await app.close();
+  await engine.stop();
   store.close();
+  await rm(imageState, { recursive: true, force: true });
 }

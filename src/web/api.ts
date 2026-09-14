@@ -11,8 +11,11 @@ export async function api<T>(
 ): Promise<T> {
   const r = await fetch(`/api${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Phantom-CSRF': csrf },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: {
+      ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      'X-Phantom-CSRF': csrf,
+    },
+    ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.error ?? `请求失败 (${r.status})`);
