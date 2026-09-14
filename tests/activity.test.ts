@@ -133,6 +133,22 @@ test('generic shell credential assignments never reach durable activity or event
     `redis-cli --pass=redis-equals-secret ping`,
     `sshpass -p ssh-secret ssh user@host`,
     `sqlcmd -P sqlcmd-secret -U sa`,
+    `APIKEY=apikey-secret tool`,
+    `apikey=lower-secret tool`,
+    `OPENAI_APIKEY=provider-secret tool`,
+    `SIGNINGKEY=sign-secret tool`,
+    `PRIVATEKEY=priv-secret tool`,
+    `TOKENKEY=tokenkey-secret tool`,
+    `ACCESSKEY=accesskey-secret tool`,
+    `AWS_ACCESSKEY=aws-glued-secret tool`,
+    `tool --apikey=apikey-eq-secret`,
+    `PASSPHRASE=hunter2-secret tool`,
+    `SSH_PASSPHRASE=ssh-pass-secret ssh-add`,
+    `KEY=key-value tool`,
+    `MONKEY=monkey-value tool`,
+    `PWD=/app tool`,
+    `PWD="D:\\worktrees\\token tools\\repo" npm run build`,
+    `echo PWD=$PWD`,
   ];
   for (const [index, command] of commands.entries()) {
     store.activity(run, `shell-${index}`, {
@@ -164,6 +180,17 @@ test('generic shell credential assignments never reach durable activity or event
       'redis-equals-secret',
       'ssh-secret',
       'sqlcmd-secret',
+      'apikey-secret',
+      'lower-secret',
+      'provider-secret',
+      'sign-secret',
+      'priv-secret',
+      'tokenkey-secret',
+      'accesskey-secret',
+      'aws-glued-secret',
+      'apikey-eq-secret',
+      'hunter2-secret',
+      'ssh-pass-secret',
     ]) {
       assert.ok(!activities.some((activity) => JSON.stringify(activity).includes(secret)), secret);
       assert.ok(!messages.some((message) => message.includes(secret)), secret);
@@ -196,6 +223,22 @@ test('generic shell credential assignments never reach durable activity or event
     assert.ok(activities[18].details.command?.includes('--pass='));
     assert.ok(activities[19].details.command?.includes('ssh user@host'));
     assert.ok(activities[20].details.command?.includes('-U sa'));
+    // A qualifier, a credential word or a vendor glued to KEY names a credential, while a bare KEY, a name
+    // that only contains a credential word, and the POSIX working-directory variable stay readable.
+    assert.ok(activities[21].details.command?.includes('APIKEY='));
+    assert.ok(activities[22].details.command?.includes('apikey='));
+    assert.ok(activities[23].details.command?.includes('OPENAI_APIKEY='));
+    assert.ok(activities[24].details.command?.includes('SIGNINGKEY='));
+    assert.ok(activities[25].details.command?.includes('PRIVATEKEY='));
+    assert.ok(activities[26].details.command?.includes('TOKENKEY='));
+    assert.ok(activities[27].details.command?.includes('ACCESSKEY='));
+    assert.ok(activities[28].details.command?.includes('AWS_ACCESSKEY='));
+    assert.ok(activities[29].details.command?.includes('--apikey='));
+    assert.ok(activities[30].details.command?.includes('PASSPHRASE='));
+    assert.ok(activities[31].details.command?.includes('SSH_PASSPHRASE='));
+    assert.ok(activities[31].details.command?.endsWith(' ssh-add'));
+    for (const index of [32, 33, 34, 35, 36])
+      assert.equal(activities[index].details.command, commands[index]);
   } finally {
     reopened.close();
   }
@@ -226,6 +269,12 @@ test('program-scoped password flags remove credentials while ambiguous flags and
     `setx PATH "C:\\tools"`,
     `redis-cli -aredis-glued-secret ping`,
     `PGPASSWORD="pg spaced prefix" mysql -pprefixed-secret db`,
+    `cmd /c mysql -pcmd-secret db`,
+    `sudo mysql -psudo-secret db`,
+    `env FOO=1 mysql -penv-secret db`,
+    `timeout 5 mysql -ptimeout-secret db`,
+    `call mysql -pcall-secret db`,
+    `powershell -Command "mysql -ppowershell-secret db"`,
   ];
   for (const [index, command] of commands.entries()) {
     store.activity(run, `flag-${index}`, {
@@ -249,6 +298,12 @@ test('program-scoped password flags remove credentials while ambiguous flags and
       'redis-glued-secret',
       'prefixed-secret',
       'pg spaced prefix',
+      'cmd-secret',
+      'sudo-secret',
+      'env-secret',
+      'timeout-secret',
+      'call-secret',
+      'powershell-secret',
     ]) {
       assert.ok(!activities.some((activity) => JSON.stringify(activity).includes(secret)), secret);
       assert.ok(!messages.some((message) => message.includes(secret)), secret);
@@ -271,6 +326,16 @@ test('program-scoped password flags remove credentials while ambiguous flags and
     assert.ok(activities[14].details.command?.includes(' ping'));
     assert.ok(activities[15].details.command?.includes('mysql -p'));
     assert.ok(activities[15].details.command?.includes(' db'));
+    // A wrapper such as `cmd /c`, `sudo`, `env NAME=value`, `timeout`, `call` or `powershell -Command`
+    // does not hide the password-flag program behind it, and the wrapper's own arguments stay readable.
+    assert.ok(activities[16].details.command?.includes('/c mysql -p'));
+    assert.ok(activities[16].details.command?.endsWith(' db'));
+    assert.ok(activities[17].details.command?.includes('sudo mysql -p'));
+    assert.ok(activities[18].details.command?.includes('env FOO=1 mysql -p'));
+    assert.ok(activities[19].details.command?.includes('timeout 5 mysql -p'));
+    assert.ok(activities[20].details.command?.includes('call mysql -p'));
+    assert.ok(activities[21].details.command?.includes('-Command "mysql -p'));
+    assert.ok(activities[21].details.command?.endsWith(' db"'));
   } finally {
     reopened.close();
   }

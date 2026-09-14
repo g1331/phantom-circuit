@@ -3,7 +3,7 @@
 const credentialWords = new Set([
   'PASSWORD',
   'PASSWD',
-  'PWD',
+  'PASSPHRASE',
   'SECRET',
   'SECRETS',
   'TOKEN',
@@ -39,6 +39,14 @@ const credentialPrefixes = new Set([
   'OPENAI',
   'ANTHROPIC',
 ]);
+// Every stem a run-on name can end in, and every word that may be glued in front of one. KEY and PWD are
+// ambiguous, so they only count here with an issuer in front of them: APIKEY and PGPWD match, MONKEY does not.
+const credentialStems = [...credentialWords, 'KEY', 'PWD'];
+// TOKENS and COOKIES name a field or a count, so outside the password plurals a trailing S is not a credential.
+const credentialPlurals = new Set(['PASSWORD', 'PASSWD']);
+const credentialIssuers = [...new Set([...credentialPrefixes, ...keyQualifiers, ...credentialWords])].sort(
+  (a, b) => b.length - a.length,
+);
 
 // Programs whose own CLI gives a flag to a password, and which form of that flag carries one. Only these
 // programs are listed: docker's `-p` publishes a port and grep's `-a` selects text, so a blanket flag
@@ -67,43 +75,53 @@ export function isCredentialName(name: string): boolean {
     .map((segment) => segment.toUpperCase());
   if (!segments.length) return false;
   if (segments.some((segment) => credentialWords.has(segment))) return true;
-  if (segments.length === 1) return credentialRunOnCounts(segments[0]);
-  // KEY is ambiguous on its own (a JSON key, a sort key), so it needs a qualifying segment.
+  if (segments.some((segment) => credentialRunOnCounts(segment))) return true;
+  if (segments.length === 1) return false;
+  // KEY is ambiguous across segments too (a JSON key, a sort key), so it needs a qualifying segment.
+  if (segments.includes('PWD')) return true;
   return segments.includes('KEY') && segments.some((segment) => keyQualifiers.has(segment));
 }
 
-// A name written as one run-on segment (MYSQLPWD, AUTHTOKEN, NOTOKEN, PASSWORDS) only counts when its
-// suffix is a credential word, and - outside the password plurals - when the remaining prefix names the
-// vendor or context that issued it. TOKENIZERS_PARALLELISM, NOTOKEN, TOKENS and COOKIES therefore keep
-// their diagnostic value instead of being deleted.
+// A name written as one run-on segment (MYSQLPWD, APIKEY, AUTHTOKEN, PASSWORDS) only counts when it ends in
+// a credential stem and what is left names the issuer. The issuer is built from vendors, key qualifiers and
+// credential words, so it covers one word (TOKENKEY) or a combination (AWSSECRETKEY) instead of listing the
+// glued forms by hand. TOKENIZERS_PARALLELISM, NOTOKEN, TOKENS, COOKIES and a bare KEY therefore keep their
+// diagnostic value instead of being deleted.
 function credentialRunOnCounts(segment: string): boolean {
-  return [...credentialWords].some((word) => {
-    if (segment === `${word}S`) return word === 'PASSWORD' || word === 'PASSWD';
-    if (segment.length <= word.length || !segment.endsWith(word)) return false;
-    return credentialPrefixes.has(segment.slice(0, -word.length));
+  return credentialStems.some((stem) => {
+    if (segment === `${stem}S`) return credentialPlurals.has(stem);
+    if (segment.length <= stem.length || !segment.endsWith(stem)) return false;
+    return credentialIssuer(segment.slice(0, -stem.length));
   });
 }
 
+// The prefix of a run-on name says who issued the credential. It has to be built from known issuers only, so
+// AWS_ACCESSKEY and TOKENKEY match while NOTOKEN and MONKEY stay readable.
+function credentialIssuer(prefix: string): boolean {
+  let rest = prefix;
+  while (rest) {
+    const issuer = credentialIssuers.find((candidate) => rest.startsWith(candidate));
+    if (!issuer) return false;
+    rest = rest.slice(issuer.length);
+  }
+  return prefix.length > 0;
+}
+
 // A flag's meaning comes from the program that owns the command segment: `mysql -p` prompts for a
-// password while `docker run -p` publishes a port. A leading `NAME=value` assignment is not the program,
-// and a path prefix or a Windows `.exe` suffix is not part of its name.
+// password while `docker run -p` publishes a port. The owner is the first token this closed list names, so
+// a wrapper such as `sudo`, `cmd /c`, `env NAME=value` or `powershell -Command` cannot hide it, and a path
+// prefix, a Windows `.exe` suffix or surrounding quotes are not part of its name.
 function programName(whole: string, offset: number): string {
-  const segment = (
-    whole
-      .slice(0, offset)
-      .split(/[;&|\r\n]/)
-      .pop() ?? ''
-  ).trim();
-  // Leading `NAME=value` assignments are stripped as whole units, so a quoted value containing spaces
-  // cannot push the program name out of the leading position.
-  const assignment = /^[A-Za-z_][\w.-]*=(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*'|[^\s]+)\s*/;
-  let rest = segment;
-  while (assignment.test(rest)) rest = rest.replace(assignment, '');
-  const token = rest.split(/\s+/)[0] ?? '';
-  return token
-    .replace(/^.*[\\/]/, '')
-    .replace(/\.exe$/i, '')
-    .toLowerCase();
+  const segment = (whole.slice(0, offset).split(/[;&|\r\n]/).pop() ?? '').trim();
+  for (const token of segment.split(/\s+/)) {
+    const name = token
+      .replace(/^["']|["']$/g, '')
+      .replace(/^.*[\\/]/, '')
+      .replace(/\.exe$/i, '')
+      .toLowerCase();
+    if (Object.hasOwn(passwordFlagPrograms, name)) return name;
+  }
+  return '';
 }
 
 export function redactValue(value: unknown): unknown {
