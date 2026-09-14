@@ -47,6 +47,8 @@ function matchingBrace(reply: string, start: number): number {
  * JSON values one structured reply carries, in the host's order of preference: the content of code
  * fences explicitly labelled `json` first, then every balanced JSON object in the reply. Model prose
  * around the JSON is therefore tolerated, and a candidate the schema rejects never ends the search.
+ * A reply that quotes a valid verdict-shaped object as an example is indistinguishable from one that
+ * states it; the bounded re-ask above is the host's answer to that residual ambiguity.
  */
 function* structuredCandidates(reply: string): Generator<unknown> {
   for (const block of fencedJsonBlocks(reply)) {
@@ -78,7 +80,7 @@ export function parseStructuredReply<T>(schema: z.ZodType<T>, reply: string): T 
 }
 
 /** Redacted, byte-limited raw reply evidence for a domain-level pause reason. */
-export function replyEvidence(reply: string, limit = EVIDENCE_LIMIT): string {
+function replyEvidence(reply: string, limit: number): string {
   const clean = redact(reply);
   if (!clean) return '<空回复>';
   let evidence = '';
@@ -90,4 +92,14 @@ export function replyEvidence(reply: string, limit = EVIDENCE_LIMIT): string {
     bytes += size;
   }
   return evidence;
+}
+
+/**
+ * Evidence for a structured turn that stayed unparsable: the reply that failed first and the reply
+ * to the bounded re-ask, both cleaned and together inside the 2KB budget.
+ */
+export function turnEvidence(first: string, retry: string): string {
+  const separator = ' …[重问后]… ';
+  const half = Math.floor((EVIDENCE_LIMIT - Buffer.byteLength(separator, 'utf8')) / 2);
+  return `${replyEvidence(first, half)}${separator}${replyEvidence(retry, half)}`;
 }

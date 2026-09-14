@@ -6,7 +6,7 @@ import { Store, Fault, now, redact } from './store.ts';
 import { Codex, type ToolSpec } from './codex.ts';
 import { GitHub, IssueBodyConflict, isTransientGitHubError, type PullState } from './github.ts';
 import { Workspaces } from './workspaces.ts';
-import { parseStructuredReply, replyEvidence } from './structured.ts';
+import { parseStructuredReply, turnEvidence } from './structured.ts';
 import { instructions, domainContext, taskPrompt } from './prompts.ts';
 import {
   priorityUpdateInput,
@@ -188,9 +188,9 @@ export class Engine {
     const retried = parseStructuredReply(schema, retry);
     if (retried !== undefined) return retried;
     // Both replies are the evidence a human needs: the one that failed first, and the one that
-    // ignored the explicit JSON-only instruction. Together they stay inside the 2KB budget.
+    // ignored the explicit JSON-only instruction.
     throw new Fault(
-      `${subject}未返回可解析的结构化结果。原始回复片段（已清洗，最多 2KB）：${replyEvidence(reply, 1024)} …[重问后]… ${replyEvidence(retry, 1024)}`,
+      `${subject}未返回可解析的结构化结果。原始回复片段（已清洗，最多 2KB）：${turnEvidence(reply, retry)}`,
     );
   }
   /** Durable pause reasons prefer the domain message a Fault carries; parser text never becomes one. */

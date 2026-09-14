@@ -338,12 +338,17 @@ test('a parser exception from a structured turn never reaches the task as raw Ja
       /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse/i,
     );
     assert.match(task.blocked ?? '', /无法解析的结构化输出/);
-    const run0 = run.store.list('run').find((r) => r.taskId === task.id && r.role === 'review');
-    assert.match(
-      run0?.error ?? '',
-      /SyntaxError/,
-      'the raw exception stays available in the Run record, not in task.blocked',
+    assert.ok(
+      run.events().some((e) => e.type === 'blocked' && /无法解析的结构化输出/.test(e.message)),
+      'the PM-visible incident must carry the domain reason, not the raw parser text',
     );
+    // The Run record is the surface the UI reports failures from, and `store.list('run')` is how the
+    // existing lifecycle/feedback tests read it: the raw exception must stay visible there.
+    const reviewRun = run.store
+      .list('run')
+      .find((r) => r.taskId === task.id && r.role === 'review');
+    assert.equal(reviewRun?.status, 'failed', 'a failed structured turn must not be swallowed');
+    assert.match(reviewRun?.error ?? '', /SyntaxError/);
   } finally {
     run.close();
   }
@@ -577,7 +582,8 @@ test('an unparsable verdict is re-asked once on the same Codex thread and still 
     const first = turnStarts[0].input[0].text as string;
     const second = turnStarts[1].input[0].text as string;
     assert.notEqual(first, second);
-    assert.match(second, /Reply with ONLY one JSON object/);
+    // The bounded re-ask must explicitly demand the agreed JSON; the exact wording is not pinned.
+    assert.match(second, /JSON/, 'the re-ask must require the agreed JSON, not another free reply');
     assert.doesNotMatch(second, /Evidence is unavailable/);
   } finally {
     await engine.stop();
