@@ -103,6 +103,79 @@ test('credential commands retain ordinary paths and URLs through durable activit
   }
 });
 
+test('generic shell credential assignments never reach durable activity or events', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-shell-auth-'));
+  const file = join(root, 'state.sqlite');
+  const store = new Store(file);
+  const project = store.createProject('Shell credentials', '');
+  const run = store.run('pm', project.id, 'pm');
+  const path = String.raw`D:\worktrees\token tools\secret notes\worktree`;
+  const url = 'https://example.invalid/diagnostics';
+  const commands = [
+    `PGPASSWORD=pg-secret psql -h localhost app --file "${path}\\query.sql"`,
+    `AWS_SECRET_ACCESS_KEY=aws-secret aws s3 ls --output "${path}"`,
+    `MYSQL_PWD=mysql-secret mysql -u root -h localhost app`,
+    `set PGPASSWORD=set-secret && tool "${path}" ${url}`,
+    `PGPASSWORD="pg spaced secret" psql -h localhost app`,
+    `docker run -e AWS_SECRET_ACCESS_KEY=docker-secret img "${path}"`,
+    `npm config set //registry/:_authToken=npm-secret && tool ${url}`,
+    `TOKENIZERS_PARALLELISM=false tool "${path}" ${url}`,
+    `find "${path}" -print -name password`,
+    `mysql -u root -p dbname`,
+    `docker run --user 1000:1000 img`,
+    `psql -U postgres -d app --file "${path}\\query.sql"`,
+    `curl --user alice:round-secret ${url} --output "${path}\\result.txt"`,
+  ];
+  for (const [index, command] of commands.entries()) {
+    store.activity(run, `shell-${index}`, {
+      kind: 'command',
+      title: 'command',
+      status: 'completed',
+      details: { command, cwd: path },
+    });
+    store.event('command', command, { runId: run.id, projectId: project.id });
+  }
+  store.close();
+  const reopened = new Store(file);
+  try {
+    const activities = reopened.snapshot().activities;
+    const messages = reopened.events().map((event) => event.message);
+    for (const secret of [
+      'pg-secret',
+      'aws-secret',
+      'mysql-secret',
+      'set-secret',
+      'pg spaced secret',
+      'docker-secret',
+      'npm-secret',
+      'round-secret',
+    ]) {
+      assert.ok(!activities.some((activity) => JSON.stringify(activity).includes(secret)), secret);
+      assert.ok(!messages.some((message) => message.includes(secret)), secret);
+    }
+    assert.ok(activities.every((activity) => activity.details.cwd === path));
+    assert.ok(activities[0].details.command?.includes('psql -h localhost app'));
+    assert.ok(activities[0].details.command?.includes(path));
+    assert.ok(activities[1].details.command?.includes('aws s3 ls'));
+    assert.ok(activities[2].details.command?.includes('mysql -u root -h localhost app'));
+    assert.ok(activities[3].details.command?.includes('&& tool'));
+    assert.ok(activities[4].details.command?.includes('psql -h localhost app'));
+    assert.ok(activities[5].details.command?.includes(path));
+    assert.ok(activities[6].details.command?.includes('//registry/:_authToken='));
+    assert.ok(activities[6].details.command?.includes(url));
+    assert.equal(activities[7].details.command, commands[7]);
+    assert.equal(activities[8].details.command, commands[8]);
+    assert.equal(activities[9].details.command, commands[9]);
+    assert.equal(activities[10].details.command, commands[10]);
+    assert.ok(activities[11].details.command?.includes('psql -U postgres -d app'));
+    assert.ok(activities[11].details.command?.includes(path));
+    assert.ok(activities[12].details.command?.includes(url));
+    assert.ok(activities[12].details.command?.includes(path));
+  } finally {
+    reopened.close();
+  }
+});
+
 test('PM protocol activity follows its message and Run, survives reopen, and retains diagnostic paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-activity-'));
   const file = join(root, 'state.sqlite');

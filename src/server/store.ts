@@ -61,6 +61,14 @@ type Entities = {
   settings: Settings;
   document: DesignDocument;
 };
+
+const pmRunTitles: Partial<Record<Run['status'], string>> = {
+  completed: 'PM 运行完成',
+  failed: 'PM 运行失败',
+  interrupted: 'PM 运行中断',
+  paused: 'PM 运行暂停',
+};
+
 export class Store {
   private db: DatabaseSync;
   readonly changes = new EventEmitter();
@@ -626,7 +634,7 @@ export class Store {
         });
       this.activity(r, 'result', {
         kind: 'phase',
-        title: `PM ${status}`,
+        title: pmRunTitles[status] ?? 'PM 运行结束',
         status,
         details: error ? { error } : {},
       });

@@ -1,5 +1,5 @@
 import type { PMActivity, Run } from '../shared/types.ts';
-import { Store } from './store.ts';
+import type { Store } from './store.ts';
 import { bounded, redactValue } from './redaction.ts';
 
 function argumentPaths(value: unknown): string[] {
