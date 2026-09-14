@@ -1,8 +1,8 @@
 import type { z } from 'zod';
 import { redact } from './store.ts';
 
-/** Bound on how many brace candidates one reply may contribute, so a pathological reply stays cheap. */
-const MAX_BRACE_CANDIDATES = 64;
+/** Total characters the balanced-object scan may read, so a pathological reply stays cheap. */
+const MAX_SCAN_CHARS = 1_000_000;
 /** Evidence kept for a domain pause reason, in bytes. */
 const EVIDENCE_LIMIT = 2048;
 
@@ -44,35 +44,37 @@ function matchingBrace(reply: string, start: number): number {
 }
 
 /**
- * The JSON verdict carried by one review, feedback or merge reply. A JSON code fence wins; otherwise
- * the first balanced JSON object anywhere in the reply is used, so surrounding model prose is
- * tolerated. Returns undefined when the reply carries no JSON object at all.
+ * JSON values one structured reply carries, in the host's order of preference: the content of code
+ * fences explicitly labelled `json` first, then every balanced JSON object in the reply. Model prose
+ * around the JSON is therefore tolerated, and a candidate the schema rejects never ends the search.
  */
-export function extractStructuredJson(reply: string): unknown {
+function* structuredCandidates(reply: string): Generator<unknown> {
   for (const block of fencedJsonBlocks(reply)) {
     const parsed = tryParse(block);
-    if (parsed) return parsed.value;
+    if (parsed) yield parsed.value;
   }
-  let candidates = 0;
+  let scanned = 0;
   for (let start = reply.indexOf('{'); start !== -1; start = reply.indexOf('{', start + 1)) {
-    if (++candidates > MAX_BRACE_CANDIDATES) break;
+    if (scanned > MAX_SCAN_CHARS) return;
     const end = matchingBrace(reply, start);
+    scanned += (end === -1 ? reply.length : end) - start + 1;
     if (end === -1) continue;
     const parsed = tryParse(reply.slice(start, end + 1));
-    if (parsed) return parsed.value;
+    if (parsed) yield parsed.value;
   }
-  return undefined;
 }
 
 /**
- * Extract and strictly validate one structured turn reply. Replies without JSON, and JSON that
- * violates the schema, both fail; neither is ever treated as a pass.
+ * The schema-valid verdict of one structured turn. Candidates are tried in preference order and the
+ * first one the schema accepts wins, so a stale example object cannot hide the real verdict and the
+ * schema is never loosened. A reply with no schema-valid JSON fails; that is never a pass.
  */
 export function parseStructuredReply<T>(schema: z.ZodType<T>, reply: string): T | undefined {
-  const value = extractStructuredJson(reply);
-  if (value === undefined) return undefined;
-  const result = schema.safeParse(value);
-  return result.success ? result.data : undefined;
+  for (const candidate of structuredCandidates(reply)) {
+    const result = schema.safeParse(candidate);
+    if (result.success) return result.data;
+  }
+  return undefined;
 }
 
 /** Redacted, byte-limited raw reply evidence for a domain-level pause reason. */
@@ -80,9 +82,12 @@ export function replyEvidence(reply: string, limit = EVIDENCE_LIMIT): string {
   const clean = redact(reply);
   if (!clean) return '<空回复>';
   let evidence = '';
+  let bytes = 0;
   for (const character of clean) {
-    if (Buffer.byteLength(evidence + character, 'utf8') > limit) break;
+    const size = Buffer.byteLength(character, 'utf8');
+    if (bytes + size > limit) break;
     evidence += character;
+    bytes += size;
   }
   return evidence;
 }

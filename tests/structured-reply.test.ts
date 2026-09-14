@@ -14,8 +14,9 @@ import { command } from '../src/server/process.ts';
 import type { Profile, ReviewResult, Task } from '../src/shared/types.ts';
 
 type Kind = 'review' | 'feedback' | 'merge';
-/** Prose the model may legitimately print around its structured verdict. */
-type Respond = (kind: Kind, prompt: string, json: string) => string;
+/** Prose the model may legitimately print around its structured verdict. `attempt` counts the
+ * structured turns this run already took, so a re-ask is identified by turn order, not wording. */
+type Respond = (kind: Kind, prompt: string, json: string, attempt: number) => string;
 
 const REVIEW_AXES = ['standards', 'spec'] as const;
 
@@ -163,7 +164,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
       if (this.role === 'review') {
         const matched = /Axis: (standards|spec)/.exec(prompt);
         if (matched) this.axis = matched[1];
-        turns.review[this.axis as 'standards' | 'spec']++;
+        const attempt = ++turns.review[this.axis as 'standards' | 'spec'];
         if (!outputSchema) withoutSchema.push(`review:${this.axis}`);
         return respond(
           'review',
@@ -173,10 +174,11 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
             summary: `Inspected the ${this.axis} diff; behavior and conventions match.`,
             findings: [],
           }),
+          attempt,
         );
       }
       if (prompt.includes('Evaluate external feedback')) {
-        turns.feedback++;
+        const attempt = ++turns.feedback;
         if (!outputSchema) withoutSchema.push('feedback');
         return respond(
           'feedback',
@@ -185,9 +187,10 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
             action: 'ignore',
             reason: 'Comments are acknowledgements outside the approved scope.',
           }),
+          attempt,
         );
       }
-      turns.merge++;
+      const attempt = ++turns.merge;
       if (!outputSchema) withoutSchema.push('merge');
       return respond(
         'merge',
@@ -196,6 +199,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
           approved: true,
           reason: 'Acceptance criteria and both reviews pass.',
         }),
+        attempt,
       );
     }
   }
@@ -274,9 +278,9 @@ test('a reply without JSON pauses the task with a readable domain reason instead
   const first = 'Evidence is unavailable in this pinned worktree';
   const second = 'Still prose after the explicit JSON-only instruction';
   const run = await lifecycle(
-    (kind, prompt, json) => {
+    (kind, _prompt, json, attempt) => {
       if (kind !== 'review') return json;
-      const marker = prompt.includes('Reply with ONLY one JSON object') ? second : first;
+      const marker = attempt > 1 ? second : first;
       return `${marker}. ${'supporting detail '.repeat(400)}`;
     },
     { feedback: true },
@@ -323,7 +327,7 @@ test('a reply without JSON pauses the task with a readable domain reason instead
 
 test('a parser exception from a structured turn never reaches the task as raw JavaScript text', async () => {
   const run = await lifecycle(() => {
-    throw new SyntaxError("Unexpected token 'E', \"Evidence i\"... is not valid JSON");
+    throw new SyntaxError('Unexpected token \'E\', "Evidence i"... is not valid JSON');
   });
   try {
     const task = run.task();
@@ -346,10 +350,11 @@ test('a parser exception from a structured turn never reaches the task as raw Ja
 });
 
 test('a parseable candidate that fails the schema does not hide the later valid verdict', async () => {
-  const run = await lifecycle((kind, _prompt, json) =>
-    kind === 'review'
-      ? `\`\`\`json\n{"note":"shape example only, not the verdict"}\n\`\`\`\nEvidence is taken from the pinned diff.\n${json}\n`
-      : json,
+  const run = await lifecycle(
+    (kind, _prompt, json) =>
+      kind === 'review'
+        ? `\`\`\`json\n{"note":"shape example only, not the verdict"}\n\`\`\`\nEvidence is taken from the pinned diff.\n${json}\n`
+        : json,
     { feedback: true },
   );
   try {
@@ -363,8 +368,11 @@ test('a parseable candidate that fails the schema does not hide the later valid 
 });
 
 test('prose containing many brace characters still yields the balanced verdict object', async () => {
-  const run = await lifecycle((kind, _prompt, json) =>
-    kind === 'review' ? `${'{ '.repeat(200)}Evidence is taken from the pinned diff. ${json}\n` : json,
+  const run = await lifecycle(
+    (kind, _prompt, json) =>
+      kind === 'review'
+        ? `${'{ '.repeat(200)}Evidence is taken from the pinned diff. ${json}\n`
+        : json,
     { feedback: true },
   );
   try {

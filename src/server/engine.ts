@@ -179,23 +179,26 @@ export class Engine {
   ): Promise<T> {
     const ask = (text: string) =>
       codex.turn(thread, text, profile, signal, jsonSchema(schema), onTurn);
-    let reply = await ask(prompt);
-    let value = parseStructuredReply(schema, reply);
-    if (value === undefined) {
-      reply = await ask(
-        `The previous reply did not contain the required JSON. Reply with ONLY one JSON object matching this JSON Schema — no prose, no explanation and no tool use: ${JSON.stringify(jsonSchema(schema))}`,
-      );
-      value = parseStructuredReply(schema, reply);
-    }
-    if (value === undefined)
-      throw new Fault(
-        `${subject}未返回可解析的结构化结果。原始回复片段（已清洗，最多 2KB）：${replyEvidence(reply)}`,
-      );
-    return value;
+    const reply = await ask(prompt);
+    const value = parseStructuredReply(schema, reply);
+    if (value !== undefined) return value;
+    const retry = await ask(
+      `The previous reply did not contain the required JSON. Reply with ONLY one JSON object matching this JSON Schema — no prose, no explanation and no tool use: ${JSON.stringify(jsonSchema(schema))}`,
+    );
+    const retried = parseStructuredReply(schema, retry);
+    if (retried !== undefined) return retried;
+    // Both replies are the evidence a human needs: the one that failed first, and the one that
+    // ignored the explicit JSON-only instruction. Together they stay inside the 2KB budget.
+    throw new Fault(
+      `${subject}未返回可解析的结构化结果。原始回复片段（已清洗，最多 2KB）：${replyEvidence(reply, 1024)} …[重问后]… ${replyEvidence(retry, 1024)}`,
+    );
   }
-  /** Durable pause reasons are domain text; a Fault message must never surface as a parser error. */
-  private blockedReason(error: unknown) {
-    return error instanceof Fault ? error.message : String(error);
+  /** Durable pause reasons prefer the domain message a Fault carries; parser text never becomes one. */
+  private pauseReason(error: unknown) {
+    if (error instanceof Fault) return error.message;
+    if (error instanceof SyntaxError || error instanceof z.ZodError)
+      return '回合执行遇到无法解析的结构化输出（原始异常见该 Run 记录），已暂停等待 PM 核对';
+    return String(error);
   }
   private pmQueue<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.pmQueues.get(projectId) ?? Promise.resolve();
@@ -436,7 +439,7 @@ export class Engine {
             this.mergeBusy.add(key);
             void this.track(
               this.evaluateFeedback(task)
-                .catch((e) => this.block(task.id, this.blockedReason(e)))
+                .catch((e) => this.block(task.id, this.pauseReason(e)))
                 .finally(() => this.mergeBusy.delete(key)),
             );
           }
@@ -447,7 +450,7 @@ export class Engine {
           this.mergeBusy.add(task.repoId);
           void this.track(
             this.finalize(task)
-              .catch((e) => this.block(task.id, this.blockedReason(e)))
+              .catch((e) => this.block(task.id, this.pauseReason(e)))
               .finally(() => this.mergeBusy.delete(task.repoId)),
           );
         }
@@ -753,7 +756,7 @@ export class Engine {
       const run = this.store.run('review', task.projectId, 'review', task);
       void this.track(
         this.review(run, task, axis)
-          .catch((e) => this.block(task.id, this.blockedReason(e)))
+          .catch((e) => this.block(task.id, this.pauseReason(e)))
           .finally(() => this.mergeBusy.delete(marker)),
       );
     }
