@@ -125,6 +125,14 @@ test('generic shell credential assignments never reach durable activity or event
     `docker run --user 1000:1000 img`,
     `psql -U postgres -d app --file "${path}\\query.sql"`,
     `curl --user alice:round-secret ${url} --output "${path}\\result.txt"`,
+    `mysql -pmysql-secret db`,
+    `mysqldump -pS3cr3t app`,
+    `mysql -p"mysql spaced secret" db`,
+    `redis-cli -a redis-secret ping`,
+    `redis-cli --pass redis-pass-secret ping`,
+    `redis-cli --pass=redis-equals-secret ping`,
+    `sshpass -p ssh-secret ssh user@host`,
+    `sqlcmd -P sqlcmd-secret -U sa`,
   ];
   for (const [index, command] of commands.entries()) {
     store.activity(run, `shell-${index}`, {
@@ -149,6 +157,13 @@ test('generic shell credential assignments never reach durable activity or event
       'docker-secret',
       'npm-secret',
       'round-secret',
+      'S3cr3t',
+      'mysql spaced secret',
+      'redis-secret',
+      'redis-pass-secret',
+      'redis-equals-secret',
+      'ssh-secret',
+      'sqlcmd-secret',
     ]) {
       assert.ok(!activities.some((activity) => JSON.stringify(activity).includes(secret)), secret);
       assert.ok(!messages.some((message) => message.includes(secret)), secret);
@@ -171,6 +186,91 @@ test('generic shell credential assignments never reach durable activity or event
     assert.ok(activities[11].details.command?.includes(path));
     assert.ok(activities[12].details.command?.includes(url));
     assert.ok(activities[12].details.command?.includes(path));
+    assert.ok(activities[13].details.command?.includes('-p'));
+    assert.ok(activities[13].details.command?.includes(' db'));
+    assert.ok(activities[14].details.command?.includes(' app'));
+    assert.ok(activities[15].details.command?.includes(' db'));
+    assert.ok(activities[16].details.command?.includes('-a'));
+    assert.ok(activities[16].details.command?.includes(' ping'));
+    assert.ok(activities[17].details.command?.includes('--pass'));
+    assert.ok(activities[18].details.command?.includes('--pass='));
+    assert.ok(activities[19].details.command?.includes('ssh user@host'));
+    assert.ok(activities[20].details.command?.includes('-U sa'));
+  } finally {
+    reopened.close();
+  }
+});
+
+test('program-scoped password flags remove credentials while ambiguous flags and paths stay readable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-flag-auth-'));
+  const file = join(root, 'state.sqlite');
+  const store = new Store(file);
+  const project = store.createProject('Flag credentials', '');
+  const run = store.run('pm', project.id, 'pm');
+  const path = String.raw`D:\worktrees\token tools\secret notes\worktree`;
+  const url = 'https://example.invalid/keep';
+  const commands = [
+    `curl -H "X-Api-Key: header-secret" ${url}`,
+    `curl -H "X-Trace: keep-header" ${url}`,
+    `PASSWORDS=plural-secret tool`,
+    `setx MYSQL_PWD setx-secret`,
+    `sqlplus scott/tiger-secret@db`,
+    `notoken=1 tool`,
+    `TOKENS=123 tool`,
+    `{"tokens":123}`,
+    `docker run -p 8080:80 img`,
+    `docker run -p8080:80 img`,
+    `grep -a pattern file`,
+    `mysql -P 3306 -h db`,
+    `pg_dump -W -U app -h db app`,
+    `setx PATH "C:\\tools"`,
+    `redis-cli -aredis-glued-secret ping`,
+    `PGPASSWORD="pg spaced prefix" mysql -pprefixed-secret db`,
+  ];
+  for (const [index, command] of commands.entries()) {
+    store.activity(run, `flag-${index}`, {
+      kind: 'command',
+      title: 'command',
+      status: 'completed',
+      details: { command, cwd: path },
+    });
+    store.event('command', command, { runId: run.id, projectId: project.id });
+  }
+  store.close();
+  const reopened = new Store(file);
+  try {
+    const activities = reopened.snapshot().activities;
+    const messages = reopened.events().map((event) => event.message);
+    for (const secret of [
+      'header-secret',
+      'plural-secret',
+      'setx-secret',
+      'tiger-secret',
+      'redis-glued-secret',
+      'prefixed-secret',
+      'pg spaced prefix',
+    ]) {
+      assert.ok(!activities.some((activity) => JSON.stringify(activity).includes(secret)), secret);
+      assert.ok(!messages.some((message) => message.includes(secret)), secret);
+    }
+    assert.ok(activities.every((activity) => activity.details.cwd === path));
+    const header = activities[0].details.command ?? '';
+    assert.ok(header.includes('X-Api-Key: '));
+    assert.equal(header.split('"').length - 1, 2);
+    assert.ok(header.endsWith(url));
+    assert.ok(activities[2].details.command?.includes('PASSWORDS='));
+    assert.ok(activities[2].details.command?.endsWith(' tool'));
+    assert.ok(activities[3].details.command?.includes('setx MYSQL_PWD '));
+    assert.ok(activities[4].details.command?.includes('scott/'));
+    assert.ok(activities[4].details.command?.includes('@db'));
+    assert.ok(activities[4].details.command?.startsWith('sqlplus '));
+    for (const index of [1, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+      assert.equal(activities[index].details.command, commands[index]);
+    // A glued redis-cli password and a password flag behind an environment assignment are both credentials.
+    assert.ok(activities[14].details.command?.includes('redis-cli -a'));
+    assert.ok(activities[14].details.command?.includes(' ping'));
+    assert.ok(activities[15].details.command?.includes('mysql -p'));
+    assert.ok(activities[15].details.command?.includes(' db'));
   } finally {
     reopened.close();
   }
