@@ -7,8 +7,9 @@ import { randomUUID } from 'node:crypto';
 import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { command, terminate } from './process.ts';
 import { Fault, redact } from './store.ts';
-import type { Profile } from '../shared/types.ts';
+import type { Profile as Assignment } from '../shared/types.ts';
 import { SecretTextStream } from './secret-text-stream.ts';
+type Profile = Pick<Assignment, 'model' | 'effort'>;
 
 export interface Model {
   id: string;
@@ -47,10 +48,12 @@ export class Codex extends EventEmitter {
   private toolHandler?: (name: string, args: unknown) => Promise<unknown>;
   private fatal?: Error;
   private customProvider = false;
+  private modelProvider = 'openai';
   private scrubSecret = (text: string) => text;
   private finishStreams = () => {};
   async start(provider?: { id: string; baseUrl: string; apiKey: string }) {
     this.customProvider = provider !== undefined;
+    this.modelProvider = provider?.id ?? 'openai';
     let binary = 'codex';
     let args = ['app-server', '--stdio'];
     const env = { ...process.env };
@@ -87,7 +90,7 @@ export class Codex extends EventEmitter {
       };
       for (const [name, value] of Object.entries(config))
         args.push('-c', `${name}=${JSON.stringify(value)}`);
-    }
+    } else args.push('-c', 'model_provider="openai"');
     if (process.platform === 'win32') {
       const paths = (await command('where.exe', ['codex'])).stdout.trim().split(/\r?\n/);
       const entry = paths
@@ -262,6 +265,7 @@ export class Codex extends EventEmitter {
     instructions: string;
     threadId?: string;
     writable: boolean;
+    ephemeral?: boolean;
     tools?: ToolSpec[];
     toolHandler?: (name: string, args: unknown) => Promise<unknown>;
   }) {
@@ -270,6 +274,7 @@ export class Codex extends EventEmitter {
     const params = {
       cwd: options.cwd,
       model: options.profile.model,
+      modelProvider: this.modelProvider,
       approvalPolicy: 'never',
       sandbox: options.writable ? 'workspace-write' : 'read-only',
       developerInstructions: options.instructions,
@@ -280,6 +285,7 @@ export class Codex extends EventEmitter {
       ? await this.request('thread/resume', { ...params, threadId: options.threadId })
       : await this.request('thread/start', {
           ...params,
+          ephemeral: options.ephemeral ?? false,
           allowProviderModelFallback: false,
           serviceName: 'phantom-circuit',
         });
@@ -290,6 +296,11 @@ export class Codex extends EventEmitter {
     if (result.reasoningEffort !== options.profile.effort)
       throw new Fault(
         `实际推理档位与请求不一致：${result.reasoningEffort} / ${options.profile.effort}`,
+        409,
+      );
+    if (result.modelProvider !== this.modelProvider)
+      throw new Fault(
+        `实际 Provider 与请求不一致：${result.modelProvider} / ${this.modelProvider}`,
         409,
       );
     return result.thread.id as string;

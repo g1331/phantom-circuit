@@ -6,8 +6,10 @@ export type RunStatus =
 export type Role = 'pm' | 'dev' | 'review';
 export type ProfileName = 'backend' | 'frontend' | 'fullstack' | 'complex' | 'pm' | 'review';
 export interface Profile {
+  providerId: string;
   model: string;
   effort: string;
+  customModel?: boolean;
 }
 export interface Provider {
   id: string;
@@ -34,6 +36,8 @@ export interface Settings {
   profiles: Record<ProfileName, Profile>;
 }
 export interface Project {
+  profiles: Settings['profiles'];
+  profileVersion?: number;
   id: string;
   name: string;
   description: string;
@@ -42,6 +46,7 @@ export interface Project {
   githubProjectId?: string;
   githubProjectUrl?: string;
   pmThreadId?: string;
+  pmThreadProviderId?: string;
   createdAt: string;
 }
 export interface Commands {
@@ -105,6 +110,7 @@ export interface Task {
   branch?: string;
   worktree?: string;
   devThreadId?: string;
+  devThreadProviderId?: string;
   devPhase?: 'implement' | 'finalize';
   issue?: number;
   issueUrl?: string;
@@ -171,6 +177,9 @@ export interface Run {
   status: RunStatus;
   profile: ProfileName;
   profileConfig?: Profile;
+  provider?: Pick<Provider, 'id' | 'name' | 'kind' | 'baseUrl'>;
+  profileVersion?: number;
+  resumeThreadId?: string;
   threadId?: string;
   turnId?: string;
   error?: string;

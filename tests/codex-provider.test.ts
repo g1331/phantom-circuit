@@ -219,7 +219,7 @@ test('cancelling a turn masks its withheld key prefix before the next turn', asy
   });
 });
 
-test('custom Codex launch uses argument overrides and a child-only key binding; official launch stays unchanged', async () => {
+test('custom Codex launch uses argument overrides and a child-only key binding; official launch pins the existing login', async () => {
   const secret = 'process-private-fixture';
   const inherited = { ...process.env };
   const launches: { args: string[]; env: NodeJS.ProcessEnv }[] = [];
@@ -233,7 +233,7 @@ test('custom Codex launch uses argument overrides and a child-only key binding; 
       const m = JSON.parse(line);
       if (m.id === undefined) return;
       const result = m.method === 'model/list' ? {data: [{id: 'fixture', model: 'fixture', displayName: 'Fixture', supportedReasoningEfforts: [{reasoningEffort:'low'}]}]}
-        : m.method === 'thread/start' || m.method === 'thread/resume' ? {thread:{id:'fixture-thread'}, model: m.params.model === 'mismatch-model' ? 'other-model' : m.params.model, reasoningEffort: m.params.model === 'mismatch-effort' ? 'high' : m.params.model === 'missing-effort' ? undefined : m.params.config.model_reasoning_effort}
+        : m.method === 'thread/start' || m.method === 'thread/resume' ? {thread:{id:'fixture-thread'}, modelProvider: m.params.model === 'mismatch-provider' ? 'wrong' : keys.length ? 'fixture-provider' : 'openai', model: m.params.model === 'mismatch-model' ? 'other-model' : m.params.model, reasoningEffort: m.params.model === 'mismatch-effort' ? 'high' : m.params.model === 'missing-effort' ? undefined : m.params.config.model_reasoning_effort}
         : {keys, value: keys.length ? process.env[keys[0]] : null};
       console.log(JSON.stringify({id:m.id,result}));
       if (m.method === 'fixture/exit') setImmediate(() => process.exit(0));
@@ -279,10 +279,15 @@ test('custom Codex launch uses argument overrides and a child-only key binding; 
     };
     assert.equal(await codex.thread(options), 'fixture-thread');
     assert.equal(await codex.thread({ ...options, threadId: 'fixture-thread' }), 'fixture-thread');
-    for (const model of ['mismatch-model', 'mismatch-effort', 'missing-effort']) {
+    for (const model of [
+      'mismatch-model',
+      'mismatch-effort',
+      'missing-effort',
+      'mismatch-provider',
+    ]) {
       await assert.rejects(
         codex.thread({ ...options, profile: { model, effort: 'low' } }),
-        /实际模型|实际推理档位/,
+        /实际模型|实际推理档位|实际 Provider/,
       );
     }
     assert.ok(
@@ -304,7 +309,7 @@ test('custom Codex launch uses argument overrides and a child-only key binding; 
   try {
     await official.start();
     assert.deepEqual((await official.request('inspect')).keys, []);
-    assert.ok(!launches[1].args.some((arg) => arg.includes('model_provider')));
+    assert.ok(launches[1].args.includes('model_provider="openai"'));
     const options = {
       cwd: process.cwd(),
       instructions: '',

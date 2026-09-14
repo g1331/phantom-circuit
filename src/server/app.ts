@@ -9,7 +9,7 @@ import { Engine } from './engine.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
 import { Providers } from './providers.ts';
-import { commandSchema, limit, settingsSchema } from './schemas.ts';
+import { commandSchema, limit } from './schemas.ts';
 
 export function createApp(
   store: Store,
@@ -148,6 +148,10 @@ export function createApp(
       .parse(req.body);
     return store.createProject(b.name, b.description);
   });
+  app.patch('/api/projects/:id/profiles', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return providers.saveAssignments(req.body, id);
+  });
   app.patch('/api/projects/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const p = store.project(id);
@@ -234,7 +238,7 @@ export function createApp(
     else engine.control(id, action);
     return store.task(id);
   });
-  app.patch('/api/settings', async (req) => store.saveSettings(settingsSchema.parse(req.body)));
+  app.patch('/api/settings', async (req) => providers.saveAssignments(req.body));
   app.get('/api/health', async () => {
     const results = await Promise.allSettled([
       engine.github.identity(),
