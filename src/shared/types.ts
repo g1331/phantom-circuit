@@ -86,6 +86,7 @@ export interface ImageAttachment {
   height: number;
 }
 export interface Message {
+  timelineOrder?: number;
   id: string;
   projectId: string;
   role: 'user' | 'assistant' | 'system';
@@ -256,6 +257,7 @@ export interface Operation {
   reconciliation?: Reconciliation;
 }
 export interface Snapshot {
+  activities: PMActivity[];
   providers: Provider[];
   projects: Project[];
   repos: Repo[];
@@ -265,6 +267,32 @@ export interface Snapshot {
   events: Event[];
   settings: Settings;
   documents: DesignDocument[];
+}
+export interface PMActivity {
+  timelineOrder?: number;
+  id: string;
+  projectId: string;
+  runId: string;
+  taskId?: string;
+  messageId?: string;
+  eventId?: number;
+  kind:
+    'trigger' | 'plan' | 'summary' | 'tool' | 'command' | 'files' | 'search' | 'phase' | 'error';
+  status: RunStatus;
+  title: string;
+  startedAt: string;
+  updatedAt: string;
+  endedAt?: string;
+  details: {
+    source?: string;
+    command?: string;
+    cwd?: string;
+    paths?: string;
+    input?: string;
+    output?: string;
+    error?: string;
+    summary?: string;
+  };
 }
 export interface DesignDocument {
   id: string;

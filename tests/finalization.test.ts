@@ -875,6 +875,41 @@ for (const method of ['UI', 'PM'] as const) {
   });
 }
 
+test('host-triggered PM re-evaluation can resolve its associated Task after repeated missing implementation', async (t) => {
+  const f = await fixture(t);
+  f.store.updateTask(f.task().id, { retries: 2 });
+  const result = await f.run();
+  const pm = f.store.list('run').find((run) => run.role === 'pm');
+  assert.equal(pm?.taskId, result.id);
+  assert.equal(pm?.status, 'completed', pm?.error);
+  assert.equal(result.control, 'active');
+  assert.equal(result.blocked, undefined);
+  assert.ok(result.feedback.includes('Reuse the existing implementation; host finalizes it.'));
+  assert.ok(
+    f.store
+      .snapshot()
+      .activities.some(
+        (a) => a.runId === pm?.id && a.taskId === result.id && a.title === '宿主事件：连续失败重评',
+      ),
+  );
+});
+
+for (const role of ['dev', 'review'] as const) {
+  test(`PM guidance cannot resume a Task while its ${role} Run is still active`, async (t) => {
+    const f = await fixture(t);
+    f.store.updateTask(f.task().id, { control: 'paused' });
+    const run = f.store.run(
+      role,
+      f.task().projectId,
+      role === 'dev' ? 'backend' : 'review',
+      f.task(),
+    );
+    await assert.rejects(f.resolve(), /正在停止任务/);
+    assert.equal(f.task().control, 'paused');
+    f.store.finishRun(run.id, 'paused');
+  });
+}
+
 test('finalization refuses a worktree path assigned to another task', async (t) => {
   const f = await fixture(t);
   const other = join(f.ws.root, f.repo.id, 'task-other');

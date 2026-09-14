@@ -43,6 +43,7 @@ import type {
 import { stageLabels } from '../shared/types.ts';
 import { api, session } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
+import { ActivityRow, PMProgress } from './pm-activity.tsx';
 import { ProfileEditor } from './profile-editor.tsx';
 import { ProviderSettings } from './providers.tsx';
 import './style.css';
@@ -120,7 +121,11 @@ function App() {
         });
         source.addEventListener('delta', (event) => {
           const d = JSON.parse((event as MessageEvent).data);
-          if (d.role === 'pm') setStream((s) => ({ ...s, [d.runId]: (s[d.runId] ?? '') + d.text }));
+          if (d.role === 'pm')
+            setStream((s) => ({
+              ...s,
+              [d.runId]: d.replace ? d.text : (s[d.runId] ?? '') + d.text,
+            }));
         });
       })
       .catch((e) => setError(String(e)));
@@ -161,6 +166,21 @@ function App() {
   const runs = state?.runs.filter((r) => r.projectId === project?.id) ?? [];
   const active = runs.filter((r) => isRunning(r.status));
   const messages = state?.messages.filter((m) => m.projectId === project?.id) ?? [];
+  const activities = state?.activities?.filter((a) => a.projectId === project?.id) ?? [];
+  const timeline = [
+    ...messages.map((message) => ({
+      at: message.createdAt,
+      order: message.timelineOrder ?? 0,
+      message,
+      activity: undefined,
+    })),
+    ...activities.map((activity) => ({
+      at: activity.startedAt,
+      order: activity.timelineOrder ?? 0,
+      activity,
+      message: undefined,
+    })),
+  ].sort((a, b) => a.at.localeCompare(b.at) || a.order - b.order);
   const documents = state?.documents.filter((d) => d.projectId === project?.id) ?? [];
   const shown = tasks.filter(
     (t) =>
@@ -396,7 +416,7 @@ function App() {
                 {view === 'chat' ? (
                   <div className="chat-workspace">
                     <div className="conversation" ref={scroll} aria-live="polite">
-                      {!messages.length && (
+                      {!timeline.length && (
                         <div className="chat-empty">
                           <div className="pm-avatar">
                             <Layers3 size={22} />
@@ -421,74 +441,87 @@ function App() {
                           </div>
                         </div>
                       )}
-                      {messages.map((m) => (
-                        <article key={m.id} className={`message ${m.role}`}>
-                          <div className="message-heading">
-                            <span
-                              className={m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'}
-                            >
-                              {m.role === 'assistant' ? (
-                                <Layers3 size={13} />
-                              ) : m.role === 'user' ? (
-                                '你'
-                              ) : (
-                                '!'
-                              )}
-                            </span>
-                            <strong>
-                              {m.role === 'assistant'
-                                ? '项目 PM'
-                                : m.role === 'user'
-                                  ? '你'
-                                  : '运行提示'}
-                            </strong>
-                            {m.intent && (
-                              <span className="message-intent">
-                                {
-                                  { discuss: '讨论', implement: '实施需求', feedback: '体验反馈' }[
-                                    m.intent
-                                  ]
-                                }
+                      {timeline.map((entry) => {
+                        if (entry.activity)
+                          return (
+                            <ActivityRow
+                              key={entry.activity.id}
+                              activity={entry.activity}
+                              roots={repos.map((r) => r.path)}
+                            />
+                          );
+                        const m = entry.message!;
+                        return (
+                          <article key={m.id} className={`message ${m.role}`}>
+                            <div className="message-heading">
+                              <span
+                                className={m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'}
+                              >
+                                {m.role === 'assistant' ? (
+                                  <Layers3 size={13} />
+                                ) : m.role === 'user' ? (
+                                  '你'
+                                ) : (
+                                  '!'
+                                )}
                               </span>
-                            )}
-                            <time>{time(m.createdAt)}</time>
-                          </div>
-                          <div className="message-content">
-                            {m.role === 'system' ? (
-                              m.content
-                            ) : (
-                              <MarkdownContent content={m.content} />
-                            )}
-                          </div>
-                          {!!m.attachments?.length && (
-                            <div className="message-images">
-                              {m.attachments.map((attachment) => {
-                                const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
-                                return (
-                                  <a
-                                    key={attachment.id}
-                                    href={url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    <img src={url} alt={attachment.name} />
-                                    <span>{attachment.name}</span>
-                                  </a>
-                                );
-                              })}
+                              <strong>
+                                {m.role === 'assistant'
+                                  ? '项目 PM'
+                                  : m.role === 'user'
+                                    ? '你'
+                                    : '运行提示'}
+                              </strong>
+                              {m.intent && (
+                                <span className="message-intent">
+                                  {
+                                    {
+                                      discuss: '讨论',
+                                      implement: '实施需求',
+                                      feedback: '体验反馈',
+                                    }[m.intent]
+                                  }
+                                </span>
+                              )}
+                              <time>{time(m.createdAt)}</time>
                             </div>
-                          )}
-                          {m.role === 'user' && (
-                            <button
-                              className="retry-message"
-                              disabled={busy || pmBusy}
-                              onClick={() => void act(() => api(`/messages/${m.id}/retry`, {}))}
-                            >
-                              重新发送
-                            </button>
-                          )}
-                        </article>
-                      ))}
+                            <div className="message-content">
+                              {m.role === 'system' ? (
+                                m.content
+                              ) : (
+                                <MarkdownContent content={m.content} />
+                              )}
+                            </div>
+                            {!!m.attachments?.length && (
+                              <div className="message-images">
+                                {m.attachments.map((attachment) => {
+                                  const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
+                                  return (
+                                    <a
+                                      key={attachment.id}
+                                      href={url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      <img src={url} alt={attachment.name} />
+                                      <span>{attachment.name}</span>
+                                    </a>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {m.role === 'user' && (
+                              <button
+                                className="retry-message"
+                                disabled={busy || pmBusy}
+                                onClick={() => void act(() => api(`/messages/${m.id}/retry`, {}))}
+                              >
+                                重新发送
+                              </button>
+                            )}
+                          </article>
+                        );
+                      })}
                       {active
                         .filter((r) => r.role === 'pm')
                         .map((r) => (
@@ -502,13 +535,12 @@ function App() {
                                 处理中<span>…</span>
                               </span>
                             </div>
+                            <PMProgress run={r} activities={activities} />
                             {stream[r.id] ? (
                               <div className="message-content">
                                 <MarkdownContent content={stream[r.id]} />
                               </div>
-                            ) : (
-                              <div className="message-content">正在阅读上下文并整理回应…</div>
-                            )}
+                            ) : null}
                           </article>
                         ))}
                     </div>

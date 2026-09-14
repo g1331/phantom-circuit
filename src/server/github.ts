@@ -1,5 +1,6 @@
 import { command } from './process.ts';
 import { Fault, Store, id, now, redact } from './store.ts';
+import { externalValue } from './redaction.ts';
 import type {
   Operation,
   OperationAttempt,
@@ -153,7 +154,7 @@ export class GitHub {
   async api<T = any>(endpoint: string, method = 'GET', body?: unknown): Promise<T> {
     const r = await this.gh(
       ['api', endpoint, '--method', method, ...(body === undefined ? [] : ['--input', '-'])],
-      body === undefined ? undefined : JSON.stringify(body),
+      body === undefined ? undefined : JSON.stringify(externalValue(body)),
     ).catch((error: unknown) => {
       // gh reports explicit HTTP rejections in stderr. Transport failures remain uncertain.
       if (
@@ -779,7 +780,9 @@ export class GitHub {
       const dependency = this.store.task(key);
       return `- ${dependency.issueUrl ?? dependency.title}`;
     });
-    return `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [${completed ? 'x' : ' '}] ${x}`).join('\n')}\n\n## Blocked by\n${deps.join('\n') || 'None (can start immediately)'}\n`;
+    return externalValue(
+      `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [${completed ? 'x' : ' '}] ${x}`).join('\n')}\n\n## Blocked by\n${deps.join('\n') || 'None (can start immediately)'}\n`,
+    ) as string;
   }
   async completeIssue(task: Task) {
     const repo = this.store.repo(task.repoId);

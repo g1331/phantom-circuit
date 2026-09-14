@@ -29,6 +29,14 @@ export interface ToolSpec {
   description: string;
   inputSchema: Record<string, unknown>;
 }
+export class CodexTurnError extends Error {
+  constructor(
+    message: string,
+    readonly status: 'failed' | 'interrupted',
+  ) {
+    super(message);
+  }
+}
 export class Codex extends EventEmitter {
   constructor(
     private launch: (
@@ -194,7 +202,34 @@ export class Codex extends EventEmitter {
         let result: unknown;
         if (message.method === 'item/tool/call') {
           if (!this.toolHandler) throw new Error('当前角色没有工具权限');
-          const value = await this.toolHandler(message.params.tool, message.params.arguments);
+          const p = message.params;
+          const item = {
+            id: p.itemId ?? p.callId ?? `tool-${message.id}`,
+            type: 'dynamicToolCall',
+            tool: p.tool,
+            arguments: p.arguments,
+          };
+          this.emit('notification', 'item/started', {
+            threadId: p.threadId,
+            turnId: p.turnId,
+            item,
+          });
+          let value: unknown;
+          try {
+            value = await this.toolHandler(p.tool, p.arguments);
+            this.emit('notification', 'item/completed', {
+              threadId: p.threadId,
+              turnId: p.turnId,
+              item: { ...item, status: 'completed', result: value },
+            });
+          } catch (error) {
+            this.emit('notification', 'item/completed', {
+              threadId: p.threadId,
+              turnId: p.turnId,
+              item: { ...item, status: 'failed', error: String(error) },
+            });
+            throw error;
+          }
           result = {
             success: true,
             contentItems: [{ type: 'inputText', text: JSON.stringify(value) }],
@@ -342,6 +377,7 @@ export class Codex extends EventEmitter {
       const failure = (e: Error) => finish(e);
       const notification = (method: string, p: any) => {
         if (p.threadId !== threadId) return;
+        if (turnId && (p.turnId ?? p.turn?.id) && (p.turnId ?? p.turn?.id) !== turnId) return;
         if (method === 'turn/started') {
           turnId = p.turn.id;
           onTurn?.(turnId!);
@@ -351,7 +387,12 @@ export class Codex extends EventEmitter {
           output = p.item.text ?? output;
         if (method === 'turn/completed') {
           if (p.turn.status !== 'completed')
-            finish(new Error(p.turn.error?.message ?? `Agent ${p.turn.status}`));
+            finish(
+              new CodexTurnError(
+                p.turn.error?.message ?? `Agent ${p.turn.status}`,
+                p.turn.status === 'interrupted' ? 'interrupted' : 'failed',
+              ),
+            );
           else finish();
         }
       };
