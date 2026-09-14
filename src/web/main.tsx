@@ -43,6 +43,7 @@ import type {
 import { stageLabels } from '../shared/types.ts';
 import { api, session } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
+import { ProfileEditor } from './profile-editor.tsx';
 import { ProviderSettings } from './providers.tsx';
 import './style.css';
 
@@ -67,7 +68,9 @@ function App() {
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
   const [view, setView] = useState<'chat' | 'tasks' | 'runs'>('chat');
-  const [modal, setModal] = useState<'project' | 'repo' | 'settings' | null>(null);
+  const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
+    null,
+  );
   const [repoConfig, setRepoConfig] = useState<Repo>();
   const [taskDetail, setTaskDetail] = useState<string>();
   const [error, setError] = useState('');
@@ -318,6 +321,9 @@ function App() {
                 <h1>{project.name}</h1>
                 <p>{project.description || '讨论需求，开启开发，体验结果。'}</p>
               </div>
+              <button className="secondary-button" onClick={() => setModal('project-settings')}>
+                项目模型设置
+              </button>
               <button className="secondary-button" onClick={() => setModal('repo')}>
                 <Plus size={16} /> 接入仓库
               </button>
@@ -603,8 +609,10 @@ function App() {
                               <strong>
                                 {r.role.toUpperCase()}{' '}
                                 <span>
-                                  {(r.profileConfig ?? state.settings.profiles[r.profile]).model} /{' '}
-                                  {(r.profileConfig ?? state.settings.profiles[r.profile]).effort}
+                                  {r.provider?.name ?? 'Codex 官方登录'} (
+                                  {r.profileConfig?.providerId ?? 'codex'}) ·{' '}
+                                  {r.profileConfig?.model ?? '历史记录未保存模型'} /{' '}
+                                  {r.profileConfig?.effort ?? '未知档位'}
                                 </span>
                               </strong>
                               <p>
@@ -880,23 +888,38 @@ function App() {
           />
         </Modal>
       )}
-      {modal === 'settings' && state && (
+      {(modal === 'settings' || modal === 'project-settings') && state && (
         <Modal
-          title="运行设置"
-          subtitle="控制资源与默认执行档位。修改只影响后续运行。"
+          title={modal === 'settings' ? '运行设置' : '项目模型设置'}
+          subtitle={
+            modal === 'settings'
+              ? '全局模型分配仅作为新 Project 默认值，已有 Project 保持独立。'
+              : '修改影响后续 Run，进行中与历史 Run 保留固定分配。'
+          }
           wide
           onClose={() => setModal(null)}
         >
-          <ProviderSettings />
+          {modal === 'settings' && <ProviderSettings />}
           <SettingsForm
-            initial={state.settings}
-            busy={busy}
-            submit={async (settings) =>
-              act(async () => {
-                await api('/settings', settings, 'PATCH');
-                setModal(null);
-              })
+            key={`${modal}-${project?.id}`}
+            initial={
+              modal === 'project-settings' && project
+                ? { ...state.settings, profiles: project.profiles }
+                : state.settings
             }
+            providers={state.providers}
+            projectOnly={modal === 'project-settings'}
+            busy={busy}
+            submit={async (settings) => {
+              const result = await api<{ warnings: string[] }>(
+                modal === 'project-settings' ? `/projects/${project!.id}/profiles` : '/settings',
+                modal === 'project-settings' ? settings.profiles : settings,
+                'PATCH',
+              );
+              await reload();
+              if (!result.warnings.length) setModal(null);
+              return result;
+            }}
           />
         </Modal>
       )}
@@ -1286,12 +1309,19 @@ function SettingsForm({
   initial,
   submit,
   busy,
+  providers,
+  projectOnly,
 }: {
+  providers: Snapshot['providers'];
+  projectOnly: boolean;
   initial: Settings;
-  submit: (s: Settings) => Promise<void>;
+  submit: (s: Settings) => Promise<{ warnings: string[] }>;
   busy: boolean;
 }) {
   const [settings, setSettings] = useState(structuredClone(initial));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [saved, setSaved] = useState<string>();
   const [health, setHealth] = useState<any>();
   const [checking, setChecking] = useState(false);
   return (
@@ -1299,73 +1329,51 @@ function SettingsForm({
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
-        void submit(settings);
+        setSaving(true);
+        setSaveError('');
+        setSaved(undefined);
+        void submit(settings)
+          .then((result) => setSaved('已保存。' + result.warnings.join('；')))
+          .catch((error) => setSaveError(String(error)))
+          .finally(() => setSaving(false));
       }}
     >
-      <div className="form-columns">
-        <label>
-          全局 Dev 上限
-          <input
-            type="number"
-            min={1}
-            max={32}
-            required
-            value={settings.globalDevLimit}
-            onChange={(e) => setSettings({ ...settings, globalDevLimit: Number(e.target.value) })}
-          />
-        </label>
-        <label>
-          Review 会话上限
-          <input
-            type="number"
-            min={1}
-            max={32}
-            required
-            value={settings.reviewLimit}
-            onChange={(e) => setSettings({ ...settings, reviewLimit: Number(e.target.value) })}
-          />
-        </label>
-      </div>
-      <h3>模型分配</h3>
-      <div className="profile-table">
-        {(Object.keys(profiles) as ProfileName[]).map((key) => (
-          <div className="profile-row" key={key}>
-            <label htmlFor={`model-${key}`}>{profiles[key]}</label>
+      {!projectOnly && (
+        <div className="form-columns">
+          <label>
+            全局 Dev 上限
             <input
-              id={`model-${key}`}
-              aria-label={`${profiles[key]}模型`}
+              type="number"
+              min={1}
+              max={32}
               required
-              value={settings.profiles[key].model}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  profiles: {
-                    ...settings.profiles,
-                    [key]: { ...settings.profiles[key], model: e.target.value },
-                  },
-                })
-              }
+              value={settings.globalDevLimit}
+              onChange={(e) => setSettings({ ...settings, globalDevLimit: Number(e.target.value) })}
             />
-            <select
-              aria-label={`${profiles[key]}推理等级`}
-              value={settings.profiles[key].effort}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  profiles: {
-                    ...settings.profiles,
-                    [key]: { ...settings.profiles[key], effort: e.target.value },
-                  },
-                })
-              }
-            >
-              {['low', 'medium', 'high', 'xhigh', 'max'].map((x) => (
-                <option key={x}>{x}</option>
-              ))}
-            </select>
-          </div>
-        ))}
-      </div>
+          </label>
+          <label>
+            Review 会话上限
+            <input
+              type="number"
+              min={1}
+              max={32}
+              required
+              value={settings.reviewLimit}
+              onChange={(e) => setSettings({ ...settings, reviewLimit: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+      )}
+      <h3>{projectOnly ? 'Project model profile' : '新 Project 默认模型分配'}</h3>
+      <fieldset className="assignment-form" disabled={saving || busy}>
+        <ProfileEditor
+          profiles={settings.profiles}
+          providers={providers}
+          change={(profiles) => setSettings({ ...settings, profiles })}
+        />
+      </fieldset>
+      {saveError && <p role="alert">{saveError}</p>}
+      {saved && <p role="status">{saved}</p>}
       <div className="health-section">
         <button
           className="secondary-button"
@@ -1408,8 +1416,8 @@ function SettingsForm({
           </div>
         )}
       </div>
-      <button className="primary-button" disabled={busy}>
-        保存设置
+      <button className="primary-button" disabled={busy || saving}>
+        {saving ? '正在校验…' : '保存设置'}
       </button>
     </form>
   );

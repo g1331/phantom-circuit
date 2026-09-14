@@ -1355,6 +1355,61 @@ time {
 .profile-table {
   border-top: 1px solid var(--line);
 }
+.assignment-form {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.assignment {
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+  margin: 0;
+  min-width: 0;
+}
+.assignment legend {
+  font-size: 13px;
+  padding: 0 8px 0 0;
+}
+.assignment-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 0.8fr);
+  gap: 12px;
+}
+.assignment-fields label,
+.assignment-fields input,
+.assignment-fields select {
+  min-width: 0;
+  width: 100%;
+}
+.assignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding-top: 10px;
+}
+.assignment-actions .assignment-custom {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.assignment-custom input {
+  width: auto;
+}
+.assignment p {
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .assignment-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .profile-row {
   display: grid;
   grid-template-columns: 100px minmax(0, 1fr) 88px;

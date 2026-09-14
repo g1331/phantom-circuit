@@ -11,6 +11,136 @@ import { createApp } from '../src/server/app.ts';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { Codex } from '../src/server/codex.ts';
+import { profileProtocol } from './profile-protocol.ts';
+
+test('discovery authentication failure requires explicit fallback and remains unverified after save', async (t) => {
+  const { request, store, dir } = await fixture(t, profileProtocol);
+  const project = store.createProject('Discovery auth', '');
+  let status = 401;
+  const upstream = createServer((_req, res) => {
+    res.writeHead(status);
+    res.end(status === 200 ? JSON.stringify({ data: [{ id: 'recovered-model' }] }) : '');
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    upstream.closeAllConnections();
+    upstream.close();
+  });
+  const provider = (
+    await request('POST', '/providers', {
+      name: 'Auth discovery',
+      baseUrl: `http://127.0.0.1:${(upstream.address() as any).port}/v1`,
+      apiKey: 'discovery-auth-fixture',
+    })
+  ).json();
+  const profiles = structuredClone(project.profiles);
+  profiles.pm = { providerId: provider.id, model: 'manual', effort: 'low' };
+  for (const code of [401, 403]) {
+    status = code;
+    profiles.pm.customModel = false;
+    const rejected = await request('PATCH', `/projects/${project.id}/profiles`, profiles);
+    assert.equal(rejected.statusCode, 409);
+    assert.match(rejected.body, /认证失败/);
+    profiles.pm.customModel = true;
+    const saved = await request('PATCH', `/projects/${project.id}/profiles`, profiles);
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.match(saved.body, /未完成运行时验证.*认证失败.*首次 Run/);
+  }
+  const runtime = new Engine(store, new GitHub(store), new Workspaces(dir, store), dir, () =>
+    profileProtocol({ runtimeError: 'Responses API authentication failed (401)' }),
+  );
+  try {
+    await assert.rejects(
+      runtime.chat(store.addMessage(project.id, 'user', 'Start', 'discuss')),
+      /authentication failed/,
+    );
+    const failed = store.list('run')[0];
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.profileConfig?.providerId, provider.id);
+    assert.equal(failed.profileConfig?.model, 'manual');
+    assert.match(failed.error!, /authentication failed/);
+    assert.deepEqual(store.project(project.id).profiles, profiles);
+  } finally {
+    await runtime.stop();
+  }
+  status = 200;
+  profiles.pm = { providerId: provider.id, model: 'recovered-model', effort: 'low' };
+  assert.equal(
+    (await request('PATCH', `/projects/${project.id}/profiles`, profiles)).statusCode,
+    200,
+  );
+  assert.deepEqual(store.project(project.id).profiles, profiles);
+});
+
+test('HTTP profile validation is atomic and custom fallback retains explicit first-Run warnings', async (t) => {
+  const { request, store } = await fixture(t, profileProtocol);
+  const project = store.createProject('Profile HTTP', '');
+  const next = store.settings();
+  next.profiles.pm.effort = 'low';
+  assert.equal((await request('PATCH', '/settings', next)).statusCode, 200);
+  assert.equal(store.project(project.id).profiles.pm.effort, 'medium');
+  const invalid = structuredClone(next);
+  invalid.profiles.review.effort = 'unknown';
+  assert.equal((await request('PATCH', '/settings', invalid)).statusCode, 409);
+  assert.deepEqual(store.settings(), next);
+  const upstream = createServer((_req, res) => {
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    upstream.closeAllConnections();
+    upstream.close();
+  });
+  const provider = (
+    await request('POST', '/providers', {
+      name: 'Manual',
+      baseUrl: `http://127.0.0.1:${(upstream.address() as any).port}/v1`,
+      apiKey: 'profile-fixture-key',
+    })
+  ).json();
+  const profiles = structuredClone(project.profiles);
+  profiles.pm = { providerId: provider.id, model: 'manual', effort: 'low', customModel: true };
+  const saved = await request('PATCH', `/projects/${project.id}/profiles`, profiles);
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.match(saved.body, /首次 Run/);
+  assert.deepEqual(store.project(project.id).profiles, profiles);
+  assert.equal((await request('DELETE', `/providers/${provider.id}`)).statusCode, 409);
+  assert.equal((await request('POST', `/providers/${provider.id}/reveal-key`, {})).statusCode, 200);
+  for (const model of ['wrong-provider', 'manual']) {
+    const bad = structuredClone(profiles);
+    bad.pm.model = model;
+    if (model === 'manual') bad.pm.effort = 'unknown';
+    const result = await request('PATCH', `/projects/${project.id}/profiles`, bad);
+    assert.equal(result.statusCode, 409, result.body);
+    assert.deepEqual(store.project(project.id).profiles, profiles);
+  }
+});
+
+test('custom discovery exposes known reasoning efforts for assignment selection', async (t) => {
+  const { request } = await fixture(t);
+  const upstream = createServer((_req, res) =>
+    res.end(
+      JSON.stringify({ data: [{ id: 'reasoning-model', reasoningEfforts: ['low', 'high'] }] }),
+    ),
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    upstream.closeAllConnections();
+    upstream.close();
+  });
+  const provider = (
+    await request('POST', '/providers', {
+      name: 'Reasoning',
+      baseUrl: `http://127.0.0.1:${(upstream.address() as any).port}/v1`,
+      apiKey: 'reasoning-fixture-key',
+    })
+  ).json();
+  const discovery = await request('POST', `/providers/${provider.id}/models`, {});
+  assert.deepEqual(discovery.json().models, [
+    { id: 'reasoning-model', reasoningEfforts: ['low', 'high'] },
+  ]);
+});
 
 async function fixture(t: any, createCodex?: () => Codex) {
   await mkdir(resolve('.phantom/test'), { recursive: true });

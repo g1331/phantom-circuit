@@ -6,6 +6,8 @@ import { Store, Fault } from './store.ts';
 import { command } from './process.ts';
 import { officialProvider, type Provider, type ModelDiscovery } from '../shared/types.ts';
 import { Codex } from './codex.ts';
+import { settingsSchema } from './schemas.ts';
+import type { Settings } from '../shared/types.ts';
 
 const fields = {
   name: z.string().trim().min(1).max(100),
@@ -125,6 +127,67 @@ export class Providers {
           apiKey: await this.reveal(id),
         };
   }
+  saveAssignments(input: unknown, projectId?: string) {
+    return this.serial(async () => {
+      const settings = projectId === undefined ? settingsSchema.parse(input) : undefined;
+      const profiles: Settings['profiles'] =
+        settings?.profiles ?? settingsSchema.shape.profiles.parse(input);
+      if (projectId !== undefined) this.store.project(projectId);
+      const warnings: string[] = [];
+      const cwd = resolve(dirname(this.directory), 'profile-validation');
+      await mkdir(cwd, { recursive: true });
+      const discoveries = new Map<string, ModelDiscovery>();
+      const checked = new Set<string>();
+      for (const [role, profile] of Object.entries(profiles)) {
+        const provider = this.get(profile.providerId);
+        if (provider.kind === 'codex' && profile.customModel)
+          throw new Fault(`${role}: 官方 Provider 必须从模型列表选择`, 409);
+        if (provider.kind === 'custom') {
+          if (!discoveries.has(provider.id))
+            discoveries.set(provider.id, await this.models(provider.id));
+          const discovery = discoveries.get(provider.id)!;
+          const model = discovery.ok
+            ? discovery.models.find((m) => m.id === profile.model)
+            : undefined;
+          if (!model && !profile.customModel)
+            throw new Fault(
+              `${role}: ${discovery.ok ? '模型不在发现列表中' : discovery.error}；请明确选择“自定义模型 ID”`,
+              409,
+            );
+          if (model?.reasoningEfforts && !model.reasoningEfforts.includes(profile.effort))
+            throw new Fault(`${role}: 模型不支持推理档位 ${profile.effort}`, 409);
+          warnings.push(
+            `${role}: ${provider.name} / ${profile.model} 未完成运行时验证；${discovery.ok ? '' : discovery.error + '；'}此配置将在首次 Run 验证上游兼容性`,
+          );
+        }
+        const key = JSON.stringify([profile.providerId, profile.model, profile.effort]);
+        if (checked.has(key)) continue;
+        const codex = this.createCodex();
+        try {
+          await codex.start(await this.connection(provider.id));
+          await codex.thread({
+            cwd,
+            profile,
+            writable: false,
+            ephemeral: true,
+            instructions: 'Validate effective configuration only. Do not execute a turn.',
+          });
+          checked.add(key);
+        } catch (error) {
+          throw new Fault(
+            `${role}: 配置校验失败：${error instanceof Fault ? error.message : '无法启动或连接 Codex app-server，请检查 Provider 与本机 Codex'}`,
+            409,
+          );
+        } finally {
+          await codex.stop();
+        }
+      }
+      const saved = settings
+        ? this.store.saveSettings(settings)
+        : this.store.saveProjectProfiles(projectId!, profiles);
+      return { ...saved, warnings };
+    });
+  }
   async models(id: string): Promise<ModelDiscovery> {
     const provider = this.get(id);
     if (provider.kind === 'codex') {
@@ -183,13 +246,29 @@ export class Providers {
         return failure('invalid_response', '上游模型列表不是有效 JSON');
       }
       const result = z
-        .object({ data: z.array(z.object({ id: z.string().trim().min(1).max(256) })) })
+        .object({
+          data: z.array(
+            z.object({
+              id: z.string().trim().min(1).max(256),
+              reasoningEfforts: z
+                .array(z.string().trim().min(1).max(100))
+                .min(1)
+                .max(32)
+                .optional(),
+            }),
+          ),
+        })
         .safeParse(data);
-      if (!result.success || result.data.data.some((m) => m.id.includes(key)))
+      if (
+        !result.success ||
+        result.data.data.some(
+          (m) => m.id.includes(key) || m.reasoningEfforts?.some((e) => e.includes(key)),
+        )
+      )
         return failure('invalid_response', '上游模型列表格式无效');
       return {
         ok: true,
-        models: [...new Set(result.data.data.map((m) => m.id))].map((id) => ({ id })),
+        models: [...new Map(result.data.data.map((m) => [m.id, m])).values()],
       };
     } catch {
       return controller.signal.aborted
@@ -229,6 +308,7 @@ export class Providers {
   remove(id: string) {
     return this.serial(async () => {
       this.custom(id);
+      this.store.assertProviderUnused(id);
       try {
         await unlink(join(this.directory, id));
       } catch (e) {

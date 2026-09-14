@@ -10,13 +10,15 @@ import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 import { checkProviders } from './provider-browser-check.ts';
+import { checkProfiles } from './profile-browser-check.ts';
+import { profileProtocol } from '../tests/profile-protocol.ts';
 
 const artifacts = resolve('test-results');
 await mkdir(artifacts, { recursive: true });
 const store = new Store(':memory:');
 const ws = new Workspaces(resolve('.cache/browser-workspaces'), store);
 const engine = new Engine(store, new GitHub(store), ws, resolve('.cache'));
-const app = createApp(store, engine, new Previews(store, ws), 4318);
+const app = createApp(store, engine, new Previews(store, ws), 4318, profileProtocol);
 await app.listen({ host: '127.0.0.1', port: 4318 });
 const browser = await chromium.launch({
   headless: true,
@@ -575,6 +577,7 @@ try {
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.getByLabel('全局 Dev 上限').fill('3');
   await page.getByRole('button', { name: '保存设置' }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(store.settings().globalDevLimit, 3);
   await page.reload();
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
@@ -601,6 +604,7 @@ try {
   await checkPriority(page, store, task, artifacts);
   assert.deepEqual(errors, []);
   await checkProviders(page, artifacts);
+  await checkProfiles(page, store, artifacts);
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, dark/light, 390px responsive; screenshots in test-results/.',
