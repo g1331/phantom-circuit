@@ -55,7 +55,11 @@ export class MessageImages {
         if (item.done) break;
         const part = item.value;
         if (part.type === 'field') {
-          if (part.fieldname in fields || part.valueTruncated || typeof part.value !== 'string')
+          if (
+            Object.hasOwn(fields, part.fieldname) ||
+            part.valueTruncated ||
+            typeof part.value !== 'string'
+          )
             throw new Fault('消息字段重复或过长');
           fields[part.fieldname] = part.value;
           continue;

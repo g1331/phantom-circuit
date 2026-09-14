@@ -45,14 +45,14 @@ export function createApp(
       'FST_PARTS_LIMIT',
     ].includes(code);
     const providerRequest = req.url.startsWith('/api/providers');
-    const statusCode = (error as { statusCode?: number }).statusCode;
     const status = uploadLimit
       ? 413
       : error instanceof Fault
         ? error.status
-        : error instanceof z.ZodError || (providerRequest && statusCode === 400)
+        : error instanceof z.ZodError ||
+            (providerRequest && (error as { statusCode?: number }).statusCode === 400)
           ? 400
-          : (statusCode ?? 500);
+          : 500;
     reply
       .code(status)
       .send({

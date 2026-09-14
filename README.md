@@ -28,7 +28,7 @@ During discussion, the PM can persist glossary/ADR drafts locally using the upst
 
 ## State and recovery
 
-`.phantom/config.json` contains the local port. `.phantom/phantom.sqlite` stores project configuration, routing, conversation messages, tasks, runs, events and external operation records. `.phantom/workspaces/` contains managed bare repositories, task worktrees and previews. Secrets are not stored as project configuration. Back up `.phantom/` and Codex's own persisted sessions with the service stopped to preserve both host and conversation history.
+`.phantom/config.json` contains the local port. `.phantom/phantom.sqlite` stores project configuration, routing, conversation messages, tasks, runs, events and external operation records. `.phantom/workspaces/` contains managed bare repositories, task worktrees and previews. `.phantom/messages/` holds uploaded message image binaries for as long as their messages exist. Secrets are not stored as project configuration. Back up `.phantom/` and Codex's own persisted sessions with the service stopped to preserve both host and conversation history.
 
 On startup, unfinished runs are marked interrupted and their tasks pause for worktree/remote verification. Resume preserves pending work. An external mutation whose result is unknown is queried remotely before retrying; if it cannot be reconciled, it remains blocked rather than creating duplicates. Do not delete the database as a recovery shortcut.
 
