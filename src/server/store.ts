@@ -1,7 +1,16 @@
+import {
+  comparePriority,
+  priorityValues,
+  type PriorityLevel,
+  type PriorityChange,
+} from '../shared/priority.ts';
+import { creationPriorityInput, priorityUpdateInput, settingsSchema } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
+  SchedulingExplanation,
   Project,
   Repo,
   Task,
@@ -40,15 +49,16 @@ export const defaults: Settings = {
   globalDevLimit: 4,
   reviewLimit: 2,
   profiles: {
-    backend: { model: 'gpt-5.6-luna', effort: 'max' },
-    frontend: { model: 'gpt-6-astra', effort: 'low' },
-    fullstack: { model: 'gpt-6-astra', effort: 'low' },
-    complex: { model: 'gpt-6-astra', effort: 'medium' },
-    pm: { model: 'gpt-6-astra', effort: 'medium' },
-    review: { model: 'gpt-6-astra', effort: 'medium' },
+    backend: { providerId: 'codex', model: 'gpt-5.6-luna', effort: 'max' },
+    frontend: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
+    fullstack: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
+    complex: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
+    pm: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
+    review: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
   },
 };
 type Entities = {
+  provider: Provider;
   project: Project;
   repo: Repo;
   task: Task;
@@ -61,16 +71,41 @@ type Entities = {
 export class Store {
   private db: DatabaseSync;
   readonly changes = new EventEmitter();
-  constructor(file: string) {
+  constructor(readonly file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+    this.transaction(() => {
+      if (!this.db.prepare("SELECT value FROM meta WHERE key='priority-contract-v1'").get()) {
+        // Legacy claimNext used list('task') ORDER BY rowid for exact ties.
+        this.list('task').forEach((task, index) =>
+          this.put('task', task.id, { ...task, legacyPriorityOrder: index }),
+        );
+        this.db.prepare("INSERT INTO meta VALUES ('priority-contract-v1','1')").run();
+      }
+    });
     if (!this.get('settings', 'global')) this.put('settings', 'global', structuredClone(defaults));
+    this.transaction(() => {
+      const settings = this.settings();
+      for (const profile of Object.values(settings.profiles)) profile.providerId ??= 'codex';
+      this.put('settings', 'global', settings);
+      for (const project of this.list('project')) {
+        if (!project.profiles) {
+          project.profiles = structuredClone(settings.profiles);
+          this.put('project', project.id, project);
+        }
+      }
+    });
   }
   close() {
     this.db.close();
+  }
+  deleteProvider(key: string) {
+    this.assertProviderUnused(key);
+    this.db.prepare('DELETE FROM documents WHERE kind=? AND id=?').run('provider', key);
+    this.changes.emit('change');
   }
   get<K extends keyof Entities>(kind: K, key: string): Entities[K] | undefined {
     const row = this.db
@@ -123,9 +158,74 @@ export class Store {
     return this.get('settings', 'global')!;
   }
   saveSettings(settings: Settings) {
+    settings = settingsSchema.parse(settings);
+    this.validateProfiles(settings.profiles);
     this.put('settings', 'global', settings);
     this.event('settings', '运行配置已更新');
     return settings;
+  }
+  private validateProfiles(profiles: Settings['profiles']) {
+    settingsSchema.shape.profiles.parse(profiles);
+    for (const [role, profile] of Object.entries(profiles)) {
+      if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
+        throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
+    }
+  }
+  assertProviderUnused(providerId: string) {
+    const references: string[] = [];
+    const inspect = (name: string, profiles: Settings['profiles']) => {
+      for (const [role, profile] of Object.entries(profiles))
+        if (profile.providerId === providerId) references.push(`${name} / ${role}`);
+    };
+    inspect('全局默认值', this.settings().profiles);
+    for (const project of this.list('project'))
+      inspect(`Project ${project.name} (${project.id})`, project.profiles);
+    for (const run of this.activeRuns())
+      if (run.profileConfig?.providerId === providerId)
+        references.push(`进行中的 Run ${run.id} / ${run.role}`);
+    if (references.length) throw new Fault(`Provider 仍被引用：${references.join('；')}`, 409);
+  }
+  saveProjectProfiles(projectId: string, profiles: Settings['profiles']) {
+    this.validateProfiles(profiles);
+    return this.transaction(() => {
+      const project = this.project(projectId);
+      const changed = (Object.keys(profiles) as ProfileName[]).filter(
+        (role) => profiles[role].providerId !== project.profiles[role].providerId,
+      );
+      if (changed.length) project.profileVersion = (project.profileVersion ?? 0) + 1;
+      if (changed.includes('pm')) {
+        delete project.pmThreadId;
+        delete project.pmThreadProviderId;
+      }
+      for (const task of this.list('task')) {
+        if (task.projectId === projectId && changed.includes(task.profile)) {
+          delete task.devThreadId;
+          delete task.devThreadProviderId;
+          this.put('task', task.id, task);
+        }
+      }
+      project.profiles = structuredClone(profiles);
+      this.put('project', projectId, project);
+      this.event('project', '项目模型分配已更新', { projectId });
+      return project;
+    });
+  }
+  bindRunThread(run: Run, threadId: string) {
+    this.put('run', run.id, { ...this.get('run', run.id)!, threadId });
+    const project = this.project(run.projectId);
+    // A late reply must not restore a binding invalidated while this Run was in flight.
+    if ((project.profileVersion ?? 0) !== (run.profileVersion ?? 0)) return;
+    if (run.role === 'pm')
+      this.put('project', project.id, {
+        ...project,
+        pmThreadId: threadId,
+        pmThreadProviderId: run.profileConfig?.providerId ?? 'codex',
+      });
+    if (run.role === 'dev' && run.taskId)
+      this.updateTask(run.taskId, {
+        devThreadId: threadId,
+        devThreadProviderId: run.profileConfig?.providerId ?? 'codex',
+      });
   }
   event(
     type: string,
@@ -146,8 +246,27 @@ export class Store {
       }[]
     ).map((x) => ({ ...JSON.parse(x.body), id: x.id }));
   }
+  /**
+   * Every durable event recorded against one task, oldest first.
+   *
+   * `events()` above is a bounded feed for the UI, so it stops answering "did the host ever
+   * coordinate a merge for this task?" once unrelated events have accumulated. That question must
+   * stay answerable for as long as the task exists: it is one of the host records a legacy
+   * in-progress merge is verified against when its source branch has moved on.
+   */
+  taskEvents(taskId: string): Event[] {
+    const pattern = `%"taskId":"${taskId.replace(/[\\%_]/g, '\\$&')}"%`;
+    return (
+      this.db
+        .prepare("SELECT id,body FROM events WHERE body LIKE ? ESCAPE '\\' ORDER BY id")
+        .all(pattern) as { id: number; body: string }[]
+    )
+      .map((row) => ({ ...(JSON.parse(row.body) as Omit<Event, 'id'>), id: row.id }))
+      .filter((event) => event.taskId === taskId);
+  }
   snapshot(): Snapshot {
     return {
+      providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),
@@ -159,10 +278,19 @@ export class Store {
     };
   }
   createProject(name: string, description: string) {
-    const p: Project = { id: id(), name, description, devLimit: 4, createdAt: now() };
-    this.put('project', p.id, p);
-    this.event('project', '项目已创建', { projectId: p.id });
-    return p;
+    return this.transaction(() => {
+      const p: Project = {
+        id: id(),
+        name,
+        description,
+        devLimit: 4,
+        createdAt: now(),
+        profiles: this.settings().profiles,
+      };
+      this.put('project', p.id, p);
+      this.event('project', '项目已创建', { projectId: p.id });
+      return p;
+    });
   }
   createRepo(
     input: Pick<Repo, 'projectId' | 'name' | 'path' | 'github' | 'defaultBranch' | 'authorized'>,
@@ -251,10 +379,15 @@ export class Store {
       | 'dependencies'
       | 'kind'
       | 'complexity'
-      | 'priority'
     > &
-      Pick<Task, 'documentChanges'>,
+      Pick<Task, 'documentChanges'> & { priority: number | PriorityLevel; priorityReason?: string },
+    prioritySource?: Pick<PriorityChange, 'actor' | 'runId'>,
   ) {
+    const priorityInput = creationPriorityInput.parse(input);
+    const priority =
+      typeof priorityInput.priority === 'number'
+        ? priorityInput.priority
+        : priorityValues[priorityInput.priority];
     if (this.repo(input.repoId).projectId !== input.projectId)
       throw new Fault('任务仓库不属于当前项目');
     const source = this.get('message', input.sourceMessageId);
@@ -278,10 +411,30 @@ export class Store {
     const profile: ProfileName = input.complexity === 'complex' ? 'complex' : input.kind;
     const task: Task = {
       ...input,
+      priority,
+      priorityVersion: 0,
+      priorityReason: priorityInput.priorityReason,
+      priorityHistory: priorityInput.priorityReason
+        ? [
+            {
+              requestId: `create:${input.sourceMessageId}:${input.title}`,
+              expectedVersion: 0,
+              oldValue: null,
+              newValue: priority,
+              reason: priorityInput.priorityReason,
+              actor: prioritySource?.actor ?? 'pm',
+              runId: prioritySource?.runId,
+              sourceMessageId: input.sourceMessageId,
+              at: now(),
+            },
+          ]
+        : [],
       id: id(),
       profile,
       routingReason:
-        input.complexity === 'complex' ? '复杂任务使用 Astra medium' : `${input.kind} 类型默认档位`,
+        input.complexity === 'complex'
+          ? '复杂任务使用项目 complex 档位'
+          : `${input.kind} 类型项目档位`,
       stage: 'ready',
       control: 'active',
       reviews: [],
@@ -294,6 +447,51 @@ export class Store {
     this.put('task', task.id, task);
     this.event('task', `任务已准备：${task.title}`, { projectId: task.projectId, taskId: task.id });
     return task;
+  }
+  setTaskPriority(
+    projectId: string,
+    request: unknown,
+    source: Pick<PriorityChange, 'actor' | 'sourceMessageId' | 'runId'>,
+  ) {
+    const input = priorityUpdateInput.parse(request);
+    return this.transaction(() => {
+      const task = this.task(input.taskId);
+      if (task.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
+      const previous = task.priorityHistory?.find((entry) => entry.requestId === input.requestId);
+      if (previous) {
+        if (
+          previous.newValue !== priorityValues[input.level] ||
+          previous.reason !== input.reason ||
+          previous.actor !== source.actor ||
+          previous.expectedVersion !== input.expectedVersion
+        )
+          throw new Fault('Request ID already used with different input', 409);
+        return task;
+      }
+      if (['done', 'cancelled'].includes(task.stage)) throw new Fault('任务已经结束', 409);
+      if ((task.priorityVersion ?? 0) !== input.expectedVersion)
+        throw new Fault('Priority version conflict; refresh and retry', 409);
+      const at = now();
+      const entry: PriorityChange = {
+        ...source,
+        requestId: input.requestId,
+        expectedVersion: input.expectedVersion,
+        oldValue: task.priority,
+        newValue: priorityValues[input.level],
+        reason: input.reason,
+        at,
+      };
+      const updated: Task = {
+        ...task,
+        priority: entry.newValue,
+        priorityReason: entry.reason,
+        priorityVersion: input.expectedVersion + 1,
+        priorityHistory: [...(task.priorityHistory ?? []), entry],
+        updatedAt: at,
+      };
+      this.put('task', task.id, updated);
+      return updated;
+    });
   }
   recordDocument(
     projectId: string,
@@ -326,12 +524,32 @@ export class Store {
     return t;
   }
   run(role: Run['role'], projectId: string, profile: ProfileName, task?: Task): Run {
+    const project = this.project(projectId);
+    const profileConfig = project.profiles[profile];
+    const provider =
+      profileConfig.providerId === 'codex'
+        ? officialProvider
+        : this.get('provider', profileConfig.providerId);
+    if (!provider) throw new Fault(`Provider 不存在：${profileConfig.providerId}`, 409);
     const r: Run = {
       id: id(),
       projectId,
       role,
       profile,
-      profileConfig: { ...this.settings().profiles[profile] },
+      profileConfig: { ...profileConfig },
+      provider: {
+        id: provider.id,
+        name: provider.name,
+        kind: provider.kind,
+        baseUrl: provider.baseUrl,
+      },
+      profileVersion: project.profileVersion ?? 0,
+      resumeThreadId:
+        role === 'pm' && (project.pmThreadProviderId ?? 'codex') === profileConfig.providerId
+          ? project.pmThreadId
+          : role === 'dev' && (task?.devThreadProviderId ?? 'codex') === profileConfig.providerId
+            ? task?.devThreadId
+            : undefined,
       status: 'running',
       startedAt: now(),
       taskId: task?.id,
@@ -354,47 +572,94 @@ export class Store {
   activeRuns() {
     return this.list('run').filter((r) => r.status === 'running' || r.status === 'waiting');
   }
+  private schedulingSnapshot() {
+    const snapshot = {
+      projects: this.list('project'),
+      repos: this.list('repo'),
+      tasks: this.list('task'),
+      runs: this.list('run'),
+      settings: this.settings(),
+    };
+    const cursor = (
+      this.db.prepare("SELECT value FROM meta WHERE key='cursor'").get() as
+        { value: string } | undefined
+    )?.value;
+    const start = cursor ? Math.max(0, snapshot.projects.findIndex((p) => p.id === cursor) + 1) : 0;
+    const projects = [...snapshot.projects.slice(start), ...snapshot.projects.slice(0, start)];
+    const active = snapshot.runs.filter((r) => ['running', 'waiting'].includes(r.status));
+    const dev = active.filter((r) => r.role === 'dev');
+    const at = now();
+    return projects.map((project) => {
+      const tasks = snapshot.tasks
+        .filter((t) => t.projectId === project.id)
+        .sort(comparePriority)
+        .map((task) => {
+          const reasons: SchedulingExplanation['tasks'][number]['reasons'] = [];
+          const repo = snapshot.repos.find((r) => r.id === task.repoId)!;
+          if (task.control !== 'active') reasons.push({ code: 'paused' });
+          if (task.blocked) reasons.push({ code: 'blocked', detail: task.blocked });
+          if (task.pendingFeedback?.length) reasons.push({ code: 'feedback' });
+          if (!['ready', 'developing'].includes(task.stage))
+            reasons.push({ code: 'stage', detail: task.stage });
+          if (!repo.authorized) reasons.push({ code: 'unauthorized' });
+          if (repo.blocked) reasons.push({ code: 'repositoryBlocked', detail: repo.blocked });
+          if (task.stage === 'ready' && !repo.enabled) reasons.push({ code: 'workSwitch' });
+          for (const run of active.filter((r) => r.taskId === task.id))
+            reasons.push({ code: 'activeRun', detail: run.id });
+          for (const key of task.dependencies) {
+            const dependency = snapshot.tasks.find((t) => t.id === key);
+            if (dependency?.stage !== 'done')
+              reasons.push({ code: 'dependency', detail: dependency?.title ?? key });
+          }
+          if (dev.length >= snapshot.settings.globalDevLimit)
+            reasons.push({ code: 'globalCapacity' });
+          if (dev.filter((r) => r.projectId === project.id).length >= project.devLimit)
+            reasons.push({ code: 'projectCapacity' });
+          if (dev.filter((r) => r.repoId === repo.id).length >= repo.devLimit)
+            reasons.push({ code: 'repositoryCapacity' });
+          return {
+            taskId: task.id,
+            title: task.title,
+            priority: task.priority,
+            stage: task.stage,
+            reasons,
+          };
+        });
+      return {
+        projectId: project.id,
+        at,
+        projectOrder: projects.map((p) => p.id),
+        tasks,
+        candidates: tasks.filter((t) => !t.reasons.length).map((t) => t.taskId),
+      };
+    });
+  }
+  explainScheduling(projectId: string): SchedulingExplanation {
+    this.project(projectId);
+    this.db.exec('BEGIN');
+    try {
+      const result = this.schedulingSnapshot().find((p) => p.projectId === projectId)!;
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
   claimNext(): Run | undefined {
     return this.transaction(() => {
-      const active = this.activeRuns().filter((r) => r.role === 'dev');
-      const settings = this.settings();
-      if (active.length >= settings.globalDevLimit) return;
-      const projects = this.list('project');
-      const cursor = (
-        this.db.prepare("SELECT value FROM meta WHERE key='cursor'").get() as
-          { value: string } | undefined
-      )?.value;
-      const start = cursor ? Math.max(0, projects.findIndex((p) => p.id === cursor) + 1) : 0;
-      const tasks = this.list('task').sort(
-        (a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt),
-      );
-      for (let offset = 0; offset < projects.length; offset++) {
-        const p = projects[(start + offset) % projects.length];
-        if (active.filter((r) => r.projectId === p.id).length >= p.devLimit) continue;
-        for (const t of tasks.filter((t) => t.projectId === p.id)) {
-          if (
-            t.control !== 'active' ||
-            t.blocked ||
-            t.pendingFeedback?.length ||
-            !['ready', 'developing'].includes(t.stage)
-          )
-            continue;
-          const repo = this.repo(t.repoId);
-          if (!repo.authorized || repo.blocked || (t.stage === 'ready' && !repo.enabled)) continue;
-          if (this.activeRuns().some((r) => r.taskId === t.id)) continue;
-          if (active.filter((r) => r.repoId === repo.id).length >= repo.devLimit) continue;
-          if (t.dependencies.some((key) => this.task(key).stage !== 'done')) continue;
-          t.stage = 'developing';
-          this.put('task', t.id, t);
-          const r = this.run('dev', p.id, t.profile, t);
-          this.db
-            .prepare(
-              "INSERT INTO meta VALUES ('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            )
-            .run(p.id);
-          return r;
-        }
-      }
+      const candidate = this.schedulingSnapshot().find((p) => p.candidates.length)?.candidates[0];
+      if (!candidate) return;
+      const task = this.task(candidate);
+      task.stage = 'developing';
+      this.put('task', task.id, task);
+      const run = this.run('dev', task.projectId, task.profile, task);
+      this.db
+        .prepare(
+          "INSERT INTO meta VALUES ('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(task.projectId);
+      return run;
     });
   }
   control(key: string, action: 'pause' | 'resume' | 'cancel') {

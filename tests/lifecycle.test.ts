@@ -7,11 +7,16 @@ import { Store } from '../src/server/store.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { GitHub, type PullState } from '../src/server/github.ts';
 import { Engine, mergeReady } from '../src/server/engine.ts';
+import { Providers } from '../src/server/providers.ts';
 import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Task, ReviewResult, Profile } from '../src/shared/types.ts';
 
-test('real worktrees, commits and tests complete a task through independent review, rework and merge', async () => {
+for (const route of ['backend', 'frontend', 'fullstack', 'complex'] as const)
+  test(`real worktrees complete ${route} through pinned Provider routing, review, rework and merge`, () =>
+    completeLifecycle(route));
+
+async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | 'complex') {
   const root = await mkdtemp(join(tmpdir(), 'phantom-lifecycle-'));
   const source = join(root, 'source');
   const remote = join(root, 'remote.git');
@@ -31,6 +36,19 @@ test('real worktrees, commits and tests complete a task through independent revi
   await git(['push', '-u', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const p = store.createProject('Fixture', '');
+  const providers = new Providers(store);
+  const upstream = await providers.save({
+    name: 'Lifecycle upstream',
+    baseUrl: 'http://localhost:9999/v1',
+    apiKey: 'lifecycle-private-key',
+  });
+  const assigned = structuredClone(p.profiles);
+  assigned[route] = { providerId: upstream.id, model: 'dev-' + route, effort: 'low' };
+  assigned.pm = { providerId: upstream.id, model: 'pm-model', effort: 'medium' };
+  assigned.review = { providerId: 'codex', model: 'review-model', effort: 'high' };
+  store.saveProjectProfiles(p.id, assigned);
+  const observed: string[] = [];
+
   const repo = store.createRepo({
     projectId: p.id,
     name: 'source',
@@ -52,19 +70,18 @@ test('real worktrees, commits and tests complete a task through independent revi
     spec: 'Add two numbers',
     acceptance: ['2 + 3 = 5'],
     dependencies: [],
-    kind: 'backend',
-    complexity: 'normal',
+    kind: route === 'complex' ? 'backend' : route,
+    complexity: route === 'complex' ? 'complex' : 'normal',
     priority: 0,
   });
+  let issue = { number: 1, body: '', state: 'open' };
   let merged = false;
   let rejected = false;
+  let pmRejected = false;
   let devTurns = 0;
   const axes: string[] = [];
   class FakeGitHub extends GitHub {
-    override async publishIssue(t: Task) {
-      store.updateTask(t.id, { issue: 1, issueUrl: 'https://example.invalid/issues/1' });
-      return { number: 1 };
-    }
+    override async setupProject() {}
     override async publishPR(t: Task) {
       store.updateTask(t.id, { pr: 2, prUrl: 'https://example.invalid/pull/2' });
       return this.pull(t);
@@ -77,8 +94,8 @@ test('real worktrees, commits and tests complete a task through independent revi
         merged,
         mergeable: true,
         mergeable_state: 'clean',
-        head: { sha: t.head! },
-        base: { sha: t.base! },
+        head: { sha: t.head!, ref: t.branch, repo: { full_name: 'fixture/source' } },
+        base: { sha: t.base!, repo: { full_name: 'fixture/source' } },
         body: '',
       };
     }
@@ -92,12 +109,19 @@ test('real worktrees, commits and tests complete a task through independent revi
     }
     override async merge(t: Task) {
       assert.equal(mergeReady(t), true);
+      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
       merged = true;
       return this.pull(t);
     }
     override async syncStatus() {}
-    override async api<T = any>(): Promise<T> {
-      return { state: 'open', body: undefined } as T;
+    override async api<T = any>(endpoint: string, method = 'GET', data?: any): Promise<T> {
+      if (endpoint.endsWith('/issues') && method === 'POST') issue = { ...issue, ...data };
+      if (method === 'PATCH') {
+        assert.equal(merged, true);
+        assert.equal(store.task(task.id).stage, 'merging');
+        issue = { ...issue, ...data };
+      }
+      return { ...issue } as T;
     }
     override async paged() {
       return [];
@@ -106,7 +130,10 @@ test('real worktrees, commits and tests complete a task through independent revi
   class FakeCodex extends Codex {
     cwd = '';
     role = '';
-    override async start() {}
+    providerId = 'codex';
+    override async start(connection?: Parameters<Codex['start']>[0]) {
+      this.providerId = connection?.id ?? 'codex';
+    }
     override async stop() {}
     override async thread(o: Parameters<Codex['thread']>[0]) {
       this.cwd = o.cwd;
@@ -115,6 +142,16 @@ test('real worktrees, commits and tests complete a task through independent revi
         : o.instructions.includes('Independent Reviewer')
           ? 'review'
           : 'pm';
+      const expected =
+        assigned[this.role === 'dev' ? route : this.role === 'review' ? 'review' : 'pm'];
+      assert.equal(this.providerId, expected.providerId);
+      assert.deepEqual(o.profile, expected);
+      observed.push(this.role);
+      if (this.role === 'dev') {
+        const settings = store.settings();
+        settings.profiles[route].model = 'changed-global-during-run';
+        store.saveSettings(settings);
+      }
       return `fixture-${this.role}`;
     }
     override async turn(_id: string, prompt: string, _p: Profile) {
@@ -124,7 +161,7 @@ test('real worktrees, commits and tests complete a task through independent revi
           join(this.cwd, 'sum.cjs'),
           `// Revision ${devTurns}\nmodule.exports=(a,b)=>a+b;\n`,
         );
-        return 'Implemented';
+        return 'Implemented in the task worktree; host must commit and validate.';
       }
       if (this.role === 'review') {
         if (prompt.includes('Axis: spec') && !rejected) {
@@ -139,6 +176,14 @@ test('real worktrees, commits and tests complete a task through independent revi
           approved: true,
           summary: 'Inspected the task diff; behavior and conventions match.',
           findings: [],
+        });
+      }
+      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
+      if (!pmRejected) {
+        pmRejected = true;
+        return JSON.stringify({
+          approved: false,
+          reason: 'Clarify the revision comment before delivery.',
         });
       }
       return JSON.stringify({
@@ -163,7 +208,16 @@ test('real worktrees, commits and tests complete a task through independent revi
       'done',
       JSON.stringify({ task: result, events: store.events().slice(0, 5) }),
     );
-    assert.equal(devTurns, 2);
+    assert.match(issue.body, /- \[x\] 2 \+ 3 = 5/);
+    assert.equal(issue.state, 'closed');
+    assert.equal(result.issueBody, issue.body);
+    assert.equal(devTurns, 3);
+    assert.ok(['dev', 'pm', 'review'].every((role) => observed.includes(role)));
+    for (const run of store.list('run')) {
+      assert.deepEqual(run.profileConfig, assigned[run.profile]);
+      assert.equal(run.provider?.id, assigned[run.profile].providerId);
+    }
+    assert.ok(!JSON.stringify(store.snapshot()).includes('lifecycle-private-key'));
     assert.equal(merged, true);
     assert.equal(result.reviews.length, 2);
     assert.equal(result.tests[0].exitCode, 0);
@@ -179,4 +233,4 @@ test('real worktrees, commits and tests complete a task through independent revi
     await engine.stop();
     store.close();
   }
-});
+}

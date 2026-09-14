@@ -225,7 +225,12 @@ test('PM sends the same managed images on first turn and retry in the same threa
         };
       if (method === 'thread/start' || method === 'thread/resume') {
         if (params.threadId) resumes.push(params.threadId);
-        return { thread: { id: 'persistent-pm' }, model: 'fixture', reasoningEffort: 'low' };
+        return {
+          thread: { id: 'persistent-pm' },
+          model: 'fixture',
+          modelProvider: 'openai',
+          reasoningEffort: 'low',
+        };
       }
       assert.equal(method, 'turn/start');
       turns.push(params);
@@ -240,7 +245,10 @@ test('PM sends the same managed images on first turn and retry in the same threa
   }
   store.saveSettings({
     ...store.settings(),
-    profiles: { ...store.settings().profiles, pm: { model: 'fixture', effort: 'low' } },
+    profiles: {
+      ...store.settings().profiles,
+      pm: { providerId: 'codex', model: 'fixture', effort: 'low' },
+    },
   });
   const ws = new Workspaces(join(root, 'ws'), store);
   const engine = new Engine(store, new GitHub(store), ws, root, () => new Protocol());

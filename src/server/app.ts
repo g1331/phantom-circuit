@@ -11,9 +11,17 @@ import { Store, Fault, redact } from './store.ts';
 import { Engine } from './engine.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
-import { commandSchema, limit, settingsSchema } from './schemas.ts';
+import { Providers } from './providers.ts';
+import { commandSchema, limit } from './schemas.ts';
 
-export function createApp(store: Store, engine: Engine, previews: Previews, port = 4317) {
+export function createApp(
+  store: Store,
+  engine: Engine,
+  previews: Previews,
+  port = 4317,
+  createCodex: () => Codex = () => new Codex(),
+) {
+  const providers = new Providers(store, createCodex);
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
   const images = new MessageImages(store, engine.dataDir);
   void app.register(multipart, { limits: imageLimits });
@@ -25,10 +33,10 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     '127.0.0.1:5173',
     'localhost:5173',
   ]);
-  app.setErrorHandler((error, _req, reply) => {
+  app.setErrorHandler((error, req, reply) => {
     const code = (error as { code?: string }).code ?? '';
     const uploadStorageFailure =
-      _req.isMultipart() &&
+      req.isMultipart() &&
       ['EACCES', 'EPERM', 'ENOSPC', 'EIO', 'EBUSY', 'ENOTDIR', 'EEXIST'].includes(code);
     const uploadLimit = [
       'FST_REQ_FILE_TOO_LARGE',
@@ -36,13 +44,15 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
       'FST_FIELDS_LIMIT',
       'FST_PARTS_LIMIT',
     ].includes(code);
+    const providerRequest = req.url.startsWith('/api/providers');
+    const statusCode = (error as { statusCode?: number }).statusCode;
     const status = uploadLimit
       ? 413
       : error instanceof Fault
         ? error.status
-        : error instanceof z.ZodError
+        : error instanceof z.ZodError || (providerRequest && statusCode === 400)
           ? 400
-          : ((error as { statusCode?: number }).statusCode ?? 500);
+          : (statusCode ?? 500);
     reply
       .code(status)
       .send({
@@ -50,7 +60,9 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
           ? '图片保存失败，请检查本地磁盘空间和权限后重试'
           : uploadLimit
             ? '上传超限：每条消息最多 4 张图片，每张不超过 10 MiB'
-            : redact(error instanceof Error ? error.message : String(error)),
+            : providerRequest && !(error instanceof Fault)
+              ? 'Provider 请求无效，请检查输入或稍后重试'
+              : redact(error instanceof Error ? error.message : String(error)),
       });
   });
   app.addHook('onRequest', async (req, reply) => {
@@ -89,7 +101,33 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     reply.header('Set-Cookie', `phantom_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
     return { csrf };
   });
+  app.get('/api/projects/:id/scheduling', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.explainScheduling(id);
+  });
+  app.post('/api/projects/:id/task-priority', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.setTaskPriority(id, req.body, { actor: 'user' });
+  });
   app.get('/api/state', async () => store.snapshot());
+  const providerId = (params: unknown) => z.object({ id: z.string() }).parse(params).id;
+  app.get('/api/providers', async () => providers.list());
+  app.get('/api/providers/:id', async (req) => providers.get(providerId(req.params)));
+  app.post('/api/providers', async (req) => providers.save(req.body));
+  app.patch('/api/providers/:id', async (req) => providers.save(req.body, providerId(req.params)));
+  app.delete('/api/providers/:id', async (req) => providers.remove(providerId(req.params)));
+  app.post('/api/providers/:id/models', async (req) => providers.models(providerId(req.params)));
+  app.post('/api/providers/:id/reveal-key', async (req) => {
+    if (
+      !z
+        .object({})
+        .strict()
+        .safeParse(req.body ?? {}).success
+    )
+      throw new Fault('显示密钥请求不接受额外字段');
+    if (req.headers['sec-fetch-site'] === 'cross-site') throw new Fault('不允许的跨站请求', 403);
+    return { apiKey: await providers.reveal(providerId(req.params)) };
+  });
   app.get('/api/events', async (req, reply) => {
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -128,6 +166,10 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
       .strict()
       .parse(req.body);
     return store.createProject(b.name, b.description);
+  });
+  app.patch('/api/projects/:id/profiles', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return providers.saveAssignments(req.body, id);
   });
   app.patch('/api/projects/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
@@ -239,12 +281,12 @@ export function createApp(store: Store, engine: Engine, previews: Previews, port
     else engine.control(id, action);
     return store.task(id);
   });
-  app.patch('/api/settings', async (req) => store.saveSettings(settingsSchema.parse(req.body)));
+  app.patch('/api/settings', async (req) => providers.saveAssignments(req.body));
   app.get('/api/health', async () => {
     const results = await Promise.allSettled([
       engine.github.identity(),
       (async () => {
-        const c = new Codex();
+        const c = createCodex();
         try {
           await c.start();
           return await c.models();

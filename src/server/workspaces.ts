@@ -1,8 +1,43 @@
-import { mkdir, realpath, access, readFile } from 'node:fs/promises';
+import { mkdir, realpath, access, readFile, lstat, readlink } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { resolve, join, relative, isAbsolute, dirname } from 'node:path';
 import { command, shellCommand } from './process.ts';
 import { Store, Fault, now, redact } from './store.ts';
 import type { Repo, Task, Evidence } from '../shared/types.ts';
+
+/** One allowed tracking ref and the commit it currently points at. */
+type TrackingRef = { ref: string; tip: string };
+
+function describeRefs(refs: TrackingRef[]) {
+  return refs.map(({ ref, tip }) => `${ref}=${tip}`).join(', ');
+}
+
+/** The last few coordination messages, bounded and single-line, for one pause diagnostic. */
+function describeEvents(events: { message: string }[]) {
+  const shown = events
+    .slice(-3)
+    .map((event) => event.message.replace(/[\r\n]+/g, ' ').slice(0, 160));
+  const hidden = events.length - shown.length;
+  return `${shown.join(' | ')}${hidden > 0 ? ` …（另有 ${hidden} 条）` : ''}`;
+}
+
+/**
+ * Whether one durable merge-coordination event can be about a pending merge of `sourceHead` into
+ * `head`. An event that names commits must name exactly those two; an event that names none - the
+ * wording the pre-finalization host wrote - can only corroborate that this task reached merge
+ * coordination at all, and is accepted as such.
+ */
+function conflictEventAgrees(message: string, head: string, sourceHead: string) {
+  const named = message.match(/[a-f0-9]{40,64}/g);
+  return !named || (named.includes(head) && named.includes(sourceHead));
+}
+
+export type BaselineResult =
+  | { status: 'clean' }
+  | { status: 'conflicted'; merge: NonNullable<Task['pendingMerge']> }
+  // `code` is the HTTP status of the originating fault, so a pause (409) or a timeout (504) keeps
+  // its meaning instead of being flattened into a generic coordination failure.
+  | { status: 'blocked'; reason: string; code: number };
 
 export class Workspaces {
   private locks = new Map<string, Promise<unknown>>();
@@ -60,11 +95,11 @@ export class Workspaces {
   }
   async prepare(task: Task) {
     const repo = this.store.repo(task.repoId);
-    const mirror = await this.mirror(repo);
     if (task.worktree) {
-      await this.assertManaged(task.worktree);
+      await this.assertTask(task);
       return task;
     }
+    const mirror = await this.mirror(repo);
     return this.exclusive(`repo:${repo.id}`, async () => {
       const path = join(this.root, repo.id, `task-${task.id}`);
       const branch = `phantom/${task.id}`;
@@ -115,6 +150,10 @@ export class Workspaces {
       throw new Fault('操作路径超出受管理工作区');
   }
   async assertTask(task: Task) {
+    if (this.store.repo(task.repoId).projectId !== task.projectId)
+      throw new Fault('Task/Repo 项目归属不匹配');
+    if (task.mergeSourceBranch && (!task.pr || task.mergeSourceBranch !== task.branch))
+      throw new Fault('原 PR 来源分支归属不匹配');
     if (!task.worktree || task.branch !== `phantom/${task.id}`)
       throw new Fault('任务工作区或任务分支缺失、不匹配');
     await this.assertManaged(task.worktree);
@@ -136,15 +175,14 @@ export class Workspaces {
   }
   async finalize(task: Task, signal?: AbortSignal) {
     return this.exclusive(`repo:${task.repoId}`, async () => {
+      task = this.store.task(task.id);
       await this.assertTask(task);
       if (!task.base) throw new Fault('任务基线缺失');
+      const pending = await this.pending(task, signal);
+      task = this.store.task(task.id);
       const before = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
-      this.store.updateTask(task.id, { head: before });
-      try {
-        await this.git(task.worktree!, ['merge-base', '--is-ancestor', task.base, before], signal);
-      } catch (e) {
-        throw new Fault(`任务 base 与 HEAD 祖先关系不可接受：${String(e)}`);
-      }
+      if (!pending && !(await this.ancestor(task.worktree!, task.base!, before, signal)))
+        throw new Fault('任务 base 与 HEAD 祖先关系不可接受');
       const { stdout } = await command(
         'git',
         ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'],
@@ -159,9 +197,12 @@ export class Workspaces {
       for (let i = 0; i < records.length; i++) {
         const record = records[i];
         const fields = record.split(' ');
-        if (fields[0] === 'u')
-          throw new Fault(`任务工作区存在未合并冲突：${fields.slice(10).join(' ')}`);
-        if (fields[0] === '?') paths.push(record.slice(2));
+        if (fields[0] === 'u') {
+          if (!pending) throw new Fault(`任务工作区存在未合并冲突：${fields.slice(10).join(' ')}`);
+          if (fields[2] !== 'N...' || fields.slice(3, 7).includes('160000'))
+            throw new Fault('任务工作区存在子模块异常或变更');
+          paths.push(fields.slice(10).join(' '));
+        } else if (fields[0] === '?') paths.push(record.slice(2));
         else if (fields[0] === '1' || fields[0] === '2') {
           if (fields[2] !== 'N...' || fields.slice(3, 6).includes('160000'))
             throw new Fault('任务工作区存在子模块异常或变更');
@@ -204,9 +245,33 @@ export class Workspaces {
           }
         }
       }
-      if (paths.length) {
+      if (pending) {
+        await this.checkConflictEdits(task, pending);
+        for (const path of paths) {
+          try {
+            if (!(await lstat(join(task.worktree!, path))).isFile())
+              throw new Fault(`冲突解决文件不是普通文件：${path}`);
+            const text = await readFile(join(task.worktree!, path), 'utf8');
+            if (/^(?:<{7}|={7}|>{7}|\|{7})(?:\s|$)/m.test(text))
+              throw new Fault(`任务工作区存在未解决冲突标记：${path}`);
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+          }
+        }
+        await this.assertPackages(task);
+        // Staging is the host's job and the Dev is told not to touch the index, so UU is expected
+        // here; `checkConflictEdits` above already refuses a Dev that rewrote the index anyway.
+        this.store.updateTask(task.id, { pendingMerge: { ...pending, phase: 'committing' } });
+      }
+      if (paths.length || pending) {
+        await this.git(task.worktree!, ['diff', '--check'], signal);
         await this.git(task.worktree!, ['add', '--all', '--', '.'], signal);
-        if (await this.git(task.worktree!, ['diff', '--cached', '--name-only'], signal))
+        await this.git(task.worktree!, ['diff', '--cached', '--check'], signal);
+        if (await this.unmerged(task, signal)) throw new Fault('宿主暂存后仍存在未合并冲突');
+        if (
+          pending ||
+          (await this.git(task.worktree!, ['diff', '--cached', '--name-only'], signal))
+        )
           await this.git(
             task.worktree!,
             ['commit', '-m', `Implement task ${task.id}: ${task.title.replace(/[\r\n]/g, ' ')}`],
@@ -214,72 +279,524 @@ export class Workspaces {
           );
       }
       const head = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
+      if (pending)
+        await this.completeMerge(task, { ...pending, phase: 'committing' }, head, signal);
+      if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
+        throw new Fault('宿主提交后工作区不干净');
+      this.store.updateTask(task.id, { head });
       const diff = await this.git(
         task.worktree!,
-        ['diff', `${task.base}...${head}`, '--stat'],
+        ['diff', `${this.store.task(task.id).base}...${head}`, '--stat'],
         signal,
       );
       return { head, changed: !!diff };
     });
   }
-  async prepareBase(task: Task, signal?: AbortSignal) {
-    const repo = this.store.repo(task.repoId);
-    const mirror = await this.mirror(repo);
-    const base = await this.git(mirror, ['rev-parse', `refs/remotes/origin/${repo.defaultBranch}`]);
-    if (task.pr && task.branch) {
-      await this.git(
-        task.worktree!,
-        ['fetch', 'origin', `+refs/heads/${task.branch}:refs/remotes/origin/${task.branch}`],
-        signal,
-      );
-      const unmerged = await this.git(task.worktree!, ['diff', '--name-only', '--diff-filter=U']);
-      if (!unmerged) {
-        const result = await command(
-          'git',
-          ['merge', '--no-edit', `refs/remotes/origin/${task.branch}`],
-          task.worktree,
-          undefined,
-          120000,
-          false,
-          signal,
-        );
-        if (result.code !== 0)
-          this.store.event('merge-conflict', '远端任务分支包含新修改，交 Dev 保留双方意图解决', {
-            projectId: task.projectId,
-            taskId: task.id,
-          });
+  private async conflictSnapshot(task: Task, paths: string[]) {
+    const hash = createHash('sha256');
+    const files = (await this.git(task.worktree!, ['ls-files', '-co', '--exclude-standard', '-z']))
+      .split('\0')
+      .filter(Boolean);
+    for (const file of [...new Set(files)].sort()) {
+      if (paths.includes(file)) continue;
+      hash.update(file + '\0');
+      try {
+        const path = join(task.worktree!, file);
+        const stat = await lstat(path);
+        hash.update(String(stat.mode));
+        if (stat.isSymbolicLink()) hash.update(await readlink(path));
+        else if (stat.isFile()) hash.update(await readFile(path));
+        else throw new Fault(`冲突工作区含不支持的路径：${file}`);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        hash.update('deleted');
       }
     }
-    const ancestor = await command(
+    return {
+      outsideDigest: hash.digest('hex'),
+      indexDigest: createHash('sha256')
+        .update(await this.git(task.worktree!, ['ls-files', '--stage', '-z']))
+        .digest('hex'),
+    };
+  }
+  async claimConflict(task: Task, mergeId: string, runId: string) {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      task = this.store.task(task.id);
+      await this.assertTask(task);
+      const merge = await this.pending(task);
+      if (!merge || merge.id !== mergeId || merge.runId)
+        throw new Fault('冲突解决 Run 已认领或协调记录漂移');
+      const run = this.conflictRun(task, runId);
+      if (run.status !== 'running') throw new Fault('冲突 Dev Run 未处于运行状态');
+      this.store.updateTask(task.id, {
+        pendingMerge: {
+          ...merge,
+          ...(await this.conflictSnapshot(task, merge.conflictPaths)),
+          runId,
+          phase: 'editing',
+        },
+      });
+    });
+  }
+  private async checkConflictEdits(task: Task, merge: NonNullable<Task['pendingMerge']>) {
+    if (merge.runId) {
+      const run = this.conflictRun(task, merge.runId);
+      if (merge.phase === 'editing' && ['running', 'waiting'].includes(run.status))
+        throw new Fault('原冲突 Dev Run 仍活跃，不能收尾');
+    }
+    if (!merge.outsideDigest) return;
+    const actual = await this.conflictSnapshot(task, merge.conflictPaths);
+    if (actual.outsideDigest !== merge.outsideDigest)
+      throw new Fault('冲突 Dev 修改了冲突文件以外的内容');
+    if (merge.phase !== 'committing' && actual.indexDigest !== merge.indexDigest)
+      throw new Fault('冲突 Dev 改变了 Git 索引');
+  }
+  private conflictRun(task: Task, runId: string) {
+    const run = this.store.get('run', runId);
+    if (
+      !run ||
+      run.role !== 'dev' ||
+      run.taskId !== task.id ||
+      run.repoId !== task.repoId ||
+      run.projectId !== task.projectId
+    )
+      throw new Fault('冲突 Dev Run 缺失或任务归属不匹配');
+    return run;
+  }
+  private async ancestor(path: string, base: string, head: string, signal?: AbortSignal) {
+    const r = await command(
       'git',
-      ['merge-base', '--is-ancestor', base, 'HEAD'],
-      task.worktree,
+      ['merge-base', '--is-ancestor', base, head],
+      path,
       undefined,
       120000,
       false,
       signal,
     );
-    if (ancestor.code !== 0) {
-      const merge = await command(
+    if (r.code !== 0 && r.code !== 1)
+      throw new Fault(`Git 祖先关系检查结果未知 (${r.code})：${r.stderr}`);
+    return r.code === 0;
+  }
+  private async unmerged(task: Task, signal?: AbortSignal) {
+    return this.git(task.worktree!, ['diff', '--name-only', '--diff-filter=U', '-z'], signal);
+  }
+  private async mergeHead(task: Task) {
+    const path = await this.git(task.worktree!, ['rev-parse', '--git-path', 'MERGE_HEAD']);
+    try {
+      const value = (await readFile(resolve(task.worktree!, path), 'utf8')).trim();
+      if (!/^[a-f0-9]{40,64}$/.test(value)) throw new Fault('未知 MERGE_HEAD，不能接管多来源合并');
+      return value;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      return undefined;
+    }
+  }
+  private async completeMerge(
+    task: Task,
+    merge: NonNullable<Task['pendingMerge']>,
+    head: string,
+    signal?: AbortSignal,
+  ) {
+    const parents = await this.git(task.worktree!, ['show', '-s', '--format=%P', head], signal);
+    if (parents !== `${merge.oldHead} ${merge.sourceHead}`)
+      throw new Fault('合并提交父提交与宿主记录不匹配');
+    if ((await this.mergeHead(task)) || (await this.unmerged(task, signal)))
+      throw new Fault('合并提交后仍有未完成合并');
+    if (!(await this.ancestor(task.worktree!, merge.integratedBase, head, signal)))
+      throw new Fault('合并后已整合基线祖先关系不可接受');
+    const containsTarget = await this.ancestor(task.worktree!, merge.targetBase, head, signal);
+    if (
+      merge.sourceRef === `refs/remotes/origin/${this.store.repo(task.repoId).defaultBranch}` &&
+      !containsTarget
+    )
+      throw new Fault('合并后目标基线祖先关系不可接受');
+    if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
+      throw new Fault('合并提交后工作区不干净');
+    const integratedBase = containsTarget ? merge.targetBase : merge.integratedBase;
+    this.store.updateTask(task.id, {
+      head,
+      base: integratedBase,
+      integratedBase,
+      pendingMerge: undefined,
+      ...(merge.phase === 'committing' ? { devPhase: 'finalize' as const } : {}),
+      mergeHistory: [...(this.store.task(task.id).mergeHistory ?? []), { ...merge, head }],
+    });
+  }
+  private async pending(task: Task, signal?: AbortSignal): Promise<Task['pendingMerge']> {
+    const head = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
+    const sourceHead = await this.mergeHead(task);
+    const conflicts = (await this.unmerged(task, signal)).split('\0').filter(Boolean);
+    let merge = task.pendingMerge;
+    const repo = this.store.repo(task.repoId);
+    const allowed = [
+      `refs/remotes/origin/${repo.defaultBranch}`,
+      ...(task.pr && task.mergeSourceBranch === task.branch
+        ? [`refs/remotes/origin/${task.branch}`]
+        : []),
+    ];
+    if (merge && !allowed.includes(merge.sourceRef))
+      throw new Fault('待完成合并来源与宿主记录不匹配');
+    if (merge && !sourceHead && head !== merge.oldHead) {
+      if (!['merging', 'committing'].includes(merge.phase)) throw new Fault('待完成合并 HEAD 漂移');
+      await this.completeMerge(task, merge, head, signal);
+      return undefined;
+    }
+    if (!sourceHead) {
+      if (conflicts.length)
+        throw new Fault(`任务工作区存在未合并冲突且缺少 MERGE_HEAD：${conflicts.join(', ')}`);
+      if (merge) throw new Fault('宿主合并记录与 MERGE_HEAD 不匹配，保留现场');
+      return undefined;
+    }
+    const adopting = !merge;
+    if (!merge) {
+      if (task.head && task.head !== head) throw new Fault('遗留待完成合并 HEAD 漂移');
+      if ((await this.git(task.worktree!, ['rev-parse', 'ORIG_HEAD'], signal)) !== head)
+        throw new Fault('遗留合并 ORIG_HEAD 不匹配');
+      let sourceRef: string | undefined;
+      let fork: string | undefined;
+      let adoptedTargetBase: string | undefined;
+      const observed: TrackingRef[] = [];
+      const advanced: TrackingRef[] = [];
+      for (const ref of allowed) {
+        const r = await command(
+          'git',
+          ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+          task.worktree!,
+          undefined,
+          120000,
+          false,
+          signal,
+        );
+        if (r.code !== 0 && r.code !== 1) throw new Fault(`Git 来源检查结果未知：${r.stderr}`);
+        if (r.code === 1) continue;
+        const tip = r.stdout.trim();
+        observed.push({ ref, tip });
+        if (tip === sourceHead) {
+          sourceRef = ref;
+          break;
+        }
+        if (await this.ancestor(task.worktree!, sourceHead, tip, signal))
+          advanced.push({ ref, tip });
+      }
+      const insufficient = (reason: string) =>
+        new Fault(
+          `遗留 MERGE_HEAD 来源证据不足：${sourceHead}；${reason}；冲突文件：${conflicts.join(', ')}`,
+        );
+      if (!sourceRef) {
+        if (!advanced.length)
+          throw insufficient(
+            `允许来源均不包含该提交（${describeRefs(observed) || '无可用来源'}），可能已被改写或回退`,
+          );
+        const verified = await this.verifyAdvancedLegacySource(
+          task,
+          head,
+          sourceHead,
+          advanced,
+          signal,
+        );
+        if ('reason' in verified) throw insufficient(verified.reason);
+        sourceRef = verified.sourceRef;
+        fork = verified.fork;
+        // ADR 0014: the accepted baseline only authorizes the source; the adopted merge records the
+        // commit this run really integrates, so the stale recorded tip is never carried forward.
+        adoptedTargetBase = sourceHead;
+      }
+      const integratedBase =
+        task.integratedBase ??
+        fork ??
+        (await this.git(task.worktree!, ['merge-base', head, sourceHead], signal));
+      if (!/^[a-f0-9]{40,64}$/.test(integratedBase)) throw new Fault('遗留合并共同祖先未知');
+      const targetBase = adoptedTargetBase ?? task.targetBase ?? task.base ?? integratedBase;
+      merge = {
+        id: randomUUID(),
+        origin: 'legacy',
+        oldHead: head,
+        sourceHead,
+        sourceRef,
+        integratedBase,
+        targetBase,
+        phase: 'conflicted',
+        conflictPaths: conflicts,
+      };
+    }
+    if (head !== merge.oldHead || sourceHead !== merge.sourceHead)
+      throw new Fault('待完成合并 HEAD/MERGE_HEAD 与宿主记录不匹配');
+    if (!(await this.ancestor(task.worktree!, merge.integratedBase, head, signal)))
+      throw new Fault('待完成合并已整合基线祖先关系不可接受');
+    if (
+      merge.sourceRef === `refs/remotes/origin/${repo.defaultBranch}` &&
+      !(await this.ancestor(task.worktree!, merge.targetBase, sourceHead, signal))
+    )
+      throw new Fault('待完成合并来源不包含目标基线');
+    if (adopting) {
+      this.store.updateTask(task.id, {
+        pendingMerge: merge,
+        integratedBase: merge.integratedBase,
+        targetBase: merge.targetBase,
+        base: merge.integratedBase,
+      });
+    }
+    if (merge.phase === 'merging') {
+      merge = { ...merge, phase: 'conflicted', conflictPaths: conflicts };
+      this.store.updateTask(task.id, { pendingMerge: merge });
+    }
+    return merge;
+  }
+  /**
+   * Verify a legacy `MERGE_HEAD` whose tracked source branch has since advanced.
+   *
+   * The exact-tip test above only proves provenance while the source still points at the commit the
+   * merge started from. Once the default branch moves on, that test can never pass again and a
+   * still-valid unfinished merge would be rejected forever. A tip that no longer matches is not
+   * evidence by itself, so the commit is verified from three independent host records instead:
+   *
+   * - the target baseline the host recorded for this task (`targetBase`, or the legacy `base` the
+   *   pre-finalization host stored as the default-branch tip it had just merged),
+   * - a durable host event recording that this task reached merge coordination, and
+   * - repository history, which must show the commit as an ancestor of exactly one allowed source
+   *   that advanced from it, still outside the task HEAD, on the recorded integrated baseline.
+   *
+   * All three are required here, so none of the weaker signals can authorize on its own: a
+   * `MERGE_HEAD` that merely exists, merely equals `task.base`, or is merely some ancestor of the
+   * current default branch still pauses with the reason it failed.
+   *
+   * ADR 0014 (Issue #51) relaxes exactly one of those records for a legacy unfinished merge: the
+   * recorded baseline may be a strictly later commit than `MERGE_HEAD` - the default-branch tip the
+   * host had already coordinated - as long as it descends from `MERGE_HEAD`, the one source that
+   * advanced from `MERGE_HEAD` still contains it, and every other requirement below is unchanged.
+   *
+   * Returns the verified source ref and fork point, or the reason the evidence was insufficient.
+   * Refs that advanced to the same tip are the same merge, so picking either cannot change what is
+   * merged; refs that advanced to different tips are ambiguous and refused.
+   */
+  private async verifyAdvancedLegacySource(
+    task: Task,
+    head: string,
+    sourceHead: string,
+    advanced: TrackingRef[],
+    signal?: AbortSignal,
+  ): Promise<{ sourceRef: string; fork: string } | { reason: string }> {
+    // `targetBase` is the baseline a coordination planned; the legacy host stored the tip it had
+    // just merged in `base` instead, so both are read but only one may be recorded for a merge that
+    // was never given a pendingMerge record.
+    const recordedTargets = [
+      ...new Set([task.targetBase, task.base].filter((x) => !!x)),
+    ] as string[];
+    if (!recordedTargets.length) return { reason: '没有已记录的目标基线' };
+    if (recordedTargets.length > 1)
+      return { reason: `宿主记录的目标基线互相冲突（${recordedTargets.join(', ')}）` };
+    const recordedTarget = recordedTargets[0];
+    const tips = [...new Set(advanced.map((x) => x.tip))];
+    if (tips.length !== 1)
+      return { reason: `多个允许来源都从该提交推进（${describeRefs(advanced)}），来源歧义` };
+    if (await this.ancestor(task.worktree!, sourceHead, 'HEAD', signal))
+      return { reason: '该提交已包含在任务 HEAD 中，不是待完成合并' };
+    const fork = await this.git(task.worktree!, ['merge-base', 'HEAD', sourceHead], signal);
+    if (!/^[a-f0-9]{40,64}$/.test(fork) || fork === sourceHead)
+      return { reason: '无法核实该提交与任务 HEAD 的共同祖先' };
+    if (task.integratedBase && task.integratedBase !== fork)
+      return { reason: `共同祖先 ${fork} 与已整合基线 ${task.integratedBase} 不一致` };
+    const coordination = this.store
+      .taskEvents(task.id)
+      .filter((event) => event.type === 'merge-conflict');
+    if (!coordination.length) return { reason: '宿主没有该任务的合并协调记录，来源无法核实' };
+    if (!coordination.some((event) => conflictEventAgrees(event.message, head, sourceHead)))
+      return {
+        reason: `宿主已有的合并协调记录都不指向该待完成合并（${describeEvents(coordination)}）`,
+      };
+    if (recordedTarget !== sourceHead) {
+      if (!(await this.ancestor(task.worktree!, sourceHead, recordedTarget, signal))) {
+        // An unrelated lineage, or the reverse: a baseline `MERGE_HEAD` descends from is not a later
+        // default tip this merge advanced to.
+        const recordedIsAncestor = await this.ancestor(
+          task.worktree!,
+          recordedTarget,
+          sourceHead,
+          signal,
+        );
+        return {
+          reason:
+            `与宿主记录的目标基线 ${recordedTarget} 不一致，` +
+            (recordedIsAncestor ? `它是 ${sourceHead} 的祖先` : `它与 ${sourceHead} 没有祖先关系`) +
+            '，不是原计划合入的提交',
+        };
+      }
+      if (!(await this.ancestor(task.worktree!, recordedTarget, tips[0], signal)))
+        return {
+          reason: `允许来源 ${describeRefs(advanced)} 已不再包含宿主记录的目标基线 ${recordedTarget}，可能已被改写或回退`,
+        };
+    }
+    return { sourceRef: advanced[0].ref, fork };
+  }
+  /**
+   * Whether adopting the remote task branch's commits is the right next step for this resume.
+   * True only when the remote PR head really holds commits the local head does not have yet, so a
+   * PR that merely lags an unpublished local merge (or one already contained locally) is not
+   * mistaken for new remote work. An unfinished merge answers false: the local state cannot be
+   * compared safely until that merge is reconciled, and reconciliation must come first.
+   */
+  async needsRemoteTaskAdoption(task: Task, remoteHead: string) {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      task = this.store.task(task.id);
+      await this.assertTask(task);
+      if (task.pendingMerge || (await this.mergeHead(task)) || (await this.unmerged(task)))
+        return false;
+      const head = await this.git(task.worktree!, ['rev-parse', 'HEAD']);
+      if (task.head && task.head !== head)
+        throw new Fault('恢复时任务 HEAD 与固定 revision 不匹配');
+      if (!/^[a-f0-9]{40,64}$/.test(remoteHead)) throw new Fault('远端 PR HEAD 无法核实');
+      const object = await command(
         'git',
-        ['merge', '--no-edit', base],
-        task.worktree,
+        ['rev-parse', '--verify', '--quiet', `${remoteHead}^{commit}`],
+        task.worktree!,
         undefined,
         120000,
         false,
-        signal,
       );
-      if (merge.code !== 0)
-        this.store.event('merge-conflict', '需要 Dev 按双方意图解决合并冲突', {
-          taskId: task.id,
-          projectId: task.projectId,
-        });
+      if (object.code === 1) {
+        const ref = `refs/remotes/origin/${task.branch}`;
+        await this.git(task.worktree!, ['fetch', 'origin', `+refs/heads/${task.branch}:${ref}`]);
+        if ((await this.git(task.worktree!, ['rev-parse', ref])) !== remoteHead)
+          throw new Fault('恢复时远端 PR HEAD 已漂移，需重新核对');
+      } else if (object.code !== 0)
+        throw new Fault(`Git 远端提交检查结果未知 (${object.code})：${object.stderr}`);
+      if ((await this.git(task.worktree!, ['rev-parse', 'HEAD'])) !== head)
+        throw new Fault('恢复核对期间任务 HEAD 已漂移');
+      return !(await this.ancestor(task.worktree!, remoteHead, head));
+    });
+  }
+  async prepareBase(task: Task, signal?: AbortSignal, advance = true): Promise<BaselineResult> {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      try {
+        task = this.store.task(task.id);
+        await this.assertTask(task);
+        const pending = await this.pending(task, signal);
+        if (pending) return { status: 'conflicted', merge: pending };
+        task = this.store.task(task.id);
+        if (!advance && (!task.targetBase || task.targetBase === task.integratedBase))
+          return { status: 'clean' };
+        const repo = this.store.repo(task.repoId);
+        // Inspect unfinished merges before fetching or starting another merge.
+        await this.git(
+          task.worktree!,
+          [
+            'fetch',
+            'origin',
+            `+refs/heads/${repo.defaultBranch}:refs/remotes/origin/${repo.defaultBranch}`,
+          ],
+          signal,
+        );
+        const base = await this.git(
+          task.worktree!,
+          ['rev-parse', `refs/remotes/origin/${repo.defaultBranch}`],
+          signal,
+        );
+        const integratedBase =
+          task.integratedBase ??
+          task.base ??
+          (await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal));
+        if (!(await this.ancestor(task.worktree!, integratedBase, 'HEAD', signal)))
+          throw new Fault('任务 base 与 HEAD 祖先关系不可接受');
+        this.store.updateTask(task.id, { targetBase: base, integratedBase, base: integratedBase });
+        const refs: string[] = [];
+        if (task.pr && task.mergeSourceBranch) {
+          await this.git(
+            task.worktree!,
+            [
+              'fetch',
+              'origin',
+              `+refs/heads/${task.mergeSourceBranch}:refs/remotes/origin/${task.mergeSourceBranch}`,
+            ],
+            signal,
+          );
+          refs.push(`refs/remotes/origin/${task.mergeSourceBranch}`);
+        }
+        refs.push(`refs/remotes/origin/${repo.defaultBranch}`);
+        for (const sourceRef of refs) {
+          const sourceHead = await this.git(task.worktree!, ['rev-parse', sourceRef], signal);
+          const oldHead = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
+          if (await this.ancestor(task.worktree!, sourceHead, oldHead, signal)) continue;
+          if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
+            throw new Fault('基线协调前存在未提交修改，已保留');
+          const merge: NonNullable<Task['pendingMerge']> = {
+            id: randomUUID(),
+            origin: 'host',
+            oldHead,
+            sourceHead,
+            sourceRef,
+            targetBase: base,
+            integratedBase,
+            phase: 'merging',
+            conflictPaths: [],
+          };
+          this.store.updateTask(task.id, { pendingMerge: merge });
+          const result = await command(
+            'git',
+            ['merge', '--no-edit', '--no-ff', sourceHead],
+            task.worktree!,
+            undefined,
+            120000,
+            false,
+            signal,
+          );
+          if (result.code !== 0) {
+            if (result.code === 1 && (await this.mergeHead(task))) {
+              const pending = await this.pending(this.store.task(task.id), signal);
+              if (pending) return { status: 'conflicted', merge: pending };
+            }
+            throw new Fault(`基线协调失败 (${result.code})：${result.stderr || result.stdout}`);
+          }
+          await this.completeMerge(
+            task,
+            merge,
+            await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal),
+            signal,
+          );
+        }
+        this.store.updateTask(task.id, { base, integratedBase: base, targetBase: base });
+        return { status: 'clean' };
+      } catch (e) {
+        // Keep the fault's own message and status: a pause or a timeout must not be reported as a
+        // generic coordination failure.
+        return {
+          status: 'blocked',
+          reason: e instanceof Error ? e.message : String(e),
+          code: e instanceof Fault ? e.status : 400,
+        };
+      }
+    });
+  }
+  private async assertPackages(task: Task) {
+    for (const name of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
+      try {
+        JSON.parse(await readFile(join(task.worktree!, name), 'utf8'));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT')
+          throw new Fault(`依赖文件不可解析 ${name}：${String(e)}`);
+      }
     }
-    return base;
+  }
+  async install(task: Task, signal?: AbortSignal) {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      await this.assertTask(task);
+      if ((await this.mergeHead(task)) || (await this.unmerged(task, signal)))
+        throw new Fault('依赖安装前仍有未完成合并');
+      await this.assertPackages(task);
+      const text = this.store.repo(task.repoId).commands.install;
+      if (text) {
+        const r = await shellCommand(text, task.worktree!, signal);
+        if (r.code !== 0) throw new Fault(`依赖安装失败：${r.stderr || r.stdout}`);
+      }
+    });
   }
   async recoverBase(task: Task) {
     try {
       await this.assertTask(task);
+      if ((await this.mergeHead(task)) || (await this.unmerged(task))) {
+        const result = await this.prepareBase(task, undefined, false);
+        if (result.status === 'blocked') throw new Fault(result.reason);
+        if (result.status === 'conflicted') return result.merge.integratedBase;
+      }
       const repo = this.store.repo(task.repoId);
       await this.mirror(repo);
       const bases = (
@@ -330,7 +847,7 @@ export class Workspaces {
       // External test runners only expose text for nested process/OS failures.
       if (
         r.code !== 0 &&
-        /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问/i.test(
+        /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问|UV_HANDLE_CLOSING|uv_async closing/i.test(
           r.stderr + '\n' + r.stdout,
         )
       )
@@ -344,14 +861,14 @@ export class Workspaces {
       throw new Fault('验证过程改变了提交或留下未提交文件，需 Dev 核对');
     return evidence;
   }
-  async push(task: Task) {
+  async push(task: Task, signal?: AbortSignal) {
     const repo = this.store.repo(task.repoId);
     if (!repo.authorized) throw new Fault('仓库未授权推送');
     await this.assertManaged(task.worktree!);
-    if ((await this.git(task.worktree!, ['branch', '--show-current'])) !== task.branch)
+    if ((await this.git(task.worktree!, ['branch', '--show-current'], signal)) !== task.branch)
       throw new Fault('分支不匹配');
-    if (await this.git(task.worktree!, ['status', '--porcelain']))
+    if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
       throw new Fault('有未提交修改，无法发布');
-    await this.git(task.worktree!, ['push', 'origin', `HEAD:refs/heads/${task.branch}`]);
+    await this.git(task.worktree!, ['push', 'origin', `HEAD:refs/heads/${task.branch}`], signal);
   }
 }

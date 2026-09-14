@@ -1438,6 +1438,61 @@ time {
 .profile-table {
   border-top: 1px solid var(--line);
 }
+.assignment-form {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.assignment {
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+  margin: 0;
+  min-width: 0;
+}
+.assignment legend {
+  font-size: 13px;
+  padding: 0 8px 0 0;
+}
+.assignment-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 0.8fr);
+  gap: 12px;
+}
+.assignment-fields label,
+.assignment-fields input,
+.assignment-fields select {
+  min-width: 0;
+  width: 100%;
+}
+.assignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding-top: 10px;
+}
+.assignment-actions .assignment-custom {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.assignment-custom input {
+  width: auto;
+}
+.assignment p {
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .assignment-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .profile-row {
   display: grid;
   grid-template-columns: 100px minmax(0, 1fr) 88px;
@@ -1830,5 +1885,101 @@ time {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+.provider-settings { border-block: 1px solid var(--line); padding-block: 20px; margin-bottom: 20px; display: grid; gap: 14px; min-width: 0; }
+.provider-detail { display: grid; gap: 14px; min-width: 0; }
+.provider-toolbar, .provider-actions { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.provider-toolbar label { flex: 1; min-width: 0; }
+.provider-secret { display: grid; gap: 10px; min-width: 0; }
+.provider-secret output { overflow-wrap: anywhere; white-space: pre-wrap; font-family: monospace; }
+.provider-detail input, .provider-toolbar select, .provider-detail select { width: 100%; min-width: 0; }
+
+.priority-badge {
+  display: inline-block;
+  font-size: 12px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 2px 6px;
+  width: fit-content;
+  overflow-wrap: anywhere;
+}
+.priority-language {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.claim-order,
+.priority-editor,
+.claim-conditions {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+.claim-order p,
+.priority-editor p,
+.claim-conditions p {
+  margin: 8px 0;
+}
+.priority-editor form {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.priority-editor label {
+  display: grid;
+  gap: 6px;
+}
+.priority-editor textarea,
+.priority-editor select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.priority-editor summary {
+  cursor: pointer;
+}
+.priority-editor li,
+.claim-order li {
+  margin: 8px 0;
+}
+.task-row-main .priority-badge {
+  white-space: normal;
+}
+
+.priority-language {
+  padding: 16px 25px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.priority-language select {
+  padding: 6px 10px;
+}
+.claim-order {
+  margin: 0 25px 16px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.claim-order h3 {
+  margin: 0;
+  color: var(--text);
+}
+.claim-order button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.task-row-main .priority-badge {
+  color: var(--text);
+  font-size: 11px;
+}
+@media (max-width: 600px) {
+  .priority-language {
+    padding: 14px 18px;
+  }
+  .claim-order {
+    margin: 0 18px 14px;
   }
 }

@@ -1,3 +1,4 @@
+import { checkPriority } from './browser-priority.ts';
 import { chromium } from 'playwright';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,9 @@ import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 import { Codex } from '../src/server/codex.ts';
+import { checkProviders } from './provider-browser-check.ts';
+import { checkProfiles } from './profile-browser-check.ts';
+import { profileProtocol } from '../tests/profile-protocol.ts';
 
 const artifacts = resolve('test-results');
 await mkdir(artifacts, { recursive: true });
@@ -23,7 +27,7 @@ class OfflinePM extends Codex {
   }
 }
 const engine = new Engine(store, new GitHub(store), ws, imageState, () => new OfflinePM());
-const app = createApp(store, engine, new Previews(store, ws), 4318);
+const app = createApp(store, engine, new Previews(store, ws), 4318, profileProtocol);
 await app.listen({ host: '127.0.0.1', port: 4318 });
 const browser = await chromium.launch({
   headless: true,
@@ -156,7 +160,10 @@ try {
       priority: 0,
     });
   const done = makeTask('完成首次项目创建体验');
-  store.updateTask(done.id, { stage: 'done' });
+  store.updateTask(done.id, {
+    stage: 'done',
+    issueBody: `<!-- phantom-task:${done.id} -->\n## What to build\n持久化的 Issue 正文。\n\n## Acceptance criteria\n- [x] 可以创建项目\n- [x] 空状态引导清晰\n\n## Blocked by\nNone (can start immediately)\n`,
+  });
   const task = makeTask('简化仓库接入与授权提示');
   store.updateTask(task.id, {
     stage: 'developing',
@@ -289,6 +296,34 @@ try {
   assert.equal(await taskDialog.locator('details[open] h1, details[open] strong').count(), 0);
   await page.screenshot({ path: resolve(artifacts, '03-task-detail.png'), fullPage: true });
   await page.getByRole('button', { name: '关闭窗口' }).click();
+  for (const refresh of [false, true]) {
+    if (refresh) {
+      await page.reload();
+      await page.getByRole('tab', { name: '任务', exact: false }).click();
+    }
+    await page.getByRole('button', { name: /完成首次项目创建体验/ }).click();
+    const issue = page.getByRole('region', { name: 'Issue 正文', exact: true });
+    await issue.waitFor({ timeout: 5000 });
+    assert.equal(await issue.getByText('持久化的 Issue 正文。').count(), 1);
+    assert.equal(await issue.getByRole('checkbox').count(), 2);
+    for (const criterion of ['可以创建项目', '空状态引导清晰']) {
+      assert.equal(
+        await issue.locator('li').filter({ hasText: criterion }).getByRole('checkbox').isChecked(),
+        true,
+      );
+      assert.equal(
+        await issue.locator('li').filter({ hasText: criterion }).getByRole('checkbox').isDisabled(),
+        true,
+      );
+    }
+    assert.equal((await issue.innerText()).includes('phantom-task:'), false);
+    if (refresh)
+      await page.screenshot({
+        path: resolve(artifacts, '07-completed-issue-reloaded.png'),
+        fullPage: true,
+      });
+    await page.getByRole('button', { name: '关闭窗口' }).click();
+  }
   await page.getByLabel('搜索任务').fill('不会匹配');
   await page.getByText('还没有匹配的任务').waitFor();
   await page.getByLabel('搜索任务').fill('');
@@ -611,6 +646,7 @@ try {
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.getByLabel('全局 Dev 上限').fill('3');
   await page.getByRole('button', { name: '保存设置' }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(store.settings().globalDevLimit, 3);
   await page.reload();
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
@@ -650,6 +686,11 @@ try {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
+  await page.getByRole('button', { name: '关闭窗口' }).click();
+  await checkPriority(page, store, task, artifacts);
+  assert.deepEqual(errors, []);
+  await checkProviders(page, artifacts);
+  await checkProfiles(page, store, artifacts);
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, image preview/removal, image-only and text/image send, upload errors, duplicate prevention, retry, four-image 390px layout, dark/light, 390px responsive; screenshots in test-results/.',

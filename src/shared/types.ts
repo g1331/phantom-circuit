@@ -1,3 +1,4 @@
+import type { PriorityChange } from './priority.ts';
 export type Stage =
   'clarifying' | 'ready' | 'developing' | 'reviewing' | 'merging' | 'done' | 'cancelled';
 export type RunStatus =
@@ -5,15 +6,38 @@ export type RunStatus =
 export type Role = 'pm' | 'dev' | 'review';
 export type ProfileName = 'backend' | 'frontend' | 'fullstack' | 'complex' | 'pm' | 'review';
 export interface Profile {
+  providerId: string;
   model: string;
   effort: string;
+  customModel?: boolean;
 }
+export interface Provider {
+  id: string;
+  kind: 'codex' | 'custom';
+  name: string;
+  baseUrl?: string;
+  hasKey: boolean;
+}
+export const officialProvider: Provider = {
+  id: 'codex',
+  kind: 'codex',
+  name: 'Codex 官方登录',
+  hasKey: false,
+};
+export interface ProviderModel {
+  id: string;
+  reasoningEfforts?: string[];
+}
+export type ModelDiscovery =
+  { ok: true; models: ProviderModel[] } | { ok: false; code: string; error: string };
 export interface Settings {
   globalDevLimit: number;
   reviewLimit: number;
   profiles: Record<ProfileName, Profile>;
 }
 export interface Project {
+  profiles: Settings['profiles'];
+  profileVersion?: number;
   id: string;
   name: string;
   description: string;
@@ -22,6 +46,7 @@ export interface Project {
   githubProjectId?: string;
   githubProjectUrl?: string;
   pmThreadId?: string;
+  pmThreadProviderId?: string;
   createdAt: string;
 }
 export interface Commands {
@@ -84,12 +109,17 @@ export interface Task {
   profile: ProfileName;
   routingReason: string;
   priority: number;
+  priorityVersion?: number;
+  legacyPriorityOrder?: number;
+  priorityReason?: string;
+  priorityHistory?: PriorityChange[];
   stage: Stage;
   control: 'active' | 'paused';
   blocked?: string;
   branch?: string;
   worktree?: string;
   devThreadId?: string;
+  devThreadProviderId?: string;
   devPhase?: 'implement' | 'finalize';
   issue?: number;
   issueUrl?: string;
@@ -97,10 +127,32 @@ export interface Task {
   issueDatabaseId?: number;
   projectItemId?: string;
   issueBody?: string;
+  completionDeliveryPending?: boolean;
   pr?: number;
   prUrl?: string;
   head?: string;
   base?: string;
+  integratedBase?: string;
+  targetBase?: string;
+  mergeSourceBranch?: string;
+  pendingMerge?: {
+    id: string;
+    origin: 'legacy' | 'host';
+    runId?: string;
+    previousRunIds?: string[];
+    outsideDigest?: string;
+    indexDigest?: string;
+    oldHead: string;
+    sourceHead: string;
+    sourceRef: string;
+    targetBase: string;
+    integratedBase: string;
+    phase: 'merging' | 'conflicted' | 'editing' | 'edited' | 'committing';
+    conflictPaths: string[];
+  };
+  mergeHistory?: (NonNullable<Task['pendingMerge']> & { head: string })[];
+  revisionHistory?: { head?: string; base?: string; tests: Evidence[]; reviews: ReviewResult[] }[];
+  mergeApproval?: { head: string; base: string };
   reviews: ReviewResult[];
   tests: Evidence[];
   retries: number;
@@ -134,6 +186,9 @@ export interface Run {
   status: RunStatus;
   profile: ProfileName;
   profileConfig?: Profile;
+  provider?: Pick<Provider, 'id' | 'name' | 'kind' | 'baseUrl'>;
+  profileVersion?: number;
+  resumeThreadId?: string;
   threadId?: string;
   turnId?: string;
   error?: string;
@@ -149,14 +204,59 @@ export interface Event {
   runId?: string;
   message: string;
 }
+/** One operation attempt, as it stood at a moment that mattered. */
+export interface OperationAttempt {
+  status: Operation['status'];
+  error?: string;
+  /**
+   * The attempt counter at that moment. Status and error can leave and return to the same value -
+   * an authorized retry that fails again with the same error restores `{uncertain, error}`
+   * exactly - so they cannot identify an attempt on their own. This counter increments for every
+   * external write attempt, which is what makes a returned-to state distinguishable.
+   */
+  attempt: number;
+}
+export interface Reconciliation {
+  /** Stable id of this authorization, so a repeated coordination can be seen to re-affirm it. */
+  id: string;
+  /**
+   * Only an absent remote object authorizes a retry; a present object is adopted instead. This
+   * records what the listings read at `at` showed, not an absolute proof that no related PR
+   * exists - a PR whose marker was removed and whose head branch was also renamed is visible to
+   * neither listing. See `evidence` for the scope that was actually read.
+   */
+  verdict: 'absent';
+  actor: 'user' | 'pm';
+  /** The operation attempt the remote verification was performed against. */
+  observedOperation: OperationAttempt;
+  /** The task revision (repository, branch, head, base) the remote verification was about. */
+  taskRevision: string;
+  evidence: string;
+  at: string;
+}
 export interface Operation {
   id: string;
   kind: string;
-  status: 'pending' | 'done' | 'uncertain';
+  status: 'pending' | 'done' | 'uncertain' | 'failed';
   result?: unknown;
   error?: string;
+  /**
+   * Monotonic count of external write attempts made for this operation. It changes even when a
+   * repeated failure restores an identical status and error, so it is the identity an
+   * authorization binds to.
+   */
+  attempt?: number;
+  /**
+   * Durable, single-use authorization recorded only after an explicit host coordination step
+   * re-read the remote state and proved this operation created no remote object. Automatic
+   * lookups never write it, so an unresolved outcome is still never blindly repeated. It is
+   * bound to the operation attempt and task revision it was verified against, and is consumed
+   * before the controlled retry, so it can never be replayed for a revision nobody checked.
+   */
+  reconciliation?: Reconciliation;
 }
 export interface Snapshot {
+  providers: Provider[];
   projects: Project[];
   repos: Repo[];
   tasks: Task[];
@@ -185,3 +285,29 @@ export const stageLabels: Record<Stage, string> = {
   done: '工程完成',
   cancelled: '已取消',
 };
+export type SchedulingReasonCode =
+  | 'paused'
+  | 'blocked'
+  | 'feedback'
+  | 'stage'
+  | 'unauthorized'
+  | 'repositoryBlocked'
+  | 'workSwitch'
+  | 'activeRun'
+  | 'dependency'
+  | 'globalCapacity'
+  | 'projectCapacity'
+  | 'repositoryCapacity';
+export interface SchedulingExplanation {
+  projectId: string;
+  at: string;
+  projectOrder: string[];
+  candidates: string[];
+  tasks: {
+    taskId: string;
+    title: string;
+    priority: number;
+    stage: Stage;
+    reasons: { code: SchedulingReasonCode; detail?: string }[];
+  }[];
+}

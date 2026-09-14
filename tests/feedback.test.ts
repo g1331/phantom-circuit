@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { command } from '../src/server/process.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
@@ -19,6 +23,7 @@ test('external requests for new product scope wait for PM clarification instead 
     defaultBranch: 'main',
   });
   const m = store.addMessage(p.id, 'user', 'Implement login', 'implement');
+  store.addMessage(p.id, 'assistant', 'Previously agreed: no billing scope.');
   store.put('project', p.id, { ...p, pmThreadId: 'persistent-project-pm' });
   const task = store.createTask({
     projectId: p.id,
@@ -51,7 +56,8 @@ test('external requests for new product scope wait for PM clarification instead 
       assert.equal(options.threadId, 'persistent-project-pm');
       return 'pm';
     }
-    override async turn() {
+    override async turn(_thread: string, prompt: string) {
+      assert.match(prompt, /Previously agreed: no billing scope/);
       return JSON.stringify({
         action: 'clarify',
         reason: '订阅计费超出已批准的邮件登录需求，需确认是否新增。',
@@ -113,4 +119,112 @@ test('design discussion records are durable but never authorize task claims', ()
     /路径/,
   );
   s.close();
+});
+
+test('PM tool names priority levels, creates with reason and adjusts existing work during discussion', async () => {
+  const s = new Store(':memory:');
+  const root = await mkdtemp(join(tmpdir(), 'phantom-priority-pm-'));
+  const sourcePath = join(root, 'source');
+  await command('git', ['init', '-b', 'main', sourcePath]);
+  await writeFile(join(sourcePath, 'CONTEXT.md'), '# Fixture');
+  await command('git', ['add', '.'], sourcePath);
+  await command(
+    'git',
+    ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'Fixture'],
+    sourcePath,
+  );
+  await command('git', ['remote', 'add', 'origin', sourcePath], sourcePath);
+  const p = s.createProject('Priority PM', '');
+  const repo = s.createRepo({
+    projectId: p.id,
+    name: 'priority',
+    path: sourcePath,
+    github: 'test/pm-priority',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  let handler: NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
+  let taskId = '';
+  let creating = true;
+  class PriorityModel extends Codex {
+    override async start() {}
+    override async stop() {}
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      handler = options.toolHandler!;
+      assert.match(JSON.stringify(options.tools?.find((t) => t.name === 'create_task')), /urgent/);
+      assert.match(
+        JSON.stringify(options.tools?.find((t) => t.name === 'set_task_priority')),
+        /higher numbers/,
+      );
+      return 'priority-thread';
+    }
+    override async turn() {
+      if (creating) {
+        const input = {
+          repoId: repo.id,
+          title: 'Invalid named',
+          spec: 'Fix',
+          acceptance: ['Works'],
+          dependencies: [],
+          kind: 'backend',
+          complexity: 'normal',
+          priority: 'high',
+        };
+        await assert.rejects(handler('create_task', input), /priorityReason/);
+        await assert.rejects(
+          handler('create_task', { ...input, priority: 1, level: 'urgent' }),
+          /level/,
+        );
+        const legacy = (await handler('create_task', {
+          ...input,
+          title: 'Legacy compatible',
+          priority: 1,
+        })) as Task;
+        assert.equal(legacy.priority, 1);
+        assert.equal(legacy.priorityReason, undefined);
+        const result = (await handler('create_task', {
+          repoId: repo.id,
+          title: 'Unblock delivery',
+          spec: 'Fix',
+          acceptance: ['Delivery works'],
+          dependencies: [],
+          kind: 'backend',
+          complexity: 'normal',
+          priority: 'high',
+          priorityReason: 'Delivery is blocked',
+        })) as Task;
+        taskId = result.id;
+      } else {
+        await handler('set_task_priority', {
+          taskId,
+          level: 'urgent',
+          reason: 'Confirmed immediate delivery impact',
+          expectedVersion: 0,
+          requestId: 'pm-change',
+        });
+      }
+      return 'Priority recorded';
+    }
+  }
+  const engine = new Engine(
+    s,
+    new GitHub(s),
+    new Workspaces(join(root, 'host'), s),
+    join(root, 'host'),
+    () => new PriorityModel(),
+  );
+  try {
+    await engine.chat(s.addMessage(p.id, 'user', 'Build fix', 'implement'));
+    assert.equal(s.task(taskId).priority, 5);
+    assert.equal(s.task(taskId).priorityReason, 'Delivery is blocked');
+    creating = false;
+    await engine.chat(s.addMessage(p.id, 'user', 'Review queue priority', 'discuss'));
+    assert.equal(s.task(taskId).priority, 10);
+    assert.equal(s.task(taskId).priorityHistory?.at(-1)?.actor, 'pm');
+    assert.ok(s.task(taskId).priorityHistory?.at(-1)?.runId);
+    assert.equal(s.list('task').length, 2);
+  } finally {
+    await engine.stop();
+    s.close();
+  }
 });
