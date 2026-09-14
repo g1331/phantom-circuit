@@ -1,3 +1,4 @@
+import type { PriorityChange } from './priority.ts';
 export type Stage =
   'clarifying' | 'ready' | 'developing' | 'reviewing' | 'merging' | 'done' | 'cancelled';
 export type RunStatus =
@@ -76,6 +77,10 @@ export interface Task {
   profile: ProfileName;
   routingReason: string;
   priority: number;
+  priorityVersion?: number;
+  legacyPriorityOrder?: number;
+  priorityReason?: string;
+  priorityHistory?: PriorityChange[];
   stage: Stage;
   control: 'active' | 'paused';
   blocked?: string;
@@ -206,3 +211,29 @@ export const stageLabels: Record<Stage, string> = {
   done: '工程完成',
   cancelled: '已取消',
 };
+export type SchedulingReasonCode =
+  | 'paused'
+  | 'blocked'
+  | 'feedback'
+  | 'stage'
+  | 'unauthorized'
+  | 'repositoryBlocked'
+  | 'workSwitch'
+  | 'activeRun'
+  | 'dependency'
+  | 'globalCapacity'
+  | 'projectCapacity'
+  | 'repositoryCapacity';
+export interface SchedulingExplanation {
+  projectId: string;
+  at: string;
+  projectOrder: string[];
+  candidates: string[];
+  tasks: {
+    taskId: string;
+    title: string;
+    priority: number;
+    stage: Stage;
+    reasons: { code: SchedulingReasonCode; detail?: string }[];
+  }[];
+}
