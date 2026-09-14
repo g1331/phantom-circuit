@@ -454,6 +454,7 @@ export class Workspaces {
         throw new Fault('遗留合并 ORIG_HEAD 不匹配');
       let sourceRef: string | undefined;
       let fork: string | undefined;
+      let adoptedTargetBase: string | undefined;
       const observed: TrackingRef[] = [];
       const advanced: TrackingRef[] = [];
       for (const ref of allowed) {
@@ -496,13 +497,16 @@ export class Workspaces {
         if ('reason' in verified) throw insufficient(verified.reason);
         sourceRef = verified.sourceRef;
         fork = verified.fork;
+        // ADR 0014: the accepted baseline only authorizes the source; the adopted merge records the
+        // commit this run really integrates, so the stale recorded tip is never carried forward.
+        adoptedTargetBase = sourceHead;
       }
       const integratedBase =
         task.integratedBase ??
         fork ??
         (await this.git(task.worktree!, ['merge-base', head, sourceHead], signal));
       if (!/^[a-f0-9]{40,64}$/.test(integratedBase)) throw new Fault('遗留合并共同祖先未知');
-      const targetBase = task.targetBase ?? task.base ?? integratedBase;
+      const targetBase = adoptedTargetBase ?? task.targetBase ?? task.base ?? integratedBase;
       merge = {
         id: randomUUID(),
         origin: 'legacy',
@@ -556,6 +560,11 @@ export class Workspaces {
    * `MERGE_HEAD` that merely exists, merely equals `task.base`, or is merely some ancestor of the
    * current default branch still pauses with the reason it failed.
    *
+   * ADR 0014 (Issue #51) relaxes exactly one of those records for a legacy unfinished merge: the
+   * recorded baseline may be a strictly later commit than `MERGE_HEAD` - the default-branch tip the
+   * host had already coordinated - as long as it descends from `MERGE_HEAD`, the one source that
+   * advanced from `MERGE_HEAD` still contains it, and every other requirement below is unchanged.
+   *
    * Returns the verified source ref and fork point, or the reason the evidence was insufficient.
    * Refs that advanced to the same tip are the same merge, so picking either cannot change what is
    * merged; refs that advanced to different tips are ambiguous and refused.
@@ -576,8 +585,7 @@ export class Workspaces {
     if (!recordedTargets.length) return { reason: '没有已记录的目标基线' };
     if (recordedTargets.length > 1)
       return { reason: `宿主记录的目标基线互相冲突（${recordedTargets.join(', ')}）` };
-    if (recordedTargets[0] !== sourceHead)
-      return { reason: `与宿主记录的目标基线 ${recordedTargets[0]} 不一致，不是原计划合入的提交` };
+    const recordedTarget = recordedTargets[0];
     const tips = [...new Set(advanced.map((x) => x.tip))];
     if (tips.length !== 1)
       return { reason: `多个允许来源都从该提交推进（${describeRefs(advanced)}），来源歧义` };
@@ -596,6 +604,28 @@ export class Workspaces {
       return {
         reason: `宿主已有的合并协调记录都不指向该待完成合并（${describeEvents(coordination)}）`,
       };
+    if (recordedTarget !== sourceHead) {
+      if (!(await this.ancestor(task.worktree!, sourceHead, recordedTarget, signal))) {
+        // An unrelated lineage, or the reverse: a baseline `MERGE_HEAD` descends from is not a later
+        // default tip this merge advanced to.
+        const recordedIsAncestor = await this.ancestor(
+          task.worktree!,
+          recordedTarget,
+          sourceHead,
+          signal,
+        );
+        return {
+          reason:
+            `与宿主记录的目标基线 ${recordedTarget} 不一致，` +
+            (recordedIsAncestor ? `它是 ${sourceHead} 的祖先` : `它与 ${sourceHead} 没有祖先关系`) +
+            '，不是原计划合入的提交',
+        };
+      }
+      if (!(await this.ancestor(task.worktree!, recordedTarget, tips[0], signal)))
+        return {
+          reason: `允许来源 ${describeRefs(advanced)} 已不再包含宿主记录的目标基线 ${recordedTarget}，可能已被改写或回退`,
+        };
+    }
     return { sourceRef: advanced[0].ref, fork };
   }
   /**
