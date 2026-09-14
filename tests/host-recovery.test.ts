@@ -216,19 +216,27 @@ test('unchanged work remains a product rework instead of an environment pause', 
   }
 });
 
-test('host preserves resolved files but pauses while the Git index is still unmerged', async () => {
+test('host stages resolved conflict files and completes the merge before validation', async () => {
   const f = await fixture();
   try {
     await writeFile(join(f.task.worktree!, 'implementation.txt'), 'local change\n');
     await f.git(['add', '.'], f.task.worktree);
     await f.git(['commit', '-m', 'Local implementation'], f.task.worktree);
+    const local = await f.ws.git(f.task.worktree!, ['rev-parse', 'HEAD']);
     await writeFile(join(f.source, 'implementation.txt'), 'upstream change\n');
     await f.git(['add', '.']);
     await f.git(['commit', '-m', 'Upstream implementation']);
     await f.git(['push', 'origin', 'main']);
+    const upstream = await f.ws.git(f.source, ['rev-parse', 'HEAD']);
     const result = await f.cycle();
-    assert.equal(result.control, 'paused');
-    assert.match(result.blocked!, /base 与 HEAD 祖先关系不可接受/);
+    assert.equal(result.stage, 'reviewing', result.blocked);
+    assert.equal(result.control, 'active');
+    assert.equal(
+      await f.ws.git(f.task.worktree!, ['show', '-s', '--format=%P', 'HEAD']),
+      `${local} ${upstream}`,
+    );
+    assert.equal(await f.ws.git(f.task.worktree!, ['status', '--porcelain']), '');
+    assert.equal(result.tests[0].head, result.head);
     assert.equal(result.retries, 0);
     assert.equal(
       await readFile(join(f.task.worktree!, 'implementation.txt'), 'utf8'),

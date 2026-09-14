@@ -23,6 +23,7 @@ test('external requests for new product scope wait for PM clarification instead 
     defaultBranch: 'main',
   });
   const m = store.addMessage(p.id, 'user', 'Implement login', 'implement');
+  store.addMessage(p.id, 'assistant', 'Previously agreed: no billing scope.');
   store.put('project', p.id, { ...p, pmThreadId: 'persistent-project-pm' });
   const task = store.createTask({
     projectId: p.id,
@@ -55,7 +56,8 @@ test('external requests for new product scope wait for PM clarification instead 
       assert.equal(options.threadId, 'persistent-project-pm');
       return 'pm';
     }
-    override async turn() {
+    override async turn(_thread: string, prompt: string) {
+      assert.match(prompt, /Previously agreed: no billing scope/);
       return JSON.stringify({
         action: 'clarify',
         reason: '订阅计费超出已批准的邮件登录需求，需确认是否新增。',

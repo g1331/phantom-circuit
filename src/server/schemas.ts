@@ -55,8 +55,10 @@ export const taskInput = creationPriorityInput
   .strict();
 export const profileSchema = z
   .object({
-    model: z.string().min(1).max(100),
-    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+    providerId: z.string().min(1).max(100),
+    model: z.string().trim().min(1).max(256),
+    effort: z.string().trim().min(1).max(100),
+    customModel: z.boolean().optional(),
   })
   .strict();
 export const settingsSchema = z

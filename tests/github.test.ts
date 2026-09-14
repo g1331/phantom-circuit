@@ -1,7 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
-import { GitHub } from '../src/server/github.ts';
+import { GitHub, isTransientGitHubError } from '../src/server/github.ts';
+
+test('transient classification excludes permissions, validation and unrelated parsing failures', () => {
+  for (const message of [
+    'gh (1): gh: HTTP 502',
+    'GitHub GraphQL query: Error: gh (1): gh: HTTP 504',
+    'gh (1): unexpected end of JSON input',
+  ])
+    assert.equal(isTransientGitHubError(new Error(message)), true);
+  for (const message of [
+    'gh (1): HTTP 403 Forbidden',
+    'gh (1): HTTP 401 Unauthorized',
+    'gh (1): HTTP 422 Validation failed',
+    'unexpected end of JSON input',
+    'GitHub Issue 正文发生变化',
+  ])
+    assert.equal(isTransientGitHubError(new Error(message)), false);
+});
 
 test('unknown external outcome is reconciled before any second write', async () => {
   const s = new Store(':memory:');

@@ -4,12 +4,13 @@ import {
   type PriorityLevel,
   type PriorityChange,
 } from '../shared/priority.ts';
-import { creationPriorityInput, priorityUpdateInput } from './schemas.ts';
+import { creationPriorityInput, priorityUpdateInput, settingsSchema } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { redact, bounded } from './redaction.ts';
 export { redact } from './redaction.ts';
+import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
   SchedulingExplanation,
   Project,
@@ -40,16 +41,17 @@ export const defaults: Settings = {
   globalDevLimit: 4,
   reviewLimit: 2,
   profiles: {
-    backend: { model: 'gpt-5.6-luna', effort: 'max' },
-    frontend: { model: 'gpt-6-astra', effort: 'low' },
-    fullstack: { model: 'gpt-6-astra', effort: 'low' },
-    complex: { model: 'gpt-6-astra', effort: 'medium' },
-    pm: { model: 'gpt-6-astra', effort: 'medium' },
-    review: { model: 'gpt-6-astra', effort: 'medium' },
+    backend: { providerId: 'codex', model: 'gpt-5.6-luna', effort: 'max' },
+    frontend: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
+    fullstack: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
+    complex: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
+    pm: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
+    review: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
   },
 };
 type Entities = {
   activity: PMActivity;
+  provider: Provider;
   project: Project;
   repo: Repo;
   task: Task;
@@ -62,7 +64,7 @@ type Entities = {
 export class Store {
   private db: DatabaseSync;
   readonly changes = new EventEmitter();
-  constructor(file: string) {
+  constructor(readonly file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
@@ -78,9 +80,25 @@ export class Store {
       }
     });
     if (!this.get('settings', 'global')) this.put('settings', 'global', structuredClone(defaults));
+    this.transaction(() => {
+      const settings = this.settings();
+      for (const profile of Object.values(settings.profiles)) profile.providerId ??= 'codex';
+      this.put('settings', 'global', settings);
+      for (const project of this.list('project')) {
+        if (!project.profiles) {
+          project.profiles = structuredClone(settings.profiles);
+          this.put('project', project.id, project);
+        }
+      }
+    });
   }
   close() {
     this.db.close();
+  }
+  deleteProvider(key: string) {
+    this.assertProviderUnused(key);
+    this.db.prepare('DELETE FROM documents WHERE kind=? AND id=?').run('provider', key);
+    this.changes.emit('change');
   }
   get<K extends keyof Entities>(kind: K, key: string): Entities[K] | undefined {
     const row = this.db
@@ -133,9 +151,74 @@ export class Store {
     return this.get('settings', 'global')!;
   }
   saveSettings(settings: Settings) {
+    settings = settingsSchema.parse(settings);
+    this.validateProfiles(settings.profiles);
     this.put('settings', 'global', settings);
     this.event('settings', '运行配置已更新');
     return settings;
+  }
+  private validateProfiles(profiles: Settings['profiles']) {
+    settingsSchema.shape.profiles.parse(profiles);
+    for (const [role, profile] of Object.entries(profiles)) {
+      if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
+        throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
+    }
+  }
+  assertProviderUnused(providerId: string) {
+    const references: string[] = [];
+    const inspect = (name: string, profiles: Settings['profiles']) => {
+      for (const [role, profile] of Object.entries(profiles))
+        if (profile.providerId === providerId) references.push(`${name} / ${role}`);
+    };
+    inspect('全局默认值', this.settings().profiles);
+    for (const project of this.list('project'))
+      inspect(`Project ${project.name} (${project.id})`, project.profiles);
+    for (const run of this.activeRuns())
+      if (run.profileConfig?.providerId === providerId)
+        references.push(`进行中的 Run ${run.id} / ${run.role}`);
+    if (references.length) throw new Fault(`Provider 仍被引用：${references.join('；')}`, 409);
+  }
+  saveProjectProfiles(projectId: string, profiles: Settings['profiles']) {
+    this.validateProfiles(profiles);
+    return this.transaction(() => {
+      const project = this.project(projectId);
+      const changed = (Object.keys(profiles) as ProfileName[]).filter(
+        (role) => profiles[role].providerId !== project.profiles[role].providerId,
+      );
+      if (changed.length) project.profileVersion = (project.profileVersion ?? 0) + 1;
+      if (changed.includes('pm')) {
+        delete project.pmThreadId;
+        delete project.pmThreadProviderId;
+      }
+      for (const task of this.list('task')) {
+        if (task.projectId === projectId && changed.includes(task.profile)) {
+          delete task.devThreadId;
+          delete task.devThreadProviderId;
+          this.put('task', task.id, task);
+        }
+      }
+      project.profiles = structuredClone(profiles);
+      this.put('project', projectId, project);
+      this.event('project', '项目模型分配已更新', { projectId });
+      return project;
+    });
+  }
+  bindRunThread(run: Run, threadId: string) {
+    this.put('run', run.id, { ...this.get('run', run.id)!, threadId });
+    const project = this.project(run.projectId);
+    // A late reply must not restore a binding invalidated while this Run was in flight.
+    if ((project.profileVersion ?? 0) !== (run.profileVersion ?? 0)) return;
+    if (run.role === 'pm')
+      this.put('project', project.id, {
+        ...project,
+        pmThreadId: threadId,
+        pmThreadProviderId: run.profileConfig?.providerId ?? 'codex',
+      });
+    if (run.role === 'dev' && run.taskId)
+      this.updateTask(run.taskId, {
+        devThreadId: threadId,
+        devThreadProviderId: run.profileConfig?.providerId ?? 'codex',
+      });
   }
   event(
     type: string,
@@ -157,9 +240,28 @@ export class Store {
       }[]
     ).map((x) => ({ ...JSON.parse(x.body), id: x.id }));
   }
+  /**
+   * Every durable event recorded against one task, oldest first.
+   *
+   * `events()` above is a bounded feed for the UI, so it stops answering "did the host ever
+   * coordinate a merge for this task?" once unrelated events have accumulated. That question must
+   * stay answerable for as long as the task exists: it is one of the host records a legacy
+   * in-progress merge is verified against when its source branch has moved on.
+   */
+  taskEvents(taskId: string): Event[] {
+    const pattern = `%"taskId":"${taskId.replace(/[\\%_]/g, '\\$&')}"%`;
+    return (
+      this.db
+        .prepare("SELECT id,body FROM events WHERE body LIKE ? ESCAPE '\\' ORDER BY id")
+        .all(pattern) as { id: number; body: string }[]
+    )
+      .map((row) => ({ ...(JSON.parse(row.body) as Omit<Event, 'id'>), id: row.id }))
+      .filter((event) => event.taskId === taskId);
+  }
   snapshot(): Snapshot {
     return {
       activities: this.list('activity'),
+      providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),
@@ -230,10 +332,19 @@ export class Store {
     return value;
   }
   createProject(name: string, description: string) {
-    const p: Project = { id: id(), name, description, devLimit: 4, createdAt: now() };
-    this.put('project', p.id, p);
-    this.event('project', '项目已创建', { projectId: p.id });
-    return p;
+    return this.transaction(() => {
+      const p: Project = {
+        id: id(),
+        name,
+        description,
+        devLimit: 4,
+        createdAt: now(),
+        profiles: this.settings().profiles,
+      };
+      this.put('project', p.id, p);
+      this.event('project', '项目已创建', { projectId: p.id });
+      return p;
+    });
   }
   createRepo(
     input: Pick<Repo, 'projectId' | 'name' | 'path' | 'github' | 'defaultBranch' | 'authorized'>,
@@ -373,7 +484,9 @@ export class Store {
       id: id(),
       profile,
       routingReason:
-        input.complexity === 'complex' ? '复杂任务使用 Astra medium' : `${input.kind} 类型默认档位`,
+        input.complexity === 'complex'
+          ? '复杂任务使用项目 complex 档位'
+          : `${input.kind} 类型项目档位`,
       stage: 'ready',
       control: 'active',
       reviews: [],
@@ -463,12 +576,32 @@ export class Store {
     return t;
   }
   run(role: Run['role'], projectId: string, profile: ProfileName, task?: Task): Run {
+    const project = this.project(projectId);
+    const profileConfig = project.profiles[profile];
+    const provider =
+      profileConfig.providerId === 'codex'
+        ? officialProvider
+        : this.get('provider', profileConfig.providerId);
+    if (!provider) throw new Fault(`Provider 不存在：${profileConfig.providerId}`, 409);
     const r: Run = {
       id: id(),
       projectId,
       role,
       profile,
-      profileConfig: { ...this.settings().profiles[profile] },
+      profileConfig: { ...profileConfig },
+      provider: {
+        id: provider.id,
+        name: provider.name,
+        kind: provider.kind,
+        baseUrl: provider.baseUrl,
+      },
+      profileVersion: project.profileVersion ?? 0,
+      resumeThreadId:
+        role === 'pm' && (project.pmThreadProviderId ?? 'codex') === profileConfig.providerId
+          ? project.pmThreadId
+          : role === 'dev' && (task?.devThreadProviderId ?? 'codex') === profileConfig.providerId
+            ? task?.devThreadId
+            : undefined,
       status: 'running',
       startedAt: now(),
       taskId: task?.id,

@@ -156,6 +156,67 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
   };
 }
 
+test('transient GitHub sync failure preserves completion and backs off without event flooding', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000000 });
+  const f = fixture();
+  f.patch({ stage: 'done' });
+  const engine = f.engine();
+  const original = engine.github.pull.bind(engine.github);
+  let calls = 0;
+  let unavailable = true;
+  engine.github.pull = async (task) => {
+    calls++;
+    if (unavailable) throw new Error('gh (1): gh: HTTP 502');
+    return original(task);
+  };
+  const before = f.task();
+  await engine.sync();
+  assert.deepEqual(f.task(), before);
+  await engine.sync();
+  assert.equal(calls, 1);
+  assert.equal(f.store.events().filter((e) => e.type === 'sync').length, 1);
+  t.mock.timers.tick(60000);
+  await engine.sync();
+  assert.equal(calls, 2);
+  await engine.sync();
+  assert.equal(calls, 2);
+  unavailable = false;
+  t.mock.timers.tick(120000);
+  await engine.sync();
+  assert.equal(f.task().stage, 'done');
+  assert.equal(f.task().blocked, undefined);
+  assert.ok(f.store.events().some((e) => e.message.includes('同步已恢复')));
+  f.store.close();
+});
+
+for (const message of [
+  'gh (1): gh: Something went wrong while executing your query on 2026-09-13',
+  'gh (1): unexpected end of JSON input',
+]) {
+  test(`completion synchronization defers transient failure: ${message}`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1000000 });
+    const f = fixture();
+    const engine = f.engine();
+    let calls = 0;
+    engine.github.completeIssue = async () => {
+      calls++;
+      throw new Error(message);
+    };
+    const before = f.task();
+    for (const delay of [0, 60000, 120000, 240000, 300000, 300000]) {
+      t.mock.timers.tick(delay);
+      await engine.sync();
+      const attempts = calls;
+      await engine.sync();
+      assert.equal(calls, attempts);
+      assert.deepEqual(f.task(), before);
+    }
+    assert.equal(calls, 6);
+    assert.equal(f.store.events().filter((e) => e.type === 'sync').length, 6);
+    f.store.close();
+  });
+}
+
 test('sync reconciles a lost completion response before done and Project delivery', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-restart-'));
   const f = fixture('.', root, join(root, 'state.sqlite'));
