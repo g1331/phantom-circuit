@@ -411,15 +411,18 @@ export class Store {
     role: Message['role'],
     content: string,
     intent?: Message['intent'],
+    attachments?: Message['attachments'],
+    messageId = id(),
   ) {
     this.project(projectId);
     const m: Message = {
       timelineOrder: this.timelineOrder(),
-      id: id(),
+      id: messageId,
       projectId,
       role,
       content: redact(content),
       intent,
+      ...(attachments?.length ? { attachments } : {}),
       createdAt: now(),
       ...(role === 'user' ? { status: 'queued' as const } : {}),
     };

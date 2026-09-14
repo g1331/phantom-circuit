@@ -17,6 +17,7 @@ import {
   reviewSchema,
   mergeSchema,
 } from './schemas.ts';
+import { MessageImages } from './images.ts';
 import type { Message, Run, Task, ReviewResult } from '../shared/types.ts';
 
 const configureInput = z
@@ -403,7 +404,18 @@ export class Engine {
       );
       const context = `${await domainContext(contextPaths)}\nLocal design records (not yet necessarily published): ${JSON.stringify(this.store.list('document').filter((d) => d.projectId === projectId))}`;
       const prompt = `${this.pmContext(projectId)}\n${context}\n\nCurrent input intent: ${source?.intent ?? 'technical coordination (no new product scope)'}\n${task ? taskPrompt(task) : ''}\n\n${content}`;
-      const reply = await c.turn(thread, prompt, profile, signal, undefined, this.onTurn(run));
+      const imagePaths = source
+        ? await new MessageImages(this.store, this.dataDir).paths(source)
+        : [];
+      const reply = await c.turn(
+        thread,
+        prompt,
+        profile,
+        signal,
+        undefined,
+        this.onTurn(run),
+        imagePaths,
+      );
       this.store.addMessage(projectId, 'assistant', reply);
       return reply;
     });
