@@ -296,6 +296,24 @@ test('two concurrent resumes coordinate once and leave the task publishable', as
   }
 });
 
+test('engine shutdown drains a review Incident assessment before the Store closes', async () => {
+  const f = await fixture();
+  try {
+    await blockedOnPublication(f);
+    await f.engine.resume(f.task().id);
+    const result = await f.cycle();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+
+    // The next public tick launches the review. The fixture reviewer returns a non-structured
+    // handoff, so its failure schedules a PM Incident assessment while shutdown is racing it.
+    await f.engine.tick();
+    await f.engine.stop();
+    assert.equal(f.store.activeRuns().length, 0, 'stop must finish every Run before Store close');
+  } finally {
+    f.store.close();
+  }
+});
+
 test('a listing that cannot be read to its end blocks with the reason and spends nothing', async () => {
   const f = await fixture();
   try {

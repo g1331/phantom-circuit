@@ -815,12 +815,15 @@ export class Codex extends EventEmitter implements AgentBackend {
       });
       const thread = response?.thread;
       if (!isRecord(thread) || !Array.isArray(thread.turns)) return 'unknown';
-      let complete = true;
+      let complete = thread.turns.length > 0;
       for (const turn of thread.turns) {
         if (!isRecord(turn) || turn.itemsView !== 'full' || !Array.isArray(turn.items)) {
           complete = false;
           continue;
         }
+        // Absence from a live turn is not rejection: an accepted steer can still be queued
+        // before its userMessage appears in history. Only terminal history proves absence.
+        if (!['completed', 'failed', 'interrupted'].includes(String(turn.status))) complete = false;
         for (const item of turn.items) {
           if (
             isRecord(item) &&

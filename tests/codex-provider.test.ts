@@ -361,7 +361,7 @@ test('Codex uses turn/steer preconditions, queues followUps FIFO, and normalizes
       if (m.method === 'thread/read') {
         threadReadNumber += 1;
         const complete = m.params.threadId === 'fixture-thread' && m.params.includeTurns === true;
-        send({ id: m.id, result: { thread: { turns: complete ? [{ itemsView: threadReadNumber === 3 ? 'summary' : 'full', items: threadReadNumber === 2 ? [] : [{ type: 'userMessage', clientId: 'client-steer-1' }] }] : [] } } });
+        send({ id: m.id, result: { thread: { turns: complete ? [{ status: threadReadNumber === 4 ? 'inProgress' : 'completed', itemsView: threadReadNumber === 3 ? 'summary' : 'full', items: [2, 4].includes(threadReadNumber) ? [] : [{ type: 'userMessage', clientId: 'client-steer-1' }] }] : [] } } });
         return;
       }
       if (m.method === 'turn/start') {
@@ -441,6 +441,7 @@ test('Codex uses turn/steer preconditions, queues followUps FIFO, and normalizes
     assert.equal(await codex.reconcileSteer('fixture-thread', 'client-steer-1'), 'accepted');
     assert.equal(await codex.reconcileSteer('fixture-thread', 'missing'), 'not_accepted');
     assert.equal(await codex.reconcileSteer('fixture-thread', 'unknown'), 'unknown');
+    assert.equal(await codex.reconcileSteer('fixture-thread', 'not-yet-visible'), 'unknown');
   } finally {
     await codex.request('fixture/exit').catch(() => {});
     await codex.stop();

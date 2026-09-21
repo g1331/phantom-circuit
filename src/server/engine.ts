@@ -264,11 +264,16 @@ export class Engine {
     if (this.timer) clearInterval(this.timer);
     for (const x of this.active.values()) x.abort.abort();
     await Promise.allSettled([...this.active.values()].map((x) => x.agent?.stop()));
-    await Promise.allSettled([
-      ...this.jobs,
-      ...this.pmQueues.values(),
-      ...(this.startup ? [this.startup] : []),
-    ]);
+    // A failed Run may enqueue its Incident assessment from a rejection handler. Drain repeatedly
+    // so those descendants finish before the caller closes the Store; one snapshot is not enough.
+    let startup = this.startup;
+    for (;;) {
+      const pending = [...this.jobs, ...this.pmQueues.values(), ...(startup ? [startup] : [])];
+      startup = undefined;
+      if (!pending.length) break;
+      await Promise.allSettled(pending);
+      await Promise.resolve();
+    }
     this.started = false;
     this.startup = undefined;
   }
@@ -333,6 +338,7 @@ export class Engine {
       if (error !== undefined) this.store.recordRunDiagnostic(run.id, String(error));
     });
     try {
+      if (this.stopping) throw new Fault('Engine 正在停止', 409);
       if (run.agentKind === 'omp' && !(c instanceof Codex)) {
         const cwd = run.taskId
           ? this.store.task(run.taskId).worktree
@@ -1278,9 +1284,9 @@ export class Engine {
           this.mergeBusy.add(task.repoId);
           void this.track(
             this.finalize(task)
-              .catch((e) => {
+              .catch(async (e) => {
                 this.block(task.id, this.pauseReason(e));
-                void this.incidentForTask(task, e, 'finalize');
+                await this.incidentForTask(task, e, 'finalize');
               })
               .finally(() => this.mergeBusy.delete(task.repoId)),
           );
@@ -1341,29 +1347,42 @@ export class Engine {
     const claimed = this.store.claimIncidentAssessment(incident.id, assessment.id);
     if (claimed.assessmentRunId !== assessment.id) return claimed;
     const task = run.taskId ? this.store.get('task', run.taskId) : undefined;
-    void this.track(
-      this.pmQueue(run.projectId, () =>
-        this.pmTurn(
-          run.projectId,
-          `Unexpected ${run.role} Run failure. Assess Incident ${incident.id}. Preserve evidence and use resolve_incident with one bounded action.\n${detail}`,
-          undefined,
-          task,
-          '宿主事件：Incident 评估',
-          incident.id,
-          assessment,
-        ),
-      ),
-    )
-      .then(() => undefined)
-      .catch((assessmentError) => {
-        // PM assessment failure is terminal for this assessment and must not recursively create
-        // another Incident. Leave the incident actionable for the user.
-        this.store.updateIncident(incident.id, {
-          status: 'waiting_user',
-          message: `PM 评估失败：${redact(String(assessmentError))}`,
-        });
-        if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
+    if (this.stopping) {
+      this.store.finishRun(
+        assessment.id,
+        'paused',
+        'Engine 正在停止，Incident 评估留待下次启动恢复',
+      );
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: 'Engine 正在停止，Incident 评估留待下次启动恢复',
       });
+      if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
+      return incident;
+    }
+    try {
+      await this.track(
+        this.pmQueue(run.projectId, () =>
+          this.pmTurn(
+            run.projectId,
+            `Unexpected ${run.role} Run failure. Assess Incident ${incident.id}. Preserve evidence and use resolve_incident with one bounded action.\n${detail}`,
+            undefined,
+            task,
+            '宿主事件：Incident 评估',
+            incident.id,
+            assessment,
+          ),
+        ),
+      );
+    } catch (assessmentError) {
+      // PM assessment failure is terminal for this assessment and must not recursively create
+      // another Incident. Leave the incident actionable for the user.
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: `PM 评估失败：${redact(String(assessmentError))}`,
+      });
+      if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
+    }
     return incident;
   }
   private async incidentForTask(task: Task, error: unknown, phase: string) {
@@ -1395,25 +1414,40 @@ export class Engine {
     }
     const claimed = this.store.claimIncidentAssessment(incident.id, assessment.id);
     if (claimed.assessmentRunId !== assessment.id) return claimed;
-    void this.track(
-      this.pmQueue(task.projectId, () =>
-        this.pmTurn(
-          task.projectId,
-          `Host finalization failed. Assess Incident ${incident.id} and choose a bounded action.\n${detail}`,
-          undefined,
-          task,
-          phase === 'retries' ? '宿主事件：连续失败重评' : '宿主事件：完成阶段 Incident 评估',
-          incident.id,
-          assessment,
+    if (this.stopping) {
+      this.store.finishRun(
+        assessment.id,
+        'paused',
+        'Engine 正在停止，Incident 评估留待下次启动恢复',
+      );
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: 'Engine 正在停止，Incident 评估留待下次启动恢复',
+      });
+      this.block(task.id, `Incident ${incident.id} 等待用户处理`);
+      return incident;
+    }
+    try {
+      await this.track(
+        this.pmQueue(task.projectId, () =>
+          this.pmTurn(
+            task.projectId,
+            `Host finalization failed. Assess Incident ${incident.id} and choose a bounded action.\n${detail}`,
+            undefined,
+            task,
+            phase === 'retries' ? '宿主事件：连续失败重评' : '宿主事件：完成阶段 Incident 评估',
+            incident.id,
+            assessment,
+          ),
         ),
-      ),
-    ).catch((assessmentError) => {
+      );
+    } catch (assessmentError) {
       this.store.updateIncident(incident.id, {
         status: 'waiting_user',
         message: `PM 评估失败：${redact(String(assessmentError))}`,
       });
       this.block(task.id, `Incident ${incident.id} 等待用户处理`);
-    });
+    }
     return incident;
   }
   private async evaluateFeedback(task: Task) {
@@ -1506,8 +1540,13 @@ export class Engine {
           : undefined,
     });
     if (retries >= 3)
-      void this.incidentForTask(this.store.task(task.id), reason, 'retries').catch((error) =>
-        this.store.event('incident', String(error), { projectId: task.projectId, taskId: task.id }),
+      void this.track(
+        this.incidentForTask(this.store.task(task.id), reason, 'retries').catch((error) =>
+          this.store.event('incident', String(error), {
+            projectId: task.projectId,
+            taskId: task.id,
+          }),
+        ),
       );
   }
   private async develop(run: Run) {
@@ -1800,15 +1839,15 @@ export class Engine {
       });
     } catch (error) {
       this.block(task.id, this.pauseReason(error));
-      void this.incidentForTask(task, error, `review:${axis}`);
+      void this.track(this.incidentForTask(task, error, `review:${axis}`));
       this.mergeBusy.delete(marker);
       return;
     }
     void this.track(
       this.review(run, task, axis)
-        .catch((error) => {
+        .catch(async (error) => {
           this.block(task.id, this.pauseReason(error));
-          void this.incidentForRun(run, error, `review:${axis}`);
+          await this.incidentForRun(run, error, `review:${axis}`);
         })
         .finally(() => this.mergeBusy.delete(marker)),
     );
@@ -2058,7 +2097,7 @@ export class Engine {
       this.store.updateTask(current.id, {
         cleanup: { requested: true, status: 'failed', summary: redact(String(error)) },
       });
-      void this.incidentForTask(current, error, 'cleanup');
+      await this.incidentForTask(current, error, 'cleanup');
     }
   }
   private async deliverCompletion(task: Task) {

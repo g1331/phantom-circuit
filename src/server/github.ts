@@ -846,7 +846,7 @@ export class GitHub {
         ),
       () =>
         this.api(`repos/${repo.github}/issues/${task.pr}/comments`, 'POST', {
-          body: `${marker}\n## ${review.axis === 'standards' ? 'Standards' : 'Spec'}\n${review.approved ? 'Pass' : 'Changes requested'}\n\n${review.summary}\n${review.findings.map((x) => `- ${x}`).join('\n')}\n\nReviewed head: ${review.head}; base: ${review.base}. AI review evidence; not a GitHub approval.`,
+          body: `${marker}\n## ${{ standards: 'Standards', spec: 'Spec', primary: 'Comprehensive Review', secondary: 'Independent Risk Review' }[review.axis]}\n${review.approved ? 'Pass' : 'Changes requested'}\n\n${review.summary}\n${review.findings.map((x) => `- ${x}`).join('\n')}\n\nReviewed head: ${review.head}; base: ${review.base}. AI review evidence; not a GitHub approval.`,
         }),
     );
   }
