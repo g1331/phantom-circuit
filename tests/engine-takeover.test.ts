@@ -10,6 +10,52 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Codex } from '../src/server/codex.ts';
 import type { Task } from '../src/shared/types.ts';
 
+test('one Run sums distinct turn usage and does not double count repeated snapshots', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-turn-usage-'));
+  const store = new Store(':memory:');
+  const project = store.createProject('Usage', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
+  class UsageAgent extends Codex {
+    override async start() {}
+    override async stop() {}
+    override async thread() {
+      return 'usage-session';
+    }
+    override async turn() {
+      for (const [turnId, inputTokens, outputTokens] of [
+        ['first', 10, 2],
+        ['first', 10, 2],
+        ['second', 20, 3],
+      ] as const) {
+        this.emit('notification', 'thread/tokenUsage/updated', {
+          threadId: 'usage-session',
+          turnId,
+          usage: { turnId, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+        });
+      }
+      return 'Usage recorded';
+    }
+  }
+  const engine = new Engine(
+    store,
+    new GitHub(store),
+    new Workspaces(join(root, 'workspaces'), store),
+    root,
+    () => new UsageAgent(),
+  );
+  try {
+    await engine.chat(store.addMessage(project.id, 'user', 'Discuss only', 'discuss'));
+    const usage = store.list('run')[0].usage;
+    assert.equal(usage?.inputTokens, 30);
+    assert.equal(usage?.outputTokens, 5);
+    assert.equal(usage?.totalTokens, 35);
+  } finally {
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function policyTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task',

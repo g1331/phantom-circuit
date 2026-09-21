@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Store, Fault, now, redact } from './store.ts';
 import { Codex, CodexTurnError, type ToolSpec } from './codex.ts';
 import { OmpBackend } from './omp.ts';
+import { normalizeUsage } from './usage.ts';
 import type { AgentBackend, AgentProfile, AgentToolSpec, AgentUsage } from './agent-backend.ts';
 import { PMActivities } from './pm-activity.ts';
 import { GitHub, IssueBodyConflict, isTransientGitHubError, type PullState } from './github.ts';
@@ -287,6 +288,7 @@ export class Engine {
     const abort = hostAbort ?? new AbortController();
     this.active.set(run.id, { abort, agent: c, ...(c instanceof Codex ? { codex: c } : {}) });
     const activities = run.role === 'pm' ? new PMActivities(this.store, run) : undefined;
+    const usageByTurn = new Map<string, AgentUsage>();
     c.on?.('notification', (method: string, p: any) => {
       const current = this.store.get('run', run.id)!;
       if (!['running', 'waiting'].includes(current.status)) return;
@@ -311,12 +313,13 @@ export class Engine {
       const usage = p?.usage as AgentUsage | undefined;
       if (usage) {
         hooks.onUsage?.(usage);
-        if (this.store.get('run', run.id))
-          this.store.updateRunUsage(run.id, usage as any, 'cumulative');
+        const key = usage.turnId ?? notificationTurn ?? current.turnId ?? run.id;
+        usageByTurn.set(key, normalizeUsage(usageByTurn.get(key), usage, 'cumulative'));
+        let total: AgentUsage = {};
+        for (const snapshot of usageByTurn.values())
+          total = normalizeUsage(total, snapshot, 'per-run');
+        this.store.updateRunUsage(run.id, total, 'cumulative');
       }
-      if (method === 'turn/completed' && p?.usage)
-        if (this.store.get('run', run.id))
-          this.store.updateRunUsage(run.id, p.usage as any, 'cumulative');
       if (method === 'item/completed' && p.item?.type === 'commandExecution')
         this.store.event(
           'command',
