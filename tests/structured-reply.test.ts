@@ -408,7 +408,12 @@ test('a parser exception from a structured turn never reaches the task as raw Ja
       task.blocked ?? '',
       /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse/i,
     );
-    assert.match(task.blocked ?? '', /Incident/);
+    assert.ok(
+      run.store
+        .list('incident')
+        .some((incident) => incident.taskId === task.id && incident.phase.startsWith('review')),
+      'the parser failure must retain a durable review Incident, independently of PM/shutdown wording',
+    );
     assert.ok(
       run.events().some((e) => e.type === 'incident' && /review/.test(e.message)),
       'the parser failure must create a PM-visible incident',
