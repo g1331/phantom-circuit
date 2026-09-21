@@ -14,6 +14,7 @@ import type { Task } from '../src/shared/types.ts';
 test('external requests for new product scope wait for PM clarification instead of starting a Dev', async () => {
   const store = new Store(':memory:');
   const p = store.createProject('Example', '');
+  store.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: p.id,
     name: 'repo',
@@ -24,7 +25,15 @@ test('external requests for new product scope wait for PM clarification instead 
   });
   const m = store.addMessage(p.id, 'user', 'Implement login', 'implement');
   store.addMessage(p.id, 'assistant', 'Previously agreed: no billing scope.');
-  store.put('project', p.id, { ...p, pmThreadId: 'persistent-project-pm' });
+  const pmProfile = store.resolveEffectiveProfile(p.id, 'pm').profile;
+  store.put('project', p.id, {
+    ...store.project(p.id),
+    pmThreadId: 'persistent-project-pm',
+    pmThreadProviderId: pmProfile.providerId,
+    pmThreadAgentKind: 'codex',
+    pmThreadProfileVersion: store.project(p.id).profileVersion,
+    pmThreadProfile: pmProfile,
+  });
   const task = store.createTask({
     projectId: p.id,
     repoId: repo.id,
@@ -39,6 +48,7 @@ test('external requests for new product scope wait for PM clarification instead 
   });
   store.patchRepo(repo.id, { enabled: true });
   store.updateTask(task.id, { pendingFeedback: ['Also build a subscription billing system.'] });
+  store.updateMessage(m.id, { status: 'completed', draftStatus: 'completed' });
   class FeedbackGitHub extends GitHub {
     override async publishIssue(t: Task) {
       store.updateTask(t.id, { issue: 1 });
@@ -72,8 +82,9 @@ test('external requests for new product scope wait for PM clarification instead 
     () => new FeedbackModel(),
   );
   try {
+    await engine.start();
     await engine.tick();
-    for (let i = 0; i < 50 && store.task(task.id).control !== 'paused'; i++)
+    for (let i = 0; i < 150 && store.task(task.id).control !== 'paused'; i++)
       await new Promise((r) => setTimeout(r, 20));
     assert.equal(store.task(task.id).control, 'paused');
     assert.equal(
@@ -142,6 +153,7 @@ test('PM tool names priority levels, creates with reason and adjusts existing wo
   );
   await command('git', ['remote', 'add', 'origin', sourcePath], sourcePath);
   const p = s.createProject('Priority PM', '');
+  s.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
   const repo = s.createRepo({
     projectId: p.id,
     name: 'priority',

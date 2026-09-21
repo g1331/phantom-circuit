@@ -110,7 +110,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
     .getByText('高候选 / High candidate', { exact: false })
     .waitFor();
   for (const locale of ['zh-CN', 'en']) {
-    await page.getByLabel(/Priority language/).selectOption(locale);
+    await page.locator('.sidebar .language-control select').selectOption(locale);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       for (const theme of ['light', 'dark']) {
@@ -128,7 +128,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
         );
-        await page.locator('.priority-language').scrollIntoViewIfNeeded();
+        await page.locator('.claim-order').scrollIntoViewIfNeeded();
         await page.screenshot({
           path: resolve(artifacts, `priority-order-${locale}-${width}-${theme}.png`),
         });
@@ -156,6 +156,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
     }
   }
   await page.reload();
-  await page.getByRole('tab', { name: '任务', exact: false }).click();
-  assert.equal(await page.getByLabel(/Priority language/).inputValue(), 'en');
+  await page.getByRole('tab', { name: 'Tasks', exact: false }).click();
+  assert.equal(await page.locator('.sidebar .language-control select').inputValue(), 'en');
+  await page.locator('.sidebar .language-control select').selectOption('zh-CN');
 }

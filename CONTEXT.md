@@ -31,8 +31,8 @@ _Avoid_: Code review
 **Provider**: An authenticated model upstream available to Phantom Circuit, either through the existing Codex login or a saved custom connection.
 _Avoid_: Model, profile
 
-**Project model profile**: A Project-owned assignment from each PM, Dev or Review role to a Provider, model and reasoning effort.
-_Avoid_: Global defaults, Provider
+**Project model profile**: A role's Provider, model and reasoning effort, either following the global assignment or pinned by its Project.
+_Avoid_: Agent backend, Provider
 
 **PM activity**: A durable, user-visible record of why the PM started acting and which observable step it is performing.
 _Avoid_: Hidden chain of thought, raw log
@@ -42,3 +42,18 @@ _Avoid_: Event, Review finding
 
 **Clarification**: An unresolved product decision that the PM has explicitly asked the user to settle before affected Tasks are published or revised.
 _Avoid_: Technical question, confirmation
+
+**Agent backend**: The execution system that hosts a Project's PM, Dev and Review sessions.
+_Avoid_: Model, Provider
+
+**Run usage**: Resource consumption attributable to one Run, including reported tokens and elapsed execution time.
+_Avoid_: Account allowance, bill
+
+**Account allowance**: The upstream account's reported capacity and reset windows, independent of any individual Task.
+_Avoid_: Run usage, cost estimate
+
+**Cost estimate**: A monetary estimate based on reported Run usage and the prices fixed when the Run began.
+_Avoid_: Invoice, amount charged
+
+**Recovery item**: A durable record of interrupted work and the successor Run that continues its last verified phase.
+_Avoid_: Retry, new Task

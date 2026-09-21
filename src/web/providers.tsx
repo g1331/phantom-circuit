@@ -1,37 +1,54 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Provider, ModelDiscovery } from '../shared/types.ts';
 import { api } from './api.ts';
+import { useLocale } from './locale/provider.tsx';
+import type { StaticTranslationKey } from './locale/core.ts';
+import { ModelPrices } from './model-prices.tsx';
+import { ErrorText } from './error-text.tsx';
 
 export function ProviderSettings() {
+  const { t } = useLocale();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selected, setSelected] = useState('codex');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | Error | { key: StaticTranslationKey }>('');
   const refresh = async () => setProviders(await api<Provider[]>('/providers'));
   useEffect(() => {
-    void refresh().catch(() => setError('无法读取 Provider'));
+    void refresh().catch(() => setError({ key: 'ui.cannotLoadProviders' }));
   }, []);
   const provider = providers.find((p) => p.id === selected);
   return (
-    <section className="form provider-settings" aria-label="Provider 管理">
+    <section className="form provider-settings" aria-label={t('ui.providerManagement')}>
       <h3>Provider</h3>
-      <p className="muted">保存上游连接并获取模型。角色与项目分配独立管理。</p>
+      <p className="muted"> {t('ui.saveUpstreamConnectionsAndFetchModelsRole')} </p>
       <div className="provider-toolbar">
         <label>
-          选择 Provider
-          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+          {t('ui.selectProvider')}{' '}
+          <select
+            aria-label={t('ui.selectProvider')}
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+          >
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {p.kind === 'codex' ? t('ui.officialCodexLogin') : p.name}
               </option>
             ))}
-            {selected === 'new' && <option value="new">新增 Provider</option>}
+            {selected === 'new' && <option value="new"> {t('ui.addProvider')} </option>}
           </select>
         </label>
         <button type="button" className="secondary-button" onClick={() => setSelected('new')}>
-          新增 Provider
+          {t('ui.addProvider')}{' '}
         </button>
       </div>
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p role="alert">
+          {typeof error === 'string' || error instanceof Error ? (
+            <ErrorText error={error} />
+          ) : (
+            t(error.key)
+          )}
+        </p>
+      )}
       {(provider || selected === 'new') && (
         <ProviderDetail
           key={selected}
@@ -54,12 +71,13 @@ function ProviderDetail({
   saved: (id: string) => Promise<void>;
 }) {
   const [name, setName] = useState(provider?.name ?? '');
+  const { t, number } = useLocale();
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? '');
   const [replacement, setReplacement] = useState('');
   const [shown, setShown] = useState('');
   const [discovery, setDiscovery] = useState<ModelDiscovery>();
   const [model, setModel] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | Error | { key: StaticTranslationKey }>('');
   const [busy, setBusy] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const generation = useRef(0);
@@ -100,7 +118,7 @@ function ProviderDetail({
     try {
       await work();
     } catch (e) {
-      if (alive.current) setError(e instanceof Error ? e.message : '操作失败');
+      if (alive.current) setError(e instanceof Error ? e : { key: 'ui.operationFailed' });
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -114,7 +132,7 @@ function ProviderDetail({
       if (alive.current && generation.current === current) setShown(result.apiKey);
     } catch {
       if (alive.current && generation.current === current)
-        setError('无法显示密钥，请刷新会话或重新保存密钥');
+        setError({ key: 'ui.cannotRevealKeyRefreshTheSessionOr' });
     } finally {
       if (alive.current && generation.current === current) setRevealing(false);
     }
@@ -122,11 +140,11 @@ function ProviderDetail({
   return (
     <div className="provider-detail">
       {official ? (
-        <p>使用现有 Codex 官方登录，无需复制凭据。</p>
+        <p> {t('ui.usesTheExistingOfficialCodexLoginNo')} </p>
       ) : (
         <>
           <label>
-            Provider 名称
+            {t('ui.providerName')}{' '}
             <input
               autoComplete="off"
               value={name}
@@ -145,7 +163,7 @@ function ProviderDetail({
             />
           </label>
           <label>
-            {provider ? '替换 API key（留空保留）' : 'API key'}
+            {provider ? t('ui.replaceApiKeyLeaveBlankToKeep') : 'API key'}
             <input
               type="password"
               autoComplete="new-password"
@@ -155,14 +173,14 @@ function ProviderDetail({
           </label>
           {provider && (
             <div className="provider-secret">
-              <span>API key：{provider.hasKey ? '已保存' : '未保存'}</span>
+              <span>API key：{provider.hasKey ? t('ui.saved2') : t('ui.notSaved')}</span>
               {shown ? (
                 <>
-                  <output aria-label="已显示的 API key">{shown}</output>
+                  <output aria-label={t('ui.revealedApiKey')}>{shown}</output>
                   <button type="button" className="secondary-button" onClick={hide}>
-                    隐藏密钥
+                    {t('ui.hideKey')}{' '}
                   </button>
-                  <small>30 秒后自动隐藏。</small>
+                  <small> {t('ui.automaticallyHiddenAfter30Seconds')} </small>
                 </>
               ) : (
                 <button
@@ -171,7 +189,7 @@ function ProviderDetail({
                   disabled={busy || revealing || !provider.hasKey}
                   onClick={() => void reveal()}
                 >
-                  {revealing ? '正在读取…' : '显示密钥'}
+                  {revealing ? t('ui.loading') : t('ui.revealKey')}
                 </button>
               )}
             </div>
@@ -194,7 +212,7 @@ function ProviderDetail({
                 })
               }
             >
-              保存 Provider
+              {t('ui.saveProvider')}{' '}
             </button>
             {provider && (
               <button
@@ -209,7 +227,7 @@ function ProviderDetail({
                   })
                 }
               >
-                删除 Provider
+                {t('ui.deleteProvider')}{' '}
               </button>
             )}
           </div>
@@ -228,24 +246,24 @@ function ProviderDetail({
               })
             }
           >
-            {busy ? '正在处理…' : '获取模型'}
+            {busy ? t('ui.working') : t('ui.fetchModels')}
           </button>
           <p role="status">
             {discovery
               ? discovery.ok
-                ? `已连接 · ${discovery.models.length} 个模型`
+                ? t('provider.connected', { count: discovery.models.length })
                 : discovery.error
-              : '尚未获取模型'}
+              : t('ui.modelsHaveNotBeenFetched')}
           </p>
           {discovery?.ok && (
             <label>
-              可用模型
+              {t('ui.availableModels')}{' '}
               <select
-                aria-label="可用模型"
+                aria-label={t('ui.availableModels')}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               >
-                <option value="">选择模型 ID</option>
+                <option value=""> {t('ui.selectModelId')} </option>
                 {discovery.models.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.id}
@@ -256,17 +274,26 @@ function ProviderDetail({
             </label>
           )}
           <label>
-            手工模型 ID
+            {t('ui.manualModelId')}{' '}
             <input
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="上游不支持列表时可手工填写"
+              placeholder={t('ui.enterManuallyIfTheUpstreamDoesNot')}
             />
           </label>
-          <small>此处用于核对模型 ID；保存 Provider 不会改变当前角色分配。</small>
+          <small> {t('ui.useThisToCheckModelIdsSaving')} </small>
         </>
       )}
-      {error && <p role="alert">{error}</p>}
+      {provider?.kind === 'custom' && <ModelPrices provider={provider} />}
+      {error && (
+        <p role="alert">
+          {typeof error === 'string' || error instanceof Error ? (
+            <ErrorText error={error} />
+          ) : (
+            t(error.key)
+          )}
+        </p>
+      )}
     </div>
   );
 }

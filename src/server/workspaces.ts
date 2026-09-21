@@ -1,9 +1,48 @@
-import { mkdir, realpath, access, readFile, lstat, readlink } from 'node:fs/promises';
+import { mkdir, realpath, access, readFile, lstat, readlink, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve, join, relative, isAbsolute, dirname } from 'node:path';
 import { command, shellCommand } from './process.ts';
 import { Store, Fault, now, redact } from './store.ts';
 import type { Repo, Task, Evidence } from '../shared/types.ts';
+import { commitMessage, expectedTaskBranch } from './task-naming.ts';
+
+/** Persisted cleanup states are intentionally separate from Task.stage and retry accounting. */
+export type WorkspaceCleanupStatus =
+  'pending' | 'running' | 'completed' | 'blocked' | 'failed' | 'unknown';
+export interface WorkspaceCleanupRecord {
+  requested?: boolean;
+  status: WorkspaceCleanupStatus;
+  summary?: string;
+  paths?: string[];
+  originalPath: string;
+  expectedBranch: string;
+  expectedHead: string;
+  attempts: number;
+  lastError?: string;
+  requestedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  lastCheckedAt?: string;
+}
+export interface WorkspaceCleanupOutcome {
+  status: WorkspaceCleanupStatus;
+  path: string;
+  attempts: number;
+  reason?: string;
+  alreadyAbsent?: boolean;
+}
+type CleanupTask = Task & {
+  cleanup?: WorkspaceCleanupRecord;
+  /** Transitional read alias for fixtures written before the Store contract settled. */
+  workspaceCleanup?: WorkspaceCleanupRecord;
+};
+
+/** Explicit migration roots accepted for existing tasks; new worktrees always use `root`. */
+export interface WorkspaceRootOptions {
+  legacyRoots?: readonly string[];
+  /** Optional task-id to legacy root mapping supplied by the data-directory migration. */
+  taskRoots?: Readonly<Record<string, string>>;
+}
 
 /** One allowed tracking ref and the commit it currently points at. */
 type TrackingRef = { ref: string; tip: string };
@@ -41,10 +80,36 @@ export type BaselineResult =
 
 export class Workspaces {
   private locks = new Map<string, Promise<unknown>>();
+  private readonly managedRoots: string[];
   constructor(
     readonly root: string,
     private store: Store,
-  ) {}
+    private readonly rootOptions: WorkspaceRootOptions = {},
+  ) {
+    this.managedRoots = [
+      resolve(root),
+      ...(rootOptions.legacyRoots ?? []),
+      ...Object.values(rootOptions.taskRoots ?? {}),
+    ].map((path) => resolve(path));
+    this.managedRoots.splice(
+      1,
+      this.managedRoots.length,
+      ...[...new Set(this.managedRoots.slice(1))],
+    );
+  }
+  private rootsForTask(task: Pick<Task, 'id'>) {
+    const mapped = this.rootOptions.taskRoots?.[task.id];
+    // A migration root is not a wildcard: only the task ids explicitly mapped by migration may
+    // continue using it. Unmapped tasks always resolve to the current root for new worktrees.
+    return mapped ? [resolve(mapped)] : [resolve(this.root)];
+  }
+  private expectedTaskPaths(task: Pick<Task, 'id' | 'repoId'>) {
+    return this.rootsForTask(task).map((root) => ({
+      root,
+      path: join(root, task.repoId, `task-${task.id}`),
+      mirror: join(root, task.repoId, 'mirror.git'),
+    }));
+  }
   async exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(key) ?? Promise.resolve();
     const next = previous.catch(() => {}).then(fn);
@@ -94,6 +159,8 @@ export class Workspaces {
     });
   }
   async prepare(task: Task) {
+    const cleanup = (task as CleanupTask).cleanup ?? (task as CleanupTask).workspaceCleanup;
+    if (cleanup?.status === 'completed') throw new Fault('任务工作区已清理，不能重新准备');
     const repo = this.store.repo(task.repoId);
     if (task.worktree) {
       await this.assertTask(task);
@@ -102,7 +169,12 @@ export class Workspaces {
     const mirror = await this.mirror(repo);
     return this.exclusive(`repo:${repo.id}`, async () => {
       const path = join(this.root, repo.id, `task-${task.id}`);
-      const branch = `phantom/${task.id}`;
+      let branch: string;
+      try {
+        branch = expectedTaskBranch(task);
+      } catch (error) {
+        throw new Fault(String(error));
+      }
       const branches = await this.git(mirror, ['branch', '--list', branch]);
       let exists = true;
       try {
@@ -144,9 +216,24 @@ export class Workspaces {
     });
   }
   async assertManaged(path: string) {
-    const [root, target] = await Promise.all([realpath(this.root), realpath(path)]);
-    const rel = relative(root, target);
-    if (!rel || rel.startsWith('..') || isAbsolute(rel))
+    const target = await realpath(path);
+    const roots = (
+      await Promise.all(
+        this.managedRoots.map((root) =>
+          realpath(root).catch((error) => {
+            if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+              return undefined;
+            throw error;
+          }),
+        ),
+      )
+    ).filter((root): root is string => !!root);
+    if (
+      !roots.some((root) => {
+        const rel = relative(root, target);
+        return !!rel && !rel.startsWith('..') && !isAbsolute(rel);
+      })
+    )
       throw new Fault('操作路径超出受管理工作区');
   }
   async assertTask(task: Task) {
@@ -154,21 +241,25 @@ export class Workspaces {
       throw new Fault('Task/Repo 项目归属不匹配');
     if (task.mergeSourceBranch && (!task.pr || task.mergeSourceBranch !== task.branch))
       throw new Fault('原 PR 来源分支归属不匹配');
-    if (!task.worktree || task.branch !== `phantom/${task.id}`)
+    let expectedBranch: string;
+    try {
+      expectedBranch = expectedTaskBranch(task);
+    } catch (error) {
+      throw new Fault(String(error));
+    }
+    if (!task.worktree || task.branch !== expectedBranch)
       throw new Fault('任务工作区或任务分支缺失、不匹配');
     await this.assertManaged(task.worktree);
-    const expected = join(await realpath(this.root), task.repoId, `task-${task.id}`);
     const actual = await realpath(task.worktree);
-    if (
-      relative(expected, actual) !== '' ||
-      relative(resolve(this.root, task.repoId, `task-${task.id}`), resolve(task.worktree)) !== ''
-    )
-      throw new Fault('工作区不属于当前任务');
+    const expected = this.expectedTaskPaths(task).find(
+      ({ path }) => this.samePath(path, actual) && this.samePath(path, resolve(task.worktree!)),
+    );
+    if (!expected) throw new Fault('工作区不属于当前任务');
     const top = await realpath(await this.git(actual, ['rev-parse', '--show-toplevel']));
     const common = await realpath(
       resolve(actual, await this.git(actual, ['rev-parse', '--git-common-dir'])),
     );
-    const mirror = await realpath(join(this.root, task.repoId, 'mirror.git'));
+    const mirror = await realpath(expected.mirror);
     if (top !== actual || common !== mirror) throw new Fault('任务工作区 Git 归属不匹配');
     if ((await this.git(actual, ['branch', '--show-current'])) !== task.branch)
       throw new Fault('工作区分支不匹配');
@@ -272,11 +363,7 @@ export class Workspaces {
           pending ||
           (await this.git(task.worktree!, ['diff', '--cached', '--name-only'], signal))
         )
-          await this.git(
-            task.worktree!,
-            ['commit', '-m', `Implement task ${task.id}: ${task.title.replace(/[\r\n]/g, ' ')}`],
-            signal,
-          );
+          await this.git(task.worktree!, ['commit', '-m', commitMessage(task)], signal);
       }
       const head = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
       if (pending)
@@ -861,11 +948,533 @@ export class Workspaces {
       throw new Fault('验证过程改变了提交或留下未提交文件，需 Dev 核对');
     return evidence;
   }
+  private cleanupPatch(taskId: string, cleanup: WorkspaceCleanupRecord) {
+    // The shared Task contract is being extended by the Store owner. Keep this adapter usable
+    // during that migration without weakening the persisted shape at runtime.
+    this.store.updateTask(taskId, { cleanup } as unknown as Partial<Task>);
+  }
+  private cleanupRecord(task: CleanupTask, path: string, branch: string, head: string) {
+    const previous = task.cleanup ?? task.workspaceCleanup;
+    return {
+      requested: true,
+      status: previous?.status === 'completed' ? 'completed' : 'pending',
+      ...(previous?.summary ? { summary: previous.summary } : {}),
+      paths: previous?.paths ?? [path],
+      originalPath: previous?.originalPath ?? path,
+      expectedBranch: previous?.expectedBranch ?? branch,
+      expectedHead: previous?.expectedHead ?? head,
+      attempts: previous?.attempts ?? 0,
+      ...(previous?.lastError ? { lastError: previous.lastError } : {}),
+      requestedAt: previous?.requestedAt ?? now(),
+      ...(previous?.startedAt ? { startedAt: previous.startedAt } : {}),
+      ...(previous?.completedAt ? { completedAt: previous.completedAt } : {}),
+      ...(previous?.lastCheckedAt ? { lastCheckedAt: previous.lastCheckedAt } : {}),
+    } satisfies WorkspaceCleanupRecord;
+  }
+  private cleanupOutcome(
+    status: WorkspaceCleanupStatus,
+    cleanup: WorkspaceCleanupRecord,
+    reason?: string,
+    alreadyAbsent = false,
+  ): WorkspaceCleanupOutcome {
+    return {
+      status,
+      path: cleanup.originalPath,
+      attempts: cleanup.attempts,
+      ...(reason ? { reason } : {}),
+      ...(alreadyAbsent ? { alreadyAbsent } : {}),
+    };
+  }
+  private async exists(path: string) {
+    try {
+      await access(path);
+      return true;
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+      throw error;
+    }
+  }
+  private samePath(left: string, right: string) {
+    return resolve(left).toLowerCase() === resolve(right).toLowerCase();
+  }
+  private parseWorktrees(output: string) {
+    return output
+      .split(/\r?\n(?=worktree )/)
+      .map((block) => {
+        const fields = new Map<string, string>();
+        for (const line of block.split(/\r?\n/)) {
+          const index = line.indexOf(' ');
+          if (index > 0) fields.set(line.slice(0, index), line.slice(index + 1));
+        }
+        const path = fields.get('worktree');
+        return path
+          ? {
+              path,
+              head: fields.get('HEAD'),
+              branch: fields.get('branch'),
+              bare: fields.has('bare'),
+            }
+          : undefined;
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => !!entry);
+  }
+  private async worktreeRegistration(mirror: string, path: string) {
+    const output = await this.git(mirror, ['worktree', 'list', '--porcelain']);
+    return this.parseWorktrees(output).find((entry) => this.samePath(entry.path, path));
+  }
+  private async nestedRepository(root: string) {
+    const pending = [root];
+    let visited = 0;
+    while (pending.length) {
+      const current = pending.pop()!;
+      let entries;
+      try {
+        entries = await readdir(current, { withFileTypes: true });
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (entry.name === '.git') {
+          if (!this.samePath(current, root)) return join(current, entry.name);
+          continue;
+        }
+        if (
+          !entry.isDirectory() ||
+          ['node_modules', '.cache', 'coverage', 'dist'].includes(entry.name)
+        )
+          continue;
+        if (++visited > 5000) throw new Fault('任务工作区目录过大，无法可靠核对嵌套仓库');
+        pending.push(join(current, entry.name));
+      }
+    }
+    return undefined;
+  }
+  private async cleanupHandoff(task: CleanupTask) {
+    if (task.stage !== 'done') return '任务尚未进入 done，保留工作区';
+    if (task.completionDeliveryPending !== false) return '外部交接尚未确认完成';
+    if (!task.head || !task.base || !task.branch || !task.pr || !task.issue)
+      return '完成任务缺少固定 head、branch、base、PR 或 Issue 证据';
+    const merge = this.store.get('operation', `merge:${task.id}:${task.head}`);
+    if (merge?.status !== 'done' || merge.kind !== 'merge-pr')
+      return '缺少匹配的 PR merge 完成操作证据';
+    const mergeResult = (merge.result ?? {}) as {
+      number?: number;
+      merged?: boolean;
+      merged_at?: string | null;
+      head?: { sha?: string };
+      base?: { sha?: string };
+    };
+    if (
+      !(mergeResult.merged === true || mergeResult.merged_at != null) ||
+      (mergeResult.number !== undefined && mergeResult.number !== task.pr) ||
+      mergeResult.head?.sha !== task.head ||
+      mergeResult.base?.sha !== task.base
+    )
+      return 'PR merge 完成证据与任务固定 revision 不匹配';
+    const issue = this.store.get(
+      'operation',
+      `complete-issue:${task.id}:${task.head}:${task.base}`,
+    );
+    if (issue?.status !== 'done' || issue.kind !== 'complete-issue')
+      return '缺少匹配的 Issue completion 完成操作证据';
+    const issueResult = (issue.result ?? {}) as { number?: number; state?: string };
+    if (
+      issueResult.state !== 'closed' ||
+      (issueResult.number !== undefined && issueResult.number !== task.issue)
+    )
+      return 'Issue completion 完成证据与任务不匹配';
+    return undefined;
+  }
+  private cleanupRecoveryReason(task: CleanupTask, repo: Repo) {
+    if (task.pendingMerge) return '任务仍有待恢复的合并协调记录';
+    if (
+      this.store
+        .list('run')
+        .some(
+          (run) => run.taskId === task.id && ['queued', 'running', 'waiting'].includes(run.status),
+        )
+    )
+      return '任务仍有活跃 Run';
+    const recovery = this.store
+      .list('recovery')
+      .find((item) => item.taskId === task.id && ['pending', 'recoverable'].includes(item.status));
+    if (recovery) return `任务仍有待恢复项：${recovery.id}`;
+    const unresolved = this.store
+      .list('operation')
+      .find(
+        (operation) =>
+          ['pending', 'uncertain'].includes(operation.status) &&
+          (operation.id === task.id || operation.id.includes(`:${task.id}`)),
+      );
+    if (unresolved) return `任务仍有待恢复的外部操作：${unresolved.id}`;
+    const preview = repo.preview as
+      (typeof repo.preview & { path?: string; worktree?: string }) | undefined;
+    if (preview && ['starting', 'running'].includes(preview.status ?? '')) {
+      if (!preview.path && !preview.worktree) return '仓库体验预览仍在运行';
+      if (preview.path && task.worktree && this.samePath(preview.path, task.worktree))
+        return '任务工作区仍被体验预览引用';
+      if (preview.worktree && task.worktree && this.samePath(preview.worktree, task.worktree))
+        return '任务工作区仍被体验预览引用';
+    }
+    return undefined;
+  }
+  private async cleanupFacts(task: CleanupTask, expectedPath: string, mirror: string) {
+    const pathExists = await this.exists(expectedPath);
+    if (!(await this.exists(mirror))) {
+      if (!pathExists) return { pathExists, registration: undefined };
+      throw new Fault('受管 mirror 缺失，拒绝清理任务工作区');
+    }
+    const registration = await this.worktreeRegistration(mirror, expectedPath);
+    if (!pathExists && !registration) return { pathExists, registration };
+    if (!registration) throw new Fault('任务工作区目录存在但 Git 未登记，拒绝直接删除');
+    if (!pathExists) {
+      if (registration.branch !== `refs/heads/${task.branch}` || registration.head !== task.head)
+        throw new Fault('缺失目录对应的 Git worktree registration 与任务不匹配');
+      return { pathExists, registration };
+    }
+    const actual = await realpath(expectedPath);
+    if (!this.samePath(actual, expectedPath)) throw new Fault('任务工作区路径解析后发生漂移');
+    const top = await realpath(await this.git(actual, ['rev-parse', '--show-toplevel']));
+    const common = await realpath(
+      resolve(actual, await this.git(actual, ['rev-parse', '--git-common-dir'])),
+    );
+    const canonicalMirror = await realpath(mirror);
+    if (!this.samePath(top, actual) || !this.samePath(common, canonicalMirror))
+      throw new Fault('任务工作区 Git common-dir 或根目录不匹配');
+    const branch = await this.git(actual, ['branch', '--show-current']);
+    const head = await this.git(actual, ['rev-parse', 'HEAD']);
+    if (branch !== task.branch || head !== task.head)
+      throw new Fault('任务工作区 branch 或 HEAD 与完成证据不匹配');
+    if (
+      registration.branch !== `refs/heads/${task.branch}` ||
+      registration.head !== task.head ||
+      !this.samePath(registration.path, actual)
+    )
+      throw new Fault('Git worktree registration 与任务 branch、HEAD 或路径不匹配');
+    const status = await this.git(actual, [
+      'status',
+      '--porcelain=v2',
+      '--untracked-files=all',
+      '--ignore-submodules=none',
+    ]);
+    if (status) throw new Fault('任务工作区或索引不干净');
+    if (await this.git(actual, ['diff', '--name-only', '--diff-filter=U', '-z']))
+      throw new Fault('任务工作区存在未合并冲突');
+    const staged = await this.git(actual, ['ls-files', '--stage', '-z']);
+    if (staged.split('\0').some((entry) => entry && entry.split(' ')[0] === '160000'))
+      throw new Fault('任务工作区存在子模块异常');
+    const tracked = (await this.git(actual, ['ls-files', '-co', '--exclude-standard', '-z']))
+      .split('\0')
+      .filter(Boolean);
+    for (const file of tracked) {
+      for (
+        let dir = resolve(actual, file);
+        this.samePath(dir, actual) === false;
+        dir = dirname(dir)
+      ) {
+        if (await this.exists(join(dir, '.git')))
+          throw new Fault(`任务工作区存在嵌套仓库：${file}`);
+        const parent = dirname(dir);
+        if (this.samePath(parent, dir)) break;
+      }
+    }
+    const nested = await this.nestedRepository(actual);
+    if (nested) throw new Fault(`任务工作区存在嵌套仓库：${relative(actual, nested)}`);
+    return { pathExists, registration };
+  }
+  /**
+   * Remove one completed task worktree through Git's native registration-aware operation.
+   * The method is deliberately independent from Engine so startup/maintenance can call it later.
+   */
+  async cleanup(task: Task): Promise<WorkspaceCleanupOutcome> {
+    return this.exclusive(`repo:${task.repoId}`, async () => {
+      const current = this.store.task(task.id) as CleanupTask;
+      const repo = this.store.repo(current.repoId);
+      let branch: string;
+      try {
+        branch = expectedTaskBranch(current);
+      } catch (error) {
+        const path =
+          current.worktree ??
+          current.cleanup?.originalPath ??
+          current.workspaceCleanup?.originalPath ??
+          '';
+        const cleanup = this.cleanupRecord(current, path, current.branch ?? '', current.head ?? '');
+        const reason = String(error);
+        const blocked = {
+          ...cleanup,
+          status: 'blocked' as const,
+          summary: reason,
+          lastError: reason,
+          lastCheckedAt: now(),
+        };
+        this.cleanupPatch(current.id, blocked);
+        return this.cleanupOutcome('blocked', blocked, reason);
+      }
+      const path =
+        current.worktree ??
+        current.cleanup?.originalPath ??
+        current.workspaceCleanup?.originalPath ??
+        '';
+      const expectedEntry =
+        this.expectedTaskPaths(current).find(
+          ({ path: candidate }) => path && this.samePath(candidate, path),
+        ) ?? this.expectedTaskPaths(current)[0];
+      const expectedPath = expectedEntry.path;
+      const cleanup = this.cleanupRecord(current, path || expectedPath, branch, current.head ?? '');
+      const mark = (record: WorkspaceCleanupRecord) => {
+        this.cleanupPatch(current.id, record);
+        return record;
+      };
+      const handoff = await this.cleanupHandoff(current);
+      if (handoff) {
+        const blocked = mark({
+          ...cleanup,
+          status: 'blocked',
+          summary: handoff,
+          lastError: handoff,
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('blocked', blocked, handoff);
+      }
+      const recovery = this.cleanupRecoveryReason(current, repo);
+      if (recovery) {
+        const blocked = mark({
+          ...cleanup,
+          status: 'blocked',
+          summary: recovery,
+          lastError: recovery,
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('blocked', blocked, recovery);
+      }
+      if (!path || !this.samePath(path, expectedPath)) {
+        const reason = '任务工作区路径不是当前受管 task 路径';
+        const blocked = mark({
+          ...cleanup,
+          status: 'blocked',
+          summary: reason,
+          lastError: reason,
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('blocked', blocked, reason);
+      }
+      const mirror = expectedEntry.mirror;
+      let facts: Awaited<ReturnType<Workspaces['cleanupFacts']>>;
+      try {
+        facts = await this.cleanupFacts(current, expectedPath, mirror);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const blocked = mark({
+          ...cleanup,
+          status: 'blocked',
+          summary: reason,
+          lastError: reason,
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('blocked', blocked, reason);
+      }
+      if (!facts.pathExists && !facts.registration) {
+        const completed = mark({
+          ...cleanup,
+          status: 'completed',
+          summary: '任务工作区已清理',
+          lastError: undefined,
+          completedAt: cleanup.completedAt ?? now(),
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('completed', completed, undefined, true);
+      }
+      const startedAt = cleanup.startedAt ?? now();
+      let running = mark({
+        ...cleanup,
+        status: 'running',
+        expectedBranch: branch,
+        expectedHead: current.head!,
+        startedAt,
+        lastError: undefined,
+        lastCheckedAt: now(),
+      });
+      if (!facts.pathExists && facts.registration) {
+        let removed;
+        try {
+          // `--force` is scoped to this exact path and is safe here because the preflight proved
+          // the directory is already absent; a repository-wide `worktree prune` could remove
+          // unrelated stale registrations and is therefore never used.
+          removed = await command(
+            'git',
+            ['worktree', 'remove', '--force', expectedPath],
+            mirror,
+            undefined,
+            120000,
+            false,
+          );
+        } catch (error) {
+          const reason = redact(String(error));
+          const unknown = mark({
+            ...running,
+            status: 'unknown',
+            summary: reason,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('unknown', unknown, reason);
+        }
+        if (removed.code !== 0) {
+          const reason = redact(
+            removed.stderr || removed.stdout || `Git worktree remove 失败 (${removed.code})`,
+          );
+          const failed = mark({
+            ...running,
+            status: 'failed',
+            summary: reason,
+            attempts: running.attempts + 1,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('failed', failed, reason);
+        }
+        let after: ReturnType<Workspaces['worktreeRegistration']> extends Promise<infer T>
+          ? T
+          : never;
+        try {
+          after = await this.worktreeRegistration(mirror, expectedPath);
+        } catch (error) {
+          const reason = redact(`Git worktree registration 核对失败：${String(error)}`);
+          const unknown = mark({
+            ...running,
+            status: 'unknown',
+            summary: reason,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('unknown', unknown, reason);
+        }
+        if (after || (await this.exists(expectedPath))) {
+          const reason = 'Git worktree remove 返回成功但目标 registration 或路径仍存在';
+          const unknown = mark({
+            ...running,
+            status: 'unknown',
+            summary: reason,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('unknown', unknown, reason);
+        }
+        const completed = mark({
+          ...running,
+          status: 'completed',
+          summary: '任务工作区已清理',
+          completedAt: now(),
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('completed', completed, undefined, true);
+      }
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        running = mark({ ...running, attempts: running.attempts + 1, lastCheckedAt: now() });
+        let result;
+        try {
+          result = await command(
+            'git',
+            ['worktree', 'remove', expectedPath],
+            mirror,
+            undefined,
+            120000,
+            false,
+          );
+        } catch (error) {
+          const reason = redact(String(error));
+          const unknown = mark({
+            ...running,
+            status: 'unknown',
+            summary: reason,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('unknown', unknown, reason);
+        }
+        if (result.code === 0) {
+          const remainingPath = await this.exists(expectedPath);
+          let remainingRegistration;
+          try {
+            remainingRegistration = await this.worktreeRegistration(mirror, expectedPath);
+          } catch (error) {
+            const reason = redact(`Git worktree registration 核对失败：${String(error)}`);
+            const unknown = mark({
+              ...running,
+              status: 'unknown',
+              summary: reason,
+              lastError: reason,
+              lastCheckedAt: now(),
+            });
+            return this.cleanupOutcome('unknown', unknown, reason);
+          }
+          if (!remainingPath && !remainingRegistration) {
+            const completed = mark({
+              ...running,
+              status: 'completed',
+              summary: '任务工作区已清理',
+              lastError: undefined,
+              completedAt: now(),
+              lastCheckedAt: now(),
+            });
+            return this.cleanupOutcome('completed', completed);
+          }
+          const reason = 'Git worktree remove 返回成功但路径或 registration 仍存在';
+          const unknown = mark({
+            ...running,
+            status: 'unknown',
+            summary: reason,
+            lastError: reason,
+            lastCheckedAt: now(),
+          });
+          return this.cleanupOutcome('unknown', unknown, reason);
+        }
+        const reason = redact(
+          result.stderr || result.stdout || `Git worktree remove 失败 (${result.code})`,
+        );
+        const transient =
+          /(?:index\.lock|lock file|EPERM|EACCES|EBUSY|access is denied|permission denied|拒绝访问|resource busy|cannot remove|could not remove|unable to remove)/i.test(
+            reason,
+          );
+        if (transient && attempt < maxAttempts) continue;
+        const failed = mark({
+          ...running,
+          status: 'failed',
+          summary: reason,
+          lastError: reason,
+          lastCheckedAt: now(),
+        });
+        return this.cleanupOutcome('failed', failed, reason);
+      }
+      const reason = 'Git worktree remove 未完成';
+      const failed = mark({
+        ...running,
+        status: 'failed',
+        summary: reason,
+        lastError: reason,
+        lastCheckedAt: now(),
+      });
+      return this.cleanupOutcome('failed', failed, reason);
+    });
+  }
+  async cleanupTask(task: Task) {
+    return this.cleanup(task);
+  }
   async push(task: Task, signal?: AbortSignal) {
     const repo = this.store.repo(task.repoId);
     if (!repo.authorized) throw new Fault('仓库未授权推送');
     await this.assertManaged(task.worktree!);
-    if ((await this.git(task.worktree!, ['branch', '--show-current'], signal)) !== task.branch)
+    let expectedBranch: string;
+    try {
+      expectedBranch = expectedTaskBranch(task);
+    } catch (error) {
+      throw new Fault(String(error));
+    }
+    if (task.branch !== expectedBranch) throw new Fault('任务持久分支与命名契约不匹配');
+    if ((await this.git(task.worktree!, ['branch', '--show-current'], signal)) !== expectedBranch)
       throw new Fault('分支不匹配');
     if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
       throw new Fault('有未提交修改，无法发布');

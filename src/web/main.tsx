@@ -1,6 +1,4 @@
 import { PriorityBadge, PriorityEditor, ClaimConditions, ClaimOrder } from './task-priority.tsx';
-import { priorityText } from './priority-resources.ts';
-import type { PriorityLocale } from '../shared/priority.ts';
 import type { SchedulingExplanation } from '../shared/types.ts';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -31,40 +29,34 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
-import type {
-  Snapshot,
-  Project,
-  Repo,
-  Task,
-  Settings,
-  ProfileName,
-  Message,
-} from '../shared/types.ts';
+import type { Snapshot, Project, Repo, Task, Settings, Message, Stage } from '../shared/types.ts';
 import { stageLabels } from '../shared/types.ts';
-import { api, session } from './api.ts';
+import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
+import { ErrorText } from './error-text.tsx';
 import { MarkdownContent } from './markdown-content.tsx';
 import { ActivityRow, PMProgress } from './pm-activity.tsx';
 import { ProfileEditor } from './profile-editor.tsx';
 import { ProviderSettings } from './providers.tsx';
+import { RuntimeFields, profileNames, type RuntimeConfig } from './runtime-settings.tsx';
+import { ProjectActions, TaskRuntimeBadges } from './project-actions.tsx';
+import { AllowancePanel, RunRecord, TaskUsagePanel } from './usage-panel.tsx';
 import './style.css';
+import { LocaleProvider, useLocale, LanguageControl } from './locale/provider.tsx';
 
-const time = (value: string) =>
-  new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-const profiles: Record<ProfileName, string> = {
-  backend: '常规后端',
-  frontend: '前端',
-  fullstack: '前后端',
-  complex: '复杂任务',
-  pm: '项目 PM',
-  review: '独立 Review',
-};
+const profileKeys = {
+  backend: 'profile.backend',
+  frontend: 'profile.frontend',
+  fullstack: 'profile.fullstack',
+  complex: 'profile.complex',
+  pm: 'profile.pm',
+  review: 'profile.review',
+} as const;
 const isRunning = (status: string) => status === 'running' || status === 'waiting';
 function App() {
-  const [priorityLocale, setPriorityLocale] = useState<PriorityLocale>(
-    localStorage.getItem('phantom.priorityLocale') === 'en' ? 'en' : 'zh-CN',
-  );
+  const { t, time, number, host, locale: priorityLocale } = useLocale();
   const [schedule, setSchedule] = useState<SchedulingExplanation>();
   const [scheduleError, setScheduleError] = useState('');
+  const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleRefresh, setScheduleRefresh] = useState(0);
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
@@ -74,7 +66,7 @@ function App() {
   );
   const [repoConfig, setRepoConfig] = useState<Repo>();
   const [taskDetail, setTaskDetail] = useState<string>();
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | Error>('');
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('phantom.theme') ?? 'dark');
@@ -97,12 +89,19 @@ function App() {
     [],
   );
   const [intent, setIntent] = useState<Message['intent']>('discuss');
+  const [deliveryMode, setDeliveryMode] = useState<'queue' | 'steer'>('queue');
   const [filter, setFilter] = useState('all');
+  const [controlFilter, setControlFilter] = useState('all');
+  const [taskView, setTaskView] = useState<'board' | 'list'>(() =>
+    localStorage.getItem('phantom.taskView') === 'list' ? 'list' : 'board',
+  );
   const [query, setQuery] = useState('');
   const scroll = useRef<HTMLDivElement>(null);
+  const stateRequest = useRef(0);
   const reload = useCallback(async () => {
+    const request = ++stateRequest.current;
     const result = await api<Snapshot>('/state');
-    setState(result);
+    if (request === stateRequest.current) setState(result);
   }, []);
   useEffect(() => {
     let source: EventSource | undefined;
@@ -117,7 +116,10 @@ function App() {
         source.onerror = () => setConnected(false);
         source.addEventListener('change', () => {
           if (timer) clearTimeout(timer);
-          timer = setTimeout(() => void reload().catch((e) => setError(String(e))), 180);
+          timer = setTimeout(
+            () => void reload().catch((e) => setError(e instanceof Error ? e : String(e))),
+            180,
+          );
         });
         source.addEventListener('delta', (event) => {
           const d = JSON.parse((event as MessageEvent).data);
@@ -128,7 +130,7 @@ function App() {
             }));
         });
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(e instanceof Error ? e : String(e)));
     return () => {
       alive = false;
       source?.close();
@@ -143,6 +145,7 @@ function App() {
     localStorage.setItem('phantom.project', selected);
     setTaskDetail(undefined);
     setDraft('');
+    setDeliveryMode('queue');
     updateImages([]);
   }, [selected]);
   useEffect(() => {
@@ -155,12 +158,24 @@ function App() {
       await fn();
       await reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e : String(e));
     } finally {
       setBusy(false);
     }
   }
   const project = state?.projects.find((p) => p.id === selected) ?? state?.projects[0];
+  const projectAgent =
+    project?.agentSelection?.mode === 'override'
+      ? project.agentSelection.agent
+      : (state?.settings.defaultAgent ?? 'omp');
+  const pmProfile =
+    project?.profileModes?.pm === 'inherit'
+      ? projectAgent === 'omp'
+        ? state?.settings.ompProfiles?.pm
+        : state?.settings.profiles.pm
+      : projectAgent === 'omp'
+        ? (project?.ompProfiles?.pm ?? state?.settings.ompProfiles?.pm)
+        : project?.profiles.pm;
   const repos = state?.repos.filter((r) => r.projectId === project?.id) ?? [];
   const tasks = state?.tasks.filter((t) => t.projectId === project?.id) ?? [];
   const runs = state?.runs.filter((r) => r.projectId === project?.id) ?? [];
@@ -186,13 +201,19 @@ function App() {
     (t) =>
       (filter === 'all' ||
         (filter === 'active' ? !['done', 'cancelled'].includes(t.stage) : t.stage === filter)) &&
+      (controlFilter === 'all' || t.control === controlFilter) &&
       `${t.title} ${t.spec}`.toLowerCase().includes(query.toLowerCase()),
   );
   const pmBusy = active.some((r) => r.role === 'pm');
+  useEffect(() => {
+    if (!pmBusy) setDeliveryMode('queue');
+  }, [pmBusy]);
   const detail = state?.tasks.find((t) => t.id === taskDetail);
+  const currentSchedule = schedule?.projectId === project?.id ? schedule : undefined;
+  const stages = Object.keys(stageLabels) as Stage[];
   useEffect(() => {
     let current = true;
-    setSchedule(undefined);
+    setScheduleLoading(!!project);
     setScheduleError('');
     if (project)
       void api<SchedulingExplanation>(`/projects/${project.id}/scheduling`)
@@ -201,6 +222,9 @@ function App() {
         })
         .catch((error) => {
           if (current) setScheduleError(String(error));
+        })
+        .finally(() => {
+          if (current) setScheduleLoading(false);
         });
     return () => {
       current = false;
@@ -212,11 +236,12 @@ function App() {
     const content = draft;
     try {
       await act(async () => {
-        let body: unknown = { content, intent };
+        let body: unknown = { content, intent, deliveryMode: pmBusy ? deliveryMode : 'queue' };
         if (images.length) {
           const form = new FormData();
           form.append('content', content);
           form.append('intent', intent ?? 'discuss');
+          form.append('deliveryMode', pmBusy ? deliveryMode : 'queue');
           for (const image of images) form.append('images', image.file);
           body = form;
         }
@@ -231,7 +256,7 @@ function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Phantom Circuit 首页">
+        <a className="brand" href="/" aria-label={t('app.home')}>
           <span className="brand-mark">
             <Layers3 size={23} />
           </span>
@@ -240,11 +265,15 @@ function App() {
           </span>
         </a>
         <div className="workspace-label">
-          本地工作空间 <span className="local-dot" />
+          {t('app.localWorkspace')} <span className="local-dot" />
         </div>
         <div className="sidebar-heading">
-          <span>项目</span>
-          <button className="icon-button" aria-label="新建项目" onClick={() => setModal('project')}>
+          <span>{t('app.projects')}</span>
+          <button
+            className="icon-button"
+            aria-label={t('app.newProject')}
+            onClick={() => setModal('project')}
+          >
             <Plus size={16} />
           </button>
         </div>
@@ -269,30 +298,32 @@ function App() {
         </nav>
         {!state?.projects.length && (
           <p className="sidebar-hint">
-            添加你的第一个项目
-            <br />让 PM 接手工程工作。
+            {t('app.firstProject')}
+            <br />
+            {t('app.firstProjectHint')}
           </p>
         )}
         <div className="sidebar-bottom">
+          <LanguageControl />
           <button
             className="sidebar-action"
-            aria-label="运行设置"
+            aria-label={t('settings.title')}
             onClick={() => setModal('settings')}
           >
             <Settings2 size={17} />
-            <span>运行设置</span>
+            <span>{t('settings.title')}</span>
           </button>
           <button
             className="sidebar-action"
-            aria-label={theme === 'dark' ? '浅色外观' : '深色外观'}
+            aria-label={theme === 'dark' ? t('controls.light') : t('controls.dark')}
             onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           >
             {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
-            <span>{theme === 'dark' ? '浅色外观' : '深色外观'}</span>
+            <span>{theme === 'dark' ? t('controls.light') : t('controls.dark')}</span>
           </button>
           <div className="connection">
             <span className={`status-dot ${connected ? 'live' : ''}`} />
-            <span>{connected ? '本地服务已连接' : '正在连接本地服务'}</span>
+            <span>{connected ? t('connection.ready') : t('connection.waiting')}</span>
             <span className="version">v0.1</span>
           </div>
         </div>
@@ -300,12 +331,12 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div className="breadcrumb">
-            工作空间 <span>/</span>
-            <strong>{project?.name ?? '开始使用'}</strong>
+            {t('app.workspace')} <span>/</span>
+            <strong>{project?.name ?? t('app.start')}</strong>
           </div>
           <div className="topbar-actions">
             <span className="local-badge">
-              <ShieldCheck size={13} /> 本机运行
+              <ShieldCheck size={13} /> {t('app.local')}
             </span>
             {project?.githubProjectUrl && (
               <a
@@ -321,8 +352,28 @@ function App() {
         </header>
         {error && (
           <div className="error-banner" role="alert">
-            <span>{error}</span>
-            <button className="icon-button" aria-label="关闭错误" onClick={() => setError('')}>
+            <span>
+              {error instanceof LocalUiError ? (
+                t(error.key)
+              ) : error instanceof HostRequestError ? (
+                <ErrorText error={error} />
+              ) : error instanceof LocalRequestError ? (
+                error.kind === 'connection' ? (
+                  t('connection.failed')
+                ) : (
+                  t('request.failed', { status: error.status })
+                )
+              ) : error instanceof Error ? (
+                error.message
+              ) : (
+                error
+              )}
+            </span>
+            <button
+              className="icon-button"
+              aria-label={t('common.dismissError')}
+              onClick={() => setError('')}
+            >
               <X size={16} />
             </button>
           </div>
@@ -330,37 +381,37 @@ function App() {
         {!state ? (
           <div className="loading">
             <span className="spinner" />
-            正在连接工作空间…
+            {t('connection.loading')}
           </div>
         ) : !project ? (
           <div className="onboarding">
             <div className="eyebrow">
               <Radio size={16} /> PHANTOM CIRCUIT
             </div>
-            <h1>从一个项目开始。</h1>
+            <h1>{t('onboarding.title')}</h1>
             <p>
-              告诉 PM 你想做什么。
+              {t('onboarding.intro')}
               <br />
-              准备好后开启仓库，让开发、评审和交付持续运行。
+              {t('onboarding.description')}
             </p>
             <button className="primary-button" onClick={() => setModal('project')}>
-              <Plus size={17} /> 创建项目
+              <Plus size={17} /> {t('project.create')}
             </button>
             <div className="onboarding-flow">
               <div>
                 <span>01</span>
-                <strong>讨论需求</strong>
-                <small>与项目 PM 对齐目标</small>
+                <strong>{t('onboarding.discuss')}</strong>
+                <small>{t('onboarding.align')}</small>
               </div>
               <div>
                 <span>02</span>
-                <strong>打开开工开关</strong>
-                <small>按你的节奏并行开发</small>
+                <strong>{t('onboarding.switch')}</strong>
+                <small>{t('onboarding.pace')}</small>
               </div>
               <div>
                 <span>03</span>
-                <strong>体验并反馈</strong>
-                <small>AI 负责工程交付闭环</small>
+                <strong>{t('onboarding.feedback')}</strong>
+                <small>{t('onboarding.delivery')}</small>
               </div>
             </div>
           </div>
@@ -368,36 +419,45 @@ function App() {
           <>
             <section className="project-header">
               <div>
-                <div className="eyebrow">PROJECT WORKSPACE</div>
+                <div className="eyebrow">{t('app.projectWorkspace')}</div>
                 <h1>{project.name}</h1>
-                <p>{project.description || '讨论需求，开启开发，体验结果。'}</p>
+                <p>{project.description || t('project.description')}</p>
               </div>
               <button className="secondary-button" onClick={() => setModal('project-settings')}>
-                项目模型设置
+                {t('ui.projectModelSettings')}{' '}
               </button>
               <button className="secondary-button" onClick={() => setModal('repo')}>
-                <Plus size={16} /> 接入仓库
+                <Plus size={16} /> {t('repo.connect')}
               </button>
             </section>
-            <section className="metrics" aria-label="项目运行概况">
+            <section className="metrics" aria-label={t('project.overview')}>
               <Metric
                 value={active.filter((r) => r.role === 'dev').length}
-                label="正在开发"
+                label={t('metric.dev')}
                 suffix={`/ ${project.devLimit}`}
                 live
               />
-              <Metric value={active.filter((r) => r.role === 'review').length} label="独立评审" />
-              <Metric value={tasks.filter((t) => t.stage === 'ready').length} label="等待认领" />
-              <Metric value={tasks.filter((t) => t.stage === 'done').length} label="工程完成" />
+              <Metric
+                value={active.filter((r) => r.role === 'review').length}
+                label={t('metric.review')}
+              />
+              <Metric
+                value={tasks.filter((t) => t.stage === 'ready').length}
+                label={t('metric.ready')}
+              />
+              <Metric
+                value={tasks.filter((t) => t.stage === 'done').length}
+                label={t('metric.done')}
+              />
             </section>
             <div className="workspace-grid">
               <section className="primary-workspace">
-                <div className="tabs" role="tablist" aria-label="项目视图">
+                <div className="tabs" role="tablist" aria-label={t('project.views')}>
                   {(
                     [
-                      { key: 'chat', label: '与 PM 讨论', icon: MessageSquare },
-                      { key: 'tasks', label: '任务', icon: Layers3 },
-                      { key: 'runs', label: '运行记录', icon: Activity },
+                      { key: 'chat', label: t('tabs.chat'), icon: MessageSquare },
+                      { key: 'tasks', label: t('tabs.tasks'), icon: Layers3 },
+                      { key: 'runs', label: t('tabs.runs'), icon: Activity },
                     ] as const
                   ).map((t) => (
                     <button
@@ -409,34 +469,38 @@ function App() {
                     >
                       <t.icon size={15} />
                       {t.label}
-                      {t.key === 'tasks' && <span className="tab-count">{tasks.length}</span>}
+                      {t.key === 'tasks' && (
+                        <span className="tab-count">{number(tasks.length)}</span>
+                      )}
                     </button>
                   ))}
                 </div>
                 {view === 'chat' ? (
                   <div className="chat-workspace">
                     <div className="conversation" ref={scroll} aria-live="polite">
+                      <ProjectActions
+                        key={project.id}
+                        state={state}
+                        project={project}
+                        reload={reload}
+                      />
                       {!timeline.length && (
                         <div className="chat-empty">
                           <div className="pm-avatar">
                             <Layers3 size={22} />
                           </div>
-                          <h2>我们先聊聊你的想法。</h2>
+                          <h2>{t('chat.emptyTitle')}</h2>
                           <p>
-                            描述要解决的问题，或者你希望获得的体验。
+                            {t('chat.emptyDescription')}
                             <br />
-                            仓库不开工时，我们可以专心讨论。
+                            {t('chat.emptyHint')}
                           </p>
                           <div className="suggestions">
-                            <button
-                              onClick={() => setDraft('我想先和你梳理这个项目的需求和使用场景。')}
-                            >
-                              梳理项目需求 <ArrowUpRight size={13} />
+                            <button onClick={() => setDraft(t('chat.requirementsDraft'))}>
+                              {t('chat.requirements')} <ArrowUpRight size={13} />
                             </button>
-                            <button
-                              onClick={() => setDraft('请先了解已接入的仓库，告诉我现在能做什么。')}
-                            >
-                              了解现有项目 <ArrowUpRight size={13} />
+                            <button onClick={() => setDraft(t('chat.exploreDraft'))}>
+                              {t('chat.explore')} <ArrowUpRight size={13} />
                             </button>
                           </div>
                         </div>
@@ -451,8 +515,15 @@ function App() {
                             />
                           );
                         const m = entry.message!;
+                        const messageRun =
+                          m.role === 'assistant'
+                            ? active.find((run) => run.id === m.runId)
+                            : undefined;
                         return (
-                          <article key={m.id} className={`message ${m.role}`}>
+                          <article
+                            key={`${m.role}:${m.draftId ?? m.id}`}
+                            className={`message ${m.role}`}
+                          >
                             <div className="message-heading">
                               <span
                                 className={m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'}
@@ -460,36 +531,50 @@ function App() {
                                 {m.role === 'assistant' ? (
                                   <Layers3 size={13} />
                                 ) : m.role === 'user' ? (
-                                  '你'
+                                  t('chat.you')
                                 ) : (
                                   '!'
                                 )}
                               </span>
                               <strong>
                                 {m.role === 'assistant'
-                                  ? '项目 PM'
+                                  ? t('profile.pm')
                                   : m.role === 'user'
-                                    ? '你'
-                                    : '运行提示'}
+                                    ? t('ui.you')
+                                    : t('ui.runNotice')}
                               </strong>
                               {m.intent && (
                                 <span className="message-intent">
                                   {
                                     {
-                                      discuss: '讨论',
-                                      implement: '实施需求',
-                                      feedback: '体验反馈',
+                                      discuss: t('ui.discussion'),
+                                      implement: t('ui.implementationRequest'),
+                                      feedback: t('ui.experienceFeedback'),
                                     }[m.intent]
                                   }
                                 </span>
                               )}
                               <time>{time(m.createdAt)}</time>
+                              {(m.draftStatus ?? m.status) && (
+                                <span className="runtime-badge">
+                                  {t(`delivery.${m.draftStatus ?? m.status!}`)}
+                                </span>
+                              )}
                             </div>
+                            {messageRun && <PMProgress run={messageRun} activities={activities} />}
                             <div className="message-content">
                               {m.role === 'system' ? (
-                                m.content
+                                host(m.content, m.descriptor)
                               ) : (
-                                <MarkdownContent content={m.content} />
+                                <MarkdownContent
+                                  content={
+                                    m.runId &&
+                                    isRunning(m.draftStatus ?? m.status ?? '') &&
+                                    stream[m.runId]
+                                      ? stream[m.runId]
+                                      : m.content
+                                  }
+                                />
                               )}
                             </div>
                             {!!m.attachments?.length && (
@@ -516,23 +601,30 @@ function App() {
                                 disabled={busy || pmBusy}
                                 onClick={() => void act(() => api(`/messages/${m.id}/retry`, {}))}
                               >
-                                重新发送
+                                {t('common.retry')}
                               </button>
                             )}
                           </article>
                         );
                       })}
                       {active
-                        .filter((r) => r.role === 'pm')
+                        .filter(
+                          (r) =>
+                            r.role === 'pm' &&
+                            !messages.some(
+                              (message) => message.role === 'assistant' && message.runId === r.id,
+                            ),
+                        )
                         .map((r) => (
                           <article className="message assistant" key={r.id}>
                             <div className="message-heading">
                               <span className="mini-avatar">
                                 <Layers3 size={13} />
                               </span>
-                              <strong>项目 PM</strong>
+                              <strong>{t('profile.pm')}</strong>
                               <span className="thinking">
-                                处理中<span>…</span>
+                                {t('chat.thinking')}
+                                <span>…</span>
                               </span>
                             </div>
                             <PMProgress run={r} activities={activities} />
@@ -545,6 +637,20 @@ function App() {
                         ))}
                     </div>
                     <div className="composer">
+                      {pmBusy && (
+                        <label className="delivery-mode">
+                          {t('delivery.mode')}
+                          <select
+                            value={deliveryMode}
+                            onChange={(event) =>
+                              setDeliveryMode(event.target.value as 'queue' | 'steer')
+                            }
+                          >
+                            <option value="queue">{t('delivery.queue')}</option>
+                            <option value="steer">{t('delivery.steer')}</option>
+                          </select>
+                        </label>
+                      )}
                       <div className="intent-row">
                         {(['discuss', 'implement', 'feedback'] as const).map((i) => (
                           <button
@@ -553,18 +659,20 @@ function App() {
                             onClick={() => setIntent(i)}
                           >
                             {
-                              { discuss: '聊一聊', implement: '交给 PM 做', feedback: '体验反馈' }[
-                                i
-                              ]
+                              {
+                                discuss: t('chat.talk'),
+                                implement: t('chat.delegate'),
+                                feedback: t('chat.feedback'),
+                              }[i]
                             }
                           </button>
                         ))}
                       </div>
                       <div className="image-picker">
                         <label>
-                          添加图片
+                          {t('ui.addImages')}{' '}
                           <input
-                            aria-label="选择图片"
+                            aria-label={t('ui.chooseImages')}
                             type="file"
                             accept="image/png,image/jpeg,image/webp"
                             multiple
@@ -573,7 +681,7 @@ function App() {
                               const files = Array.from(event.target.files ?? []);
                               event.target.value = '';
                               if (images.length + files.length > 4) {
-                                setError('每条消息最多 4 张图片');
+                                setError(new LocalUiError('ui.atMost4ImagesPerMessage'));
                                 return;
                               }
                               if (
@@ -582,11 +690,11 @@ function App() {
                                     !['image/png', 'image/jpeg', 'image/webp'].includes(file.type),
                                 )
                               ) {
-                                setError('仅支持 PNG、JPEG、WebP 图片');
+                                setError(new LocalUiError('ui.onlyPngJpegAndWebpImagesAre'));
                                 return;
                               }
                               if (files.some((file) => file.size > 10 * 1024 * 1024)) {
-                                setError('每张图片不能超过 10 MiB');
+                                setError(new LocalUiError('ui.eachImageMustBe10MibOr'));
                                 return;
                               }
                               setError('');
@@ -597,19 +705,22 @@ function App() {
                             }}
                           />
                         </label>
-                        <small>PNG / JPEG / WebP · 最多 4 张 · 每张 10 MiB</small>
+                        <small> {t('ui.pngJpegWebpUpTo4Images')} </small>
                       </div>
                       {!!images.length && (
                         <div className="image-drafts">
                           {images.map((image) => (
                             <div key={image.url} className="image-draft">
-                              <img src={image.url} alt={`待发送：${image.file.name}`} />
+                              <img
+                                src={image.url}
+                                alt={t('images.pending', { name: image.file.name })}
+                              />
                               <span>
                                 {image.file.name}
                                 <small>{Math.max(1, Math.ceil(image.file.size / 1024))} KiB</small>
                               </span>
                               <button
-                                aria-label={`移除 ${image.file.name}`}
+                                aria-label={t('images.remove', { name: image.file.name })}
                                 disabled={busy}
                                 onClick={() =>
                                   updateImages(images.filter((item) => item !== image))
@@ -622,14 +733,14 @@ function App() {
                         </div>
                       )}
                       <textarea
-                        aria-label="给 PM 的消息"
+                        aria-label={t('chat.message')}
                         disabled={busy}
                         placeholder={
                           intent === 'discuss'
-                            ? '有什么想法？先聊清楚，再决定开工。'
+                            ? t('chat.discussPlaceholder')
                             : intent === 'implement'
-                              ? '描述你明确希望完成的需求…'
-                              : '告诉 PM 你的使用感受，哪里需要改进…'
+                              ? t('chat.implementPlaceholder')
+                              : t('chat.feedbackPlaceholder')
                         }
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
@@ -642,16 +753,14 @@ function App() {
                       />
                       <div className="composer-footer">
                         <span>
-                          {intent === 'discuss'
-                            ? '讨论不会自动派发开发任务'
-                            : 'PM 会整理任务；仓库开工后自动认领'}
-                          <small>Ctrl ↵ 发送</small>
+                          {intent === 'discuss' ? t('chat.discussNote') : t('chat.implementNote')}
+                          <small>{t('chat.shortcut')}</small>
                         </span>
                         <button
                           className="send-button"
                           disabled={(!draft.trim() && !images.length) || busy}
                           onClick={() => void send()}
-                          aria-label="发送消息"
+                          aria-label={t('common.send')}
                         >
                           <Send size={17} />
                         </button>
@@ -660,72 +769,136 @@ function App() {
                   </div>
                 ) : view === 'tasks' ? (
                   <div className="task-workspace">
-                    <label className="priority-language">
-                      {priorityText[priorityLocale].language}
-                      <select
-                        value={priorityLocale}
-                        onChange={(e) => {
-                          const locale = e.target.value as PriorityLocale;
-                          setPriorityLocale(locale);
-                          localStorage.setItem('phantom.priorityLocale', locale);
-                        }}
-                      >
-                        <option value="zh-CN">中文</option>
-                        <option value="en">English</option>
-                      </select>
-                    </label>
                     <ClaimOrder
-                      schedule={schedule}
+                      schedule={currentSchedule}
                       projects={state?.projects ?? []}
                       locale={priorityLocale}
                       refresh={() => setScheduleRefresh((n) => n + 1)}
                       error={scheduleError}
+                      refreshing={scheduleLoading}
                     />
                     <div className="list-toolbar">
                       <input
-                        aria-label="搜索任务"
-                        placeholder="搜索任务…"
+                        aria-label={t('tasks.search')}
+                        placeholder={t('tasks.searchPlaceholder')}
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                       />
                       <select
-                        aria-label="任务状态筛选"
+                        aria-label={t('tasks.filter')}
                         value={filter}
                         onChange={(e) => setFilter(e.target.value)}
                       >
-                        <option value="all">全部状态</option>
-                        <option value="active">未完成</option>
-                        <option value="ready">待认领</option>
-                        <option value="done">工程完成</option>
+                        <option value="all">{t('tasks.all')}</option>
+                        <option value="active">{t('tasks.active')}</option>
+                        {stages.map((stage) => (
+                          <option key={stage} value={stage}>
+                            {t(`stage.${stage}`)}
+                          </option>
+                        ))}
                       </select>
+                      <select
+                        aria-label={t('tasks.control')}
+                        value={controlFilter}
+                        onChange={(event) => setControlFilter(event.target.value)}
+                      >
+                        <option value="all">{t('tasks.allControls')}</option>
+                        <option value="active">{t('tasks.activeControl')}</option>
+                        <option value="paused">{t('tasks.pausedControl')}</option>
+                      </select>
+                      <div className="view-switch" role="group" aria-label={t('tasks.view')}>
+                        {(['board', 'list'] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            aria-pressed={taskView === mode}
+                            onClick={() => {
+                              setTaskView(mode);
+                              localStorage.setItem('phantom.taskView', mode);
+                            }}
+                          >
+                            {t(`tasks.${mode}`)}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    {shown.length ? (
+                    {taskView === 'board' ? (
+                      <div className="task-board" tabIndex={0} aria-label={t('tasks.board')}>
+                        {stages
+                          .filter((stage) => !stages.includes(filter as Stage) || stage === filter)
+                          .map((stage) => {
+                            const column = shown.filter((task) => task.stage === stage);
+                            return (
+                              <section
+                                className="board-column"
+                                key={stage}
+                                aria-label={t(`stage.${stage}`)}
+                              >
+                                <h3>
+                                  {t(`stage.${stage}`)} <span>{number(column.length)}</span>
+                                </h3>
+                                {column.map((task) => (
+                                  <button
+                                    className="task-card"
+                                    key={task.id}
+                                    onClick={() => setTaskDetail(task.id)}
+                                  >
+                                    <strong>{task.title}</strong>
+                                    <span>
+                                      {repos.find((repo) => repo.id === task.repoId)?.name} ·{' '}
+                                      {t(profileKeys[task.profile])}
+                                    </span>
+                                    <PriorityBadge value={task.priority} locale={priorityLocale} />
+                                    <TaskRuntimeBadges state={state} taskId={task.id} />
+                                    <span>
+                                      {t('tasks.dependencies', { count: task.dependencies.length })}
+                                    </span>
+                                    {task.control === 'paused' && (
+                                      <em>{t('tasks.pausedControl')}</em>
+                                    )}
+                                    {task.blocked && (
+                                      <em>{host(task.blocked, task.blockedDescriptor)}</em>
+                                    )}
+                                  </button>
+                                ))}
+                                {!column.length && (
+                                  <p className="muted">{t('tasks.columnEmpty')}</p>
+                                )}
+                              </section>
+                            );
+                          })}
+                      </div>
+                    ) : shown.length ? (
                       <div className="task-list">
-                        {shown.map((t) => (
+                        {shown.map((task) => (
                           <button
                             className="task-row"
-                            key={t.id}
-                            onClick={() => setTaskDetail(t.id)}
+                            key={task.id}
+                            onClick={() => setTaskDetail(task.id)}
                           >
-                            <span className={`task-icon ${t.stage}`}>
-                              {t.stage === 'done' ? (
+                            <span className={`task-icon ${task.stage}`}>
+                              {task.stage === 'done' ? (
                                 <Check size={17} />
-                              ) : t.blocked ? (
+                              ) : task.blocked ? (
                                 <Pause size={17} />
                               ) : (
                                 <Circle size={16} />
                               )}
                             </span>
                             <div className="task-row-main">
-                              <strong>{t.title}</strong>
-                              <PriorityBadge value={t.priority} locale={priorityLocale} />
+                              <strong>{task.title}</strong>
+                              <PriorityBadge value={task.priority} locale={priorityLocale} />
+                              <TaskRuntimeBadges state={state} taskId={task.id} />
                               <span>
-                                {repos.find((r) => r.id === t.repoId)?.name} <i>·</i>{' '}
-                                {profiles[t.profile]} {t.blocked && <em>· {t.blocked}</em>}
+                                {repos.find((r) => r.id === task.repoId)?.name} <i>·</i>{' '}
+                                {t(profileKeys[task.profile])}{' '}
+                                {task.blocked && (
+                                  <em>· {host(task.blocked, task.blockedDescriptor)}</em>
+                                )}
                               </span>
                             </div>
-                            <span className={`stage ${t.stage}`}>
-                              {t.control === 'paused' ? '已暂停' : stageLabels[t.stage]}
+                            <span className={`stage ${task.stage}`}>
+                              {t(`stage.${task.stage}`)}
+                              {task.control === 'paused' && <> · {t('tasks.pausedControl')}</>}
                             </span>
                             <ArrowUpRight size={14} />
                           </button>
@@ -734,8 +907,8 @@ function App() {
                     ) : (
                       <Empty
                         icon={<Layers3 size={26} />}
-                        title="还没有匹配的任务"
-                        text="向 PM 提出明确需求，任务和依赖会在这里出现。"
+                        title={t('tasks.emptyTitle')}
+                        text={t('tasks.emptyDescription')}
                       />
                     )}
                   </div>
@@ -752,28 +925,40 @@ function App() {
                               <strong>
                                 {r.role.toUpperCase()}{' '}
                                 <span>
-                                  {r.provider?.name ?? 'Codex 官方登录'} (
-                                  {r.profileConfig?.providerId ?? 'codex'}) ·{' '}
-                                  {r.profileConfig?.model ?? '历史记录未保存模型'} /{' '}
-                                  {r.profileConfig?.effort ?? '未知档位'}
+                                  {r.agentKind === 'omp'
+                                    ? (r.modelIdentity?.providerId ??
+                                      r.profileConfig?.providerId ??
+                                      t('usage.unknown'))
+                                    : r.provider?.kind === 'custom'
+                                      ? r.provider.name
+                                      : t('ui.officialCodexLogin')}{' '}
+                                  ({r.profileConfig?.providerId ?? 'codex'}) ·{' '}
+                                  {r.modelIdentity?.model ??
+                                    r.model?.model ??
+                                    r.profileConfig?.model ??
+                                    t('ui.modelNotRecorded')}{' '}
+                                  / {r.profileConfig?.effort ?? t('ui.unknownEffort')}
                                 </span>
                               </strong>
                               <p>
-                                {tasks.find((t) => t.id === r.taskId)?.title ?? '项目需求与协调'}
-                                {r.error && <em>{r.error}</em>}
+                                {tasks.find((t) => t.id === r.taskId)?.title ??
+                                  t('ui.projectRequirementsAndCoordination')}
+                                {r.error && <em>{host(r.error, r.errorDescriptor)}</em>}
                               </p>
+                              <TaskRuntimeBadges state={state} taskId={r.taskId} runId={r.id} />
+                              <RunRecord run={r} />
                             </div>
                             <div className="run-meta">
                               <span>
                                 {
                                   {
-                                    running: '运行中',
-                                    waiting: '等待中',
-                                    paused: '已暂停',
-                                    interrupted: '已中断',
-                                    failed: '失败',
-                                    completed: '已结束',
-                                    queued: '排队中',
+                                    running: t('ui.running'),
+                                    waiting: t('ui.waiting'),
+                                    paused: t('ui.paused'),
+                                    interrupted: t('ui.interrupted'),
+                                    failed: t('ui.failed'),
+                                    completed: t('ui.completed'),
+                                    queued: t('ui.queued'),
                                   }[r.status]
                                 }
                               </span>
@@ -784,28 +969,33 @@ function App() {
                     ) : (
                       <Empty
                         icon={<Activity size={26} />}
-                        title="运行记录将保留在这里"
-                        text="PM、Dev 和 Review 的每次执行都可以追踪。"
+                        title={t('runs.emptyTitle')}
+                        text={t('runs.emptyDescription')}
                       />
                     )}
                   </div>
                 )}
               </section>
               <aside className="context-panel">
+                <AllowancePanel
+                  key={`${project.id}-${projectAgent}-${pmProfile?.providerId}`}
+                  agent={projectAgent}
+                  providerId={pmProfile?.providerId ?? ''}
+                />
                 <div className="panel-heading">
-                  <h2>仓库控制</h2>
-                  <span>{repos.length} 个仓库</span>
+                  <h2>{t('repos.controls')}</h2>
+                  <span>{t('repos.count', { count: repos.length })}</span>
                 </div>
                 {!repos.length ? (
                   <div className="repo-empty">
                     <FolderGit2 size={25} />
                     <p>
-                      接入 GitHub 仓库后，
+                      {t('repos.emptyIntro')}
                       <br />
-                      就可以控制开发节奏。
+                      {t('repos.emptyHint')}
                     </p>
                     <button className="text-button" onClick={() => setModal('repo')}>
-                      接入第一个仓库 <Plus size={14} />
+                      {t('repos.first')} <Plus size={14} />
                     </button>
                   </div>
                 ) : (
@@ -820,7 +1010,7 @@ function App() {
                           <strong title={r.github}>{r.name}</strong>
                           <button
                             className="icon-button"
-                            aria-label={`配置 ${r.name}`}
+                            aria-label={t('repos.configure', { name: r.name })}
                             onClick={() => setRepoConfig(r)}
                           >
                             <Settings2 size={15} />
@@ -837,20 +1027,24 @@ function App() {
                         </a>
                         <div className="switch-row">
                           <div>
-                            <strong>{r.enabled ? '允许认领新任务' : '停止新任务认领'}</strong>
+                            <strong>
+                              {r.enabled
+                                ? t('ui.newTaskClaimsEnabled')
+                                : t('ui.newTaskClaimsStopped')}
+                            </strong>
                             <small>
                               {!r.enabled && count
-                                ? `仍有 ${count} 个 Dev 在完成当前任务`
+                                ? t('repos.running', { count })
                                 : r.enabled
-                                  ? '按依赖与并发上限运行'
-                                  : 'PM 对话与任务准备不受影响'}
+                                  ? t('ui.respectsDependenciesAndConcurrencyLimits')
+                                  : t('ui.pmDiscussionAndTaskPreparationRemainAvailable')}
                             </small>
                           </div>
                           <button
                             className={`switch ${r.enabled ? 'on' : ''}`}
                             role="switch"
                             aria-checked={r.enabled}
-                            aria-label={`${r.name} 开工开关`}
+                            aria-label={t('repos.switch', { name: r.name })}
                             disabled={busy}
                             onClick={() =>
                               void act(() =>
@@ -864,12 +1058,12 @@ function App() {
                         <div className="repo-capacity">
                           <span>
                             <span className={`status-dot ${count ? 'live' : ''}`} />
-                            {count} 正在开发
+                            {count} {t('ui.developing')}{' '}
                           </span>
                           <label>
-                            上限{' '}
+                            {t('ui.limit')}{' '}
                             <input
-                              aria-label={`${r.name} 并行上限`}
+                              aria-label={t('repos.limit', { name: r.name })}
                               type="number"
                               min="1"
                               max="32"
@@ -894,11 +1088,11 @@ function App() {
                                 rel="noreferrer"
                                 className="preview-link"
                               >
-                                打开体验 <ExternalLink size={13} />
+                                {t('ui.openPreview')} <ExternalLink size={13} />
                               </a>
                               <button
                                 className="icon-button"
-                                aria-label={`停止 ${r.name} 体验`}
+                                aria-label={t('repos.stopPreview', { name: r.name })}
                                 onClick={() =>
                                   void act(() => api(`/repos/${r.id}/preview/stop`, {}))
                                 }
@@ -915,7 +1109,9 @@ function App() {
                               }
                             >
                               <Play size={13} />
-                              {r.preview?.status === 'starting' ? '正在准备体验…' : '启动本地体验'}
+                              {r.preview?.status === 'starting'
+                                ? t('ui.preparingPreview')
+                                : t('ui.startLocalPreview')}
                             </button>
                           )}
                         </div>
@@ -926,12 +1122,12 @@ function App() {
                 )}
                 <div className="project-capacity">
                   <label>
-                    项目 Dev 上限{' '}
+                    {t('ui.projectDevLimit')}{' '}
                     <input
                       type="number"
                       min="1"
                       max="32"
-                      aria-label="项目 Dev 上限"
+                      aria-label={t('ui.projectDevLimit')}
                       value={project.devLimit}
                       onChange={(e) => {
                         const value = Number(e.target.value);
@@ -943,17 +1139,17 @@ function App() {
                     />
                   </label>
                   <span>
-                    全局上限 {state.settings.globalDevLimit} · 当前{' '}
-                    {state.runs.filter((r) => r.role === 'dev' && isRunning(r.status)).length} 个
-                    Dev
+                    {t('ui.globalLimit')} {state.settings.globalDevLimit} {t('ui.active')}{' '}
+                    {state.runs.filter((r) => r.role === 'dev' && isRunning(r.status)).length}{' '}
+                    {t('ui.dev')}{' '}
                   </span>
                 </div>
                 <div className="activity-heading">
-                  <h2>最近动态</h2>
+                  <h2>{t('activity.recent')}</h2>
                   <button
                     className="icon-button"
-                    title="同步 GitHub"
-                    aria-label="同步 GitHub"
+                    title={t('activity.sync')}
+                    aria-label={t('activity.sync')}
                     disabled={busy}
                     onClick={() => void act(() => api('/sync', {}))}
                   >
@@ -968,27 +1164,30 @@ function App() {
                       <div className="activity-item" key={e.id}>
                         <span className="activity-line-dot" />
                         <div>
-                          <p>{e.message}</p>
+                          <p>{host(e.message, e.descriptor)}</p>
                           <time>{time(e.at)}</time>
                         </div>
                       </div>
                     ))}
                   {!state.events.some((e) => e.projectId === project.id) && (
-                    <p className="muted">项目动态会显示在这里。</p>
+                    <p className="muted">{t('activity.empty')}</p>
                   )}
                 </div>
               </aside>
             </div>
             {documents.length > 0 && (
-              <section className="domain-documents" aria-label="领域文档">
-                <h2>领域文档</h2>
+              <section className="domain-documents" aria-label={t('ui.domainDocuments')}>
+                <h2> {t('ui.domainDocuments')} </h2>
                 {documents.map((doc) => (
                   <details key={doc.id}>
                     <summary>
                       {repos.find((repo) => repo.id === doc.repoId)?.name} · {doc.path} · v
-                      {doc.version} · {doc.accepted ? '已接受' : '草案'}
+                      {doc.version} · {doc.accepted ? t('ui.accepted') : t('ui.draft')}
                     </summary>
-                    <MarkdownContent content={doc.content} label={`领域文档 ${doc.path}`} />
+                    <MarkdownContent
+                      content={doc.content}
+                      label={t('docs.label', { path: doc.path })}
+                    />
                   </details>
                 ))}
               </section>
@@ -998,8 +1197,8 @@ function App() {
       </main>
       {modal === 'project' && (
         <Modal
-          title="创建项目"
-          subtitle="一个项目，一个负责交付的 PM。"
+          title={t('project.create')}
+          subtitle={t('project.subtitle')}
           onClose={() => setModal(null)}
         >
           <ProjectForm
@@ -1016,8 +1215,8 @@ function App() {
       )}
       {modal === 'repo' && project && (
         <Modal
-          title="接入仓库"
-          subtitle="关联已有本地 checkout 与 GitHub 仓库。接入后默认不开工。"
+          title={t('repo.connect')}
+          subtitle={t('ui.connectAnExistingLocalCheckoutToIts')}
           onClose={() => setModal(null)}
         >
           <RepoForm
@@ -1033,11 +1232,11 @@ function App() {
       )}
       {(modal === 'settings' || modal === 'project-settings') && state && (
         <Modal
-          title={modal === 'settings' ? '运行设置' : '项目模型设置'}
+          title={modal === 'settings' ? t('ui.runtimeSettings') : t('ui.projectModelSettings')}
           subtitle={
             modal === 'settings'
-              ? '全局模型分配仅作为新 Project 默认值，已有 Project 保持独立。'
-              : '修改影响后续 Run，进行中与历史 Run 保留固定分配。'
+              ? t('ui.globalAssignmentsAreDefaultsForNewProjects')
+              : t('ui.changesAffectFutureRunsActiveAndHistorical')
           }
           wide
           onClose={() => setModal(null)}
@@ -1047,29 +1246,54 @@ function App() {
             key={`${modal}-${project?.id}`}
             initial={
               modal === 'project-settings' && project
-                ? { ...state.settings, profiles: project.profiles }
+                ? {
+                    ...state.settings,
+                    profiles: project.profiles,
+                    ompProfiles: project.ompProfiles ?? state.settings.ompProfiles,
+                    secondaryReviewProfile: project.secondaryReviewProfile,
+                    secondaryReviewProfiles: project.secondaryReviewProfiles ?? {},
+                  }
                 : state.settings
             }
             providers={state.providers}
+            project={modal === 'project-settings' ? project : undefined}
+            globalSettings={state.settings}
             projectOnly={modal === 'project-settings'}
             busy={busy}
-            submit={async (settings) => {
-              const result = await api<{ warnings: string[] }>(
-                modal === 'project-settings' ? `/projects/${project!.id}/profiles` : '/settings',
-                modal === 'project-settings' ? settings.profiles : settings,
+            submit={async (settings, runtime) => {
+              const result = await api<{ warnings?: string[] }>(
+                modal === 'project-settings' ? `/projects/${project!.id}/runtime` : '/settings',
+                modal === 'project-settings'
+                  ? {
+                      ...runtime,
+                      ...(JSON.stringify(settings.profiles) !== JSON.stringify(project!.profiles)
+                        ? { profiles: settings.profiles }
+                        : {}),
+                      ...(JSON.stringify(settings.ompProfiles) !==
+                      JSON.stringify(project!.ompProfiles)
+                        ? { ompProfiles: settings.ompProfiles }
+                        : {}),
+                      secondaryReviewProfile: settings.secondaryReviewProfile ?? null,
+                      secondaryReviewProfiles: settings.secondaryReviewProfiles ?? {},
+                    }
+                  : {
+                      ...settings,
+                      secondaryReviewProfile: settings.secondaryReviewProfile ?? null,
+                    },
                 'PATCH',
               );
               await reload();
-              if (!result.warnings.length) setModal(null);
-              return result;
+              const warnings = result.warnings ?? [];
+              if (!warnings.length) setModal(null);
+              return { warnings };
             }}
           />
         </Modal>
       )}
       {repoConfig && (
         <Modal
-          title={`配置 ${repoConfig.name}`}
-          subtitle="PM 可以从仓库推导这些命令，也可以在这里手动调整。"
+          title={t('repos.configure', { name: repoConfig.name })}
+          subtitle={t('ui.thePmCanInferTheseCommandsFrom')}
           onClose={() => setRepoConfig(undefined)}
         >
           <CommandsForm
@@ -1087,28 +1311,30 @@ function App() {
       {detail && (
         <Modal
           title={detail.title}
-          subtitle={`${stageLabels[detail.stage]} · ${detail.routingReason}`}
+          subtitle={`${t(`stage.${detail.stage}`)} · ${detail.routingReason}`}
           wide
           onClose={() => setTaskDetail(undefined)}
         >
           <div className="task-detail">
             <PriorityEditor key={detail.id} task={detail} locale={priorityLocale} reload={reload} />
             <ClaimConditions
-              entry={schedule?.tasks.find((t) => t.taskId === detail.id)}
+              entry={currentSchedule?.tasks.find((t) => t.taskId === detail.id)}
               locale={priorityLocale}
             />
-            <MarkdownContent content={detail.spec} label="任务说明" />
-            <h3>验收条件</h3>
+            <TaskRuntimeBadges state={state!} taskId={detail.id} />
+            <TaskUsagePanel key={detail.id} taskId={detail.id} revision={detail.updatedAt} />
+            <MarkdownContent content={detail.spec} label={t('ui.taskSpecification')} />
+            <h3> {t('ui.acceptanceCriteria')} </h3>
             <ul>
               {detail.acceptance.map((x, i) => (
                 <li key={i}>
-                  <MarkdownContent content={x} label={`验收条件 ${i + 1}`} />
+                  <MarkdownContent content={x} label={t('acceptance.label', { count: i + 1 })} />
                 </li>
               ))}
             </ul>
             {detail.dependencies.length > 0 && (
               <>
-                <h3>等待任务</h3>
+                <h3> {t('ui.waitingForTasks')} </h3>
                 <ul>
                   {detail.dependencies.map((id) => (
                     <li key={id}>{state?.tasks.find((t) => t.id === id)?.title ?? id}</li>
@@ -1116,7 +1342,9 @@ function App() {
                 </ul>
               </>
             )}
-            {detail.blocked && <div className="inline-warning">{detail.blocked}</div>}
+            {detail.blocked && (
+              <div className="inline-warning">{host(detail.blocked, detail.blockedDescriptor)}</div>
+            )}
             <div className="detail-actions">
               {detail.issueUrl && (
                 <a
@@ -1153,14 +1381,14 @@ function App() {
                     }
                   >
                     {detail.control === 'paused' ? <Play size={14} /> : <Pause size={14} />}{' '}
-                    {detail.control === 'paused' ? '恢复任务' : '暂停任务'}
+                    {detail.control === 'paused' ? t('ui.resumeTask') : t('ui.pauseTask')}
                   </button>
                   <button
                     className="danger-button"
                     disabled={busy}
                     onClick={() => void act(() => api(`/tasks/${detail.id}/cancel`, {}))}
                   >
-                    取消任务
+                    {t('ui.cancelTask')}{' '}
                   </button>
                 </>
               )}
@@ -1169,35 +1397,53 @@ function App() {
               <section className="review-result" key={r.axis}>
                 <h3>
                   {r.axis === 'standards' ? 'Standards' : 'Spec'}{' '}
-                  <span>{r.approved ? '通过' : '需要修改'}</span>
+                  <span>{r.approved ? t('ui.approved') : t('ui.changesRequested')}</span>
                 </h3>
-                <MarkdownContent content={r.summary} label={`${r.axis} Review 总结`} />
+                <MarkdownContent
+                  content={r.summary}
+                  label={t('review.summary', { axis: r.axis })}
+                />
                 {r.findings.map((f, i) => (
-                  <MarkdownContent key={i} content={f} label={`${r.axis} Review 发现 ${i + 1}`} />
+                  <MarkdownContent
+                    key={i}
+                    content={f}
+                    label={t('review.finding', { axis: r.axis, count: i + 1 })}
+                  />
                 ))}
               </section>
             ))}
-            {detail.feedback.length > 0 && <h3>反馈</h3>}
+            {detail.feedback.length > 0 && <h3> {t('ui.feedback')} </h3>}
             {detail.feedback.map((content, i) => (
-              <MarkdownContent key={i} content={content} label={`反馈 ${i + 1}`} />
+              <MarkdownContent
+                key={i}
+                content={content}
+                label={t('feedback.label', { count: i + 1 })}
+              />
             ))}
-            {!!detail.pendingFeedback?.length && <h3>待处理反馈</h3>}
+            {!!detail.pendingFeedback?.length && <h3> {t('ui.pendingFeedback')} </h3>}
             {detail.pendingFeedback?.map((content, i) => (
-              <MarkdownContent key={i} content={content} label={`待处理反馈 ${i + 1}`} />
+              <MarkdownContent
+                key={i}
+                content={content}
+                label={t('feedback.pending', { count: i + 1 })}
+              />
             ))}
-            {!!detail.documentChanges?.length && <h3>领域文档变更</h3>}
+            {!!detail.documentChanges?.length && <h3> {t('ui.domainDocumentChanges')} </h3>}
             {detail.documentChanges?.map((doc) => (
               <section key={doc.path}>
                 <h4>
                   {doc.path} · v{doc.version}
                 </h4>
-                <MarkdownContent content={doc.content} label={`文档变更 ${doc.path}`} />
+                <MarkdownContent
+                  content={doc.content}
+                  label={t('docs.change', { path: doc.path })}
+                />
               </section>
             ))}
             {detail.issueBody && (
               <section>
-                <h3>Issue 正文</h3>
-                <MarkdownContent content={detail.issueBody} label="Issue 正文" />
+                <h3> {t('ui.issueBody')} </h3>
+                <MarkdownContent content={detail.issueBody} label={t('ui.issueBody')} />
               </section>
             )}
             {detail.tests.map((t, i) => (
@@ -1209,7 +1455,7 @@ function App() {
               </details>
             ))}
             <details>
-              <summary>技术记录</summary>
+              <summary> {t('ui.technicalRecords')} </summary>
               <pre>
                 {state?.events
                   .filter((e) => e.taskId === detail.id)
@@ -1235,10 +1481,11 @@ function Metric({
   suffix?: string;
   live?: boolean;
 }) {
+  const { number } = useLocale();
   return (
     <div className="metric">
       <div className="metric-value">
-        {value}
+        {number(value)}
         <span>{suffix}</span>
         {live && value > 0 && <span className="pulse-dot" />}
       </div>
@@ -1268,6 +1515,7 @@ function Modal({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  const { t } = useLocale();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
@@ -1277,6 +1525,7 @@ function Modal({
   return (
     <dialog
       ref={ref}
+      aria-label={title}
       className={`modal ${wide ? 'wide' : ''}`}
       onCancel={onClose}
       onClick={(e) => {
@@ -1288,8 +1537,9 @@ function Modal({
           <div>
             <h2>{title}</h2>
             <p>{subtitle}</p>
+            <LanguageControl />
           </div>
-          <button className="icon-button" aria-label="关闭窗口" onClick={onClose}>
+          <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
             <X size={19} />
           </button>
         </header>
@@ -1305,25 +1555,62 @@ function ProjectForm({
   submit: (b: { name: string; description: string }) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
+  const [validation, setValidation] = useState<
+    'project.required' | 'project.nameLength' | 'project.goalLength'
+  >();
   return (
     <form
       className="form"
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
         const f = new FormData(e.currentTarget);
-        void submit({ name: String(f.get('name')), description: String(f.get('description')) });
+        const name = String(f.get('name'));
+        const description = String(f.get('description'));
+        const issue = !name.trim()
+          ? 'project.required'
+          : name.trim().length > 100
+            ? 'project.nameLength'
+            : description.length > 3000
+              ? 'project.goalLength'
+              : undefined;
+        setValidation(issue);
+        if (issue) return;
+        void submit({ name, description });
       }}
     >
       <label>
-        项目名称
-        <input name="name" placeholder="例如：我的产品" required maxLength={100} autoFocus />
+        {t('project.name')}
+        <input
+          name="name"
+          placeholder={t('project.namePlaceholder')}
+          required
+          maxLength={100}
+          autoFocus
+          aria-invalid={validation === 'project.required' || validation === 'project.nameLength'}
+          aria-describedby={
+            validation && validation !== 'project.goalLength' ? 'project-validation' : undefined
+          }
+        />
       </label>
       <label>
-        项目目标
-        <textarea name="description" placeholder="这个项目希望解决什么问题？" maxLength={3000} />
+        {t('project.goal')}
+        <textarea
+          name="description"
+          placeholder={t('project.goalPlaceholder')}
+          maxLength={3000}
+          aria-invalid={validation === 'project.goalLength'}
+          aria-describedby={validation === 'project.goalLength' ? 'project-validation' : undefined}
+        />
       </label>
+      {validation && (
+        <p id="project-validation" role="alert">
+          {t(validation)}
+        </p>
+      )}
       <button className="primary-button" disabled={busy}>
-        创建项目 <ArrowUpRight size={16} />
+        {t('project.create')} <ArrowUpRight size={16} />
       </button>
     </form>
   );
@@ -1335,6 +1622,7 @@ function RepoForm({
   submit: (b: { path: string; github: string; authorized: boolean }) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
   return (
     <form
       className="form"
@@ -1349,7 +1637,7 @@ function RepoForm({
       }}
     >
       <label>
-        GitHub 仓库
+        {t('ui.githubRepository')}{' '}
         <input
           name="github"
           placeholder="owner/repository"
@@ -1359,21 +1647,16 @@ function RepoForm({
         />
       </label>
       <label>
-        本地仓库路径
+        {t('ui.localRepositoryPath')}{' '}
         <input name="path" placeholder="D:\Codebase\my-project" required />
       </label>
       <label className="checkbox-label">
         <input name="authorized" type="checkbox" />
-        <span>
-          授权此仓库的本地开发与验证，以及 GitHub 任务、Project、Milestone、任务分支、PR
-          和合并操作。生产部署不包含在内。
-        </span>
+        <span>{t('ui.authorizeLocalDevelopmentAndVerificationGithubTasks')} </span>
       </label>
-      <p className="field-note">
-        使用本机已登录的 GitHub 身份。系统会核对本地 origin；原 checkout 中的修改会保留。
-      </p>
+      <p className="field-note">{t('ui.usesTheGithubIdentitySignedInOn')} </p>
       <button className="primary-button" disabled={busy}>
-        {busy ? '正在核对仓库…' : '接入仓库'} <ArrowUpRight size={16} />
+        {busy ? t('ui.verifyingRepository') : t('repo.connect')} <ArrowUpRight size={16} />
       </button>
     </form>
   );
@@ -1387,6 +1670,7 @@ function CommandsForm({
   submit: (b: unknown) => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useLocale();
   return (
     <form
       className="form"
@@ -1413,37 +1697,37 @@ function CommandsForm({
         <label key={k}>
           {
             {
-              install: '安装依赖',
-              build: '构建',
-              test: '验收测试（交付必需）',
-              start: '体验启动命令',
+              install: t('ui.installDependencies'),
+              build: t('ui.build'),
+              test: t('ui.acceptanceTestsRequiredForDelivery'),
+              start: t('ui.previewStartCommand'),
             }[k]
           }
           <input
             name={k}
             defaultValue={repo.commands[k]}
-            placeholder={k === 'start' ? 'npm run dev -- --port {port}' : '例如 npm test'}
+            placeholder={k === 'start' ? 'npm run dev -- --port {port}' : t('ui.forExampleNpmTest')}
           />
         </label>
       ))}
       <label>
-        体验端口
+        {t('ui.previewPort')}{' '}
         <input name="port" type="number" min={1024} max={65535} defaultValue={repo.commands.port} />
       </label>
       <label>
-        GitHub 必需检查
+        {t('ui.requiredGithubChecks')}{' '}
         <input
           name="checks"
           defaultValue={repo.requiredChecks.join(', ')}
-          placeholder="检查名称，以逗号分隔"
+          placeholder={t('ui.checkNamesSeparatedByCommas')}
         />
       </label>
       <label className="checkbox-label">
         <input type="checkbox" name="authorized" defaultChecked={repo.authorized} />
-        <span>授权本地开发验证与 GitHub 工程交付操作（不含生产部署）</span>
+        <span> {t('ui.authorizeLocalDevelopmentVerificationAndGithubEngineering')} </span>
       </label>
       <button className="primary-button" disabled={busy}>
-        保存配置
+        {t('common.saveConfig')}
       </button>
     </form>
   );
@@ -1454,17 +1738,43 @@ function SettingsForm({
   busy,
   providers,
   projectOnly,
+  project,
+  globalSettings,
 }: {
   providers: Snapshot['providers'];
   projectOnly: boolean;
+  project?: Project;
+  globalSettings: Settings;
   initial: Settings;
-  submit: (s: Settings) => Promise<{ warnings: string[] }>;
+  submit: (s: Settings, runtime: RuntimeConfig) => Promise<{ warnings: string[] }>;
   busy: boolean;
 }) {
   const [settings, setSettings] = useState(structuredClone(initial));
+  const [runtime, setRuntime] = useState<RuntimeConfig>({
+    agentSelection: project?.agentSelection,
+    profileModes: project?.profileModes,
+    recoveryPolicy: project?.recoveryPolicy,
+  });
+  const effectiveProfiles = Object.fromEntries(
+    profileNames.map((role) => [
+      role,
+      project && runtime.profileModes?.[role] === 'inherit'
+        ? globalSettings.profiles[role]
+        : settings.profiles[role],
+    ]),
+  ) as Settings['profiles'];
+  const effectiveOmp = Object.fromEntries(
+    profileNames.map((role) => [
+      role,
+      project && runtime.profileModes?.[role] === 'inherit'
+        ? globalSettings.ompProfiles?.[role]
+        : settings.ompProfiles?.[role],
+    ]),
+  ) as Settings['ompProfiles'];
+  const { t } = useLocale();
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const [saved, setSaved] = useState<string>();
+  const [saveError, setSaveError] = useState<string | Error>('');
+  const [saved, setSaved] = useState<string[]>();
   const [health, setHealth] = useState<any>();
   const [checking, setChecking] = useState(false);
   return (
@@ -1475,16 +1785,16 @@ function SettingsForm({
         setSaving(true);
         setSaveError('');
         setSaved(undefined);
-        void submit(settings)
-          .then((result) => setSaved('已保存。' + result.warnings.join('；')))
-          .catch((error) => setSaveError(String(error)))
+        void submit(settings, runtime)
+          .then((result) => setSaved(result.warnings))
+          .catch((error) => setSaveError(error instanceof Error ? error : String(error)))
           .finally(() => setSaving(false));
       }}
     >
       {!projectOnly && (
         <div className="form-columns">
           <label>
-            全局 Dev 上限
+            {t('settings.devLimit')}
             <input
               type="number"
               min={1}
@@ -1495,7 +1805,7 @@ function SettingsForm({
             />
           </label>
           <label>
-            Review 会话上限
+            {t('settings.reviewLimit')}
             <input
               type="number"
               min={1}
@@ -1507,16 +1817,77 @@ function SettingsForm({
           </label>
         </div>
       )}
-      <h3>{projectOnly ? 'Project model profile' : '新 Project 默认模型分配'}</h3>
+      <RuntimeFields
+        settings={{ ...settings, ompProfiles: effectiveOmp }}
+        project={project}
+        runtime={runtime}
+        changeRuntime={(next) => {
+          const pinned = profileNames.filter(
+            (role) =>
+              runtime.profileModes?.[role] === 'inherit' && next.profileModes?.[role] === 'pinned',
+          );
+          if (pinned.length)
+            setSettings((current) => ({
+              ...current,
+              profiles: {
+                ...current.profiles,
+                ...Object.fromEntries(pinned.map((role) => [role, effectiveProfiles[role]])),
+              },
+              ompProfiles: {
+                ...current.ompProfiles,
+                ...Object.fromEntries(pinned.map((role) => [role, effectiveOmp?.[role]])),
+              } as Settings['ompProfiles'],
+            }));
+          setRuntime(next);
+        }}
+        change={(next) => {
+          setSettings(next);
+          if (project && next.ompProfiles !== effectiveOmp)
+            setRuntime((current) => ({
+              ...current,
+              profileModes: Object.fromEntries(
+                profileNames.map((role) => [
+                  role,
+                  next.ompProfiles?.[role] !== effectiveOmp?.[role]
+                    ? 'pinned'
+                    : (current.profileModes?.[role] ?? 'pinned'),
+                ]),
+              ) as NonNullable<Project['profileModes']>,
+            }));
+        }}
+      />
+      <h3>{t('runtime.codexProfiles')}</h3>
       <fieldset className="assignment-form" disabled={saving || busy}>
         <ProfileEditor
-          profiles={settings.profiles}
+          profiles={effectiveProfiles}
           providers={providers}
-          change={(profiles) => setSettings({ ...settings, profiles })}
+          change={(profiles) => {
+            setSettings({ ...settings, profiles });
+            if (project)
+              setRuntime((current) => ({
+                ...current,
+                profileModes: Object.fromEntries(
+                  profileNames.map((role) => [
+                    role,
+                    profiles[role] !== effectiveProfiles[role]
+                      ? 'pinned'
+                      : (current.profileModes?.[role] ?? 'pinned'),
+                  ]),
+                ) as NonNullable<Project['profileModes']>,
+              }));
+          }}
         />
       </fieldset>
-      {saveError && <p role="alert">{saveError}</p>}
-      {saved && <p role="status">{saved}</p>}
+      {saveError && (
+        <p role="alert">
+          <ErrorText error={saveError} />
+        </p>
+      )}
+      {saved && (
+        <p role="status">
+          {t('ui.saved')} {saved.join('; ')}
+        </p>
+      )}
       <div className="health-section">
         <button
           className="secondary-button"
@@ -1531,13 +1902,13 @@ function SettingsForm({
           }}
         >
           <Radio size={15} />
-          {checking ? '正在检查…' : '检查 Codex 与 GitHub'}
+          {checking ? t('settings.checking') : t('settings.check')}
         </button>
         {health && (
           <div className="health-result">
             {health.error ?? (
               <>
-                <p>{health.codex.ok ? '✓ Codex 已连接' : '! ' + health.codex.error}</p>
+                <p>{health.codex.ok ? t('settings.connected') : '! ' + health.codex.error}</p>
                 <p>
                   {health.github.ok
                     ? `✓ GitHub · ${health.github.login}`
@@ -1545,7 +1916,7 @@ function SettingsForm({
                 </p>
                 {health.codex.models && (
                   <details>
-                    <summary>可用模型</summary>
+                    <summary>{t('settings.available')}</summary>
                     {health.codex.models.map((m: any) => (
                       <p key={m.id}>
                         {m.model} ·{' '}
@@ -1560,13 +1931,15 @@ function SettingsForm({
         )}
       </div>
       <button className="primary-button" disabled={busy || saving}>
-        {saving ? '正在校验…' : '保存设置'}
+        {saving ? t('ui.validating') : t('ui.saveSettings')}
       </button>
     </form>
   );
 }
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>
   </React.StrictMode>,
 );

@@ -1,15 +1,33 @@
 import type { PriorityChange } from './priority.ts';
+
 export type Stage =
   'clarifying' | 'ready' | 'developing' | 'reviewing' | 'merging' | 'done' | 'cancelled';
 export type RunStatus =
   'queued' | 'running' | 'waiting' | 'paused' | 'interrupted' | 'failed' | 'completed';
 export type Role = 'pm' | 'dev' | 'review';
+export type AgentKind = 'omp' | 'codex';
 export type ProfileName = 'backend' | 'frontend' | 'fullstack' | 'complex' | 'pm' | 'review';
+export type ProfileMode = 'inherit' | 'pinned';
+export type RecoveryPolicy = 'automatic' | 'manual';
+/** A stable host-owned semantic message. Human text remains for display/diagnostics. */
+export interface MessageDescriptor {
+  code: string;
+  params?: Record<string, string | number | boolean | null>;
+  detail?: string;
+}
+export type OmpRoleDefault = 'default' | 'slow' | 'advisor';
+export interface OmpProfileInitialization {
+  source: 'omp.modelRoles';
+  roleDefaults: Record<ProfileName, OmpRoleDefault>;
+}
+export type AgentSelection = { mode: 'inherit' } | { mode: 'override'; agent: AgentKind };
 export interface Profile {
   providerId: string;
   model: string;
   effort: string;
   customModel?: boolean;
+  /** Optional provider-side price card captured with a Run when supplied. */
+  price?: PriceCard;
 }
 export interface Provider {
   id: string;
@@ -17,6 +35,7 @@ export interface Provider {
   name: string;
   baseUrl?: string;
   hasKey: boolean;
+  price?: PriceCard;
 }
 export const officialProvider: Provider = {
   id: 'codex',
@@ -34,9 +53,23 @@ export interface Settings {
   globalDevLimit: number;
   reviewLimit: number;
   profiles: Record<ProfileName, Profile>;
+  /** Backend used by new Projects unless a Project explicitly overrides it. */
+  defaultAgent?: AgentKind;
+  /** Profiles for the external OMP backend. Provider IDs are OMP IDs, not local Provider IDs. */
+  ompProfiles?: Record<ProfileName, Profile>;
+  ompProfileInitialization?: OmpProfileInitialization;
+  secondaryReviewProfile?: Profile;
+  /** Optional secondary reviewer per effective backend. */
+  secondaryReviewProfiles?: Partial<Record<AgentKind, Profile>>;
 }
 export interface Project {
   profiles: Settings['profiles'];
+  ompProfiles?: Settings['ompProfiles'];
+  agentSelection?: AgentSelection;
+  profileModes?: Record<ProfileName, ProfileMode>;
+  secondaryReviewProfile?: Profile;
+  secondaryReviewProfiles?: Partial<Record<AgentKind, Profile>>;
+  recoveryPolicy?: RecoveryPolicy;
   profileVersion?: number;
   id: string;
   name: string;
@@ -47,6 +80,9 @@ export interface Project {
   githubProjectUrl?: string;
   pmThreadId?: string;
   pmThreadProviderId?: string;
+  pmThreadAgentKind?: AgentKind;
+  pmThreadProfileVersion?: number;
+  pmThreadProfile?: Profile;
   createdAt: string;
 }
 export interface Commands {
@@ -95,6 +131,13 @@ export interface Message {
   intent?: 'discuss' | 'implement' | 'feedback';
   createdAt: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
+  deliveryMode?: 'queue' | 'steer';
+  runId?: string;
+  sourceMessageId?: string;
+  /** Stable client draft identity; retries keep this value while message IDs may change. */
+  draftId?: string;
+  draftStatus?: 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  descriptor?: MessageDescriptor;
 }
 export interface Task {
   id: string;
@@ -117,10 +160,14 @@ export interface Task {
   stage: Stage;
   control: 'active' | 'paused';
   blocked?: string;
+  blockedDescriptor?: MessageDescriptor;
   branch?: string;
   worktree?: string;
   devThreadId?: string;
   devThreadProviderId?: string;
+  devThreadAgentKind?: AgentKind;
+  devThreadProfileVersion?: number;
+  devThreadProfile?: Profile;
   devPhase?: 'implement' | 'finalize';
   issue?: number;
   issueUrl?: string;
@@ -160,16 +207,33 @@ export interface Task {
   feedback: string[];
   pendingFeedback?: string[];
   documentChanges?: { path: string; content: string; version: number }[];
+  reviewPolicyVersion?: number;
+  secondaryReviewRequired?: boolean;
+  changeType?: string;
+  scope?: string;
+  summaryEn?: string;
+  cleanup?: CleanupMetadata;
+  /** Explicit compatibility flag for clients that only need the user-pause distinction. */
+  pausedByUser?: boolean;
+  usage?: UsageAggregate;
+  cost?: CostEstimate;
   createdAt: string;
   updatedAt: string;
 }
 export interface ReviewResult {
-  axis: 'standards' | 'spec';
+  axis: 'primary' | 'secondary' | 'standards' | 'spec';
   head: string;
   base: string;
   approved: boolean;
   summary: string;
   findings: string[];
+  verdict?: ReviewVerdict;
+  model?: ModelIdentity;
+  modelIdentity?: ModelIdentity;
+  agentKind?: AgentKind;
+  agentVersion?: string;
+  /** Tests are attached by the host, never supplied as model authority. */
+  tests?: Evidence[];
 }
 export interface Evidence {
   command: string;
@@ -187,14 +251,189 @@ export interface Run {
   status: RunStatus;
   profile: ProfileName;
   profileConfig?: Profile;
+  agentKind: AgentKind;
+  agentVersion?: string;
   provider?: Pick<Provider, 'id' | 'name' | 'kind' | 'baseUrl'>;
+  model?: ModelIdentity;
+  modelIdentity?: ModelIdentity;
   profileVersion?: number;
   resumeThreadId?: string;
   threadId?: string;
   turnId?: string;
+  sourceMessageId?: string;
+  /** The accepted source intent currently authorizing this Run's PM tools. */
+  sourceIntent?: Message['intent'];
+  /** Stable protocol id used to reconcile an accepted steering message. */
+  clientUserMessageId?: string;
+  /** Revision the host pinned this Run to; review identity never crosses it. */
+  revision?: { head?: string; base?: string };
+  /** Review axis for recovery; absent on PM/Dev Runs. */
+  reviewAxis?: ReviewResult['axis'];
+  /** Incident assessment context; never infer a user prompt from sourceMessageId. */
+  incidentId?: string;
+  incidentPhase?: string;
+  incidentEvidence?: string;
+  reviewPolicyVersion?: number;
+  secondaryReview?: boolean;
+  usage?: RunUsage;
+  durationMs?: number;
+  priceSnapshot?: PriceSnapshot;
+  /** Legacy-friendly alias; new writers use priceSnapshot. */
+  price?: PriceSnapshot;
+  recoveryItemId?: string;
   error?: string;
+  errorDescriptor?: MessageDescriptor;
+  /** Backend diagnostic lines retained as bounded, redacted evidence. */
+  diagnostics?: string[];
+  /** Singular compatibility alias for callers that only display one diagnostic. */
+  diagnostic?: string;
+  /** Session is the backend-neutral persisted conversation id. */
+  sessionId?: string;
   startedAt: string;
   endedAt?: string;
+}
+
+export type ReviewVerdict = 'pass' | 'rework' | 'escalate';
+export interface ModelIdentity {
+  agentKind: AgentKind;
+  providerId?: string;
+  model: string;
+  effort?: string;
+  agentVersion?: string;
+}
+export interface RunUsage {
+  /** Model context-window capacity reported for this Run; never task-summed. */
+  contextWindow?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+  estimatedUsd?: number;
+  /** Source semantics for the last update; persisted for auditability. */
+  mode?: 'cumulative' | 'per-run';
+  final?: boolean;
+}
+export interface UsageAggregate extends Omit<RunUsage, 'mode' | 'final'> {
+  runs?: number;
+  complete?: boolean;
+}
+export interface PriceCard {
+  currency: string;
+  inputPerMillion?: string | number;
+  outputPerMillion?: string | number;
+  cachedInputPerMillion?: string | number;
+  cacheWritePerMillion?: string | number;
+  reasoningOutputPerMillion?: string | number;
+  inputPerToken?: string | number;
+  outputPerToken?: string | number;
+  cachedInputPerToken?: string | number;
+  cacheWritePerToken?: string | number;
+  reasoningOutputPerToken?: string | number;
+  version?: string;
+  source?: string;
+}
+export interface PriceSnapshot extends PriceCard {
+  partial?: boolean;
+  capturedAt?: string;
+}
+export interface CostEstimate {
+  amount: string;
+  currency: string;
+  partial: boolean;
+  coverage?: string[];
+  source?: string;
+}
+export interface AccountAllowance {
+  providerId: string;
+  agentKind: AgentKind;
+  state: 'unknown' | 'available' | 'exhausted' | 'unavailable';
+  remaining?: string;
+  resetAt?: string;
+  capturedAt: string;
+  currency?: string;
+}
+export interface CleanupMetadata {
+  requested?: boolean;
+  status?: 'pending' | 'completed' | 'skipped' | 'failed';
+  summary?: string;
+  paths?: string[];
+}
+
+export interface Incident {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  runId?: string;
+  phase: string;
+  status: 'open' | 'assessing' | 'resolved' | 'waiting_user';
+  message: string;
+  descriptor?: MessageDescriptor;
+  evidence?: string;
+  assessmentRunId?: string;
+  assessmentAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ClarificationOption {
+  value: string;
+  label?: string;
+  description?: string;
+}
+export interface ClarificationQuestion {
+  id: string;
+  question: string;
+  recommendation?: string;
+  options?: ClarificationOption[];
+}
+export interface ClarificationAnswer {
+  questionId: string;
+  value: string | string[];
+}
+export interface Clarification {
+  id: string;
+  projectId: string;
+  sourceMessageId: string;
+  taskId?: string;
+  sourceIntent: string;
+  questions: ClarificationQuestion[];
+  status: 'open' | 'answered' | 'cancelled';
+  answers?: ClarificationAnswer[];
+  answeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface RecoveryItem {
+  id: string;
+  projectId: string;
+  oldRunId: string;
+  /** Alias retained for callers that refer to the interrupted Run as runId. */
+  runId: string;
+  taskId?: string;
+  role?: Role;
+  threadId?: string;
+  revision?: { head?: string; base?: string };
+  draftId?: string;
+  messageId?: string;
+  sourceMessageId?: string;
+  /** New Run created to continue this item; one item can never create two successors. */
+  successorRunId?: string;
+  /** Review axis or incident context needed to continue without replaying user scope. */
+  reviewAxis?: ReviewResult['axis'];
+  incidentId?: string;
+  recoveryPrompt?: string;
+  stage?: Stage;
+  status: 'pending' | 'recoverable' | 'resumed' | 'cancelled';
+  policy: RecoveryPolicy;
+  /** Why an interrupted task was kept paused; this is not inferred during bulk recovery. */
+  pauseProvenance?: 'user' | 'runtime' | 'terminal';
+  /** Explicit compatibility flag for clients that only need the user-pause distinction. */
+  pausedByUser?: boolean;
+  reason?: string;
+  reasonDescriptor?: MessageDescriptor;
+  createdAt: string;
+  updatedAt: string;
 }
 export interface Event {
   id: number;
@@ -204,6 +443,7 @@ export interface Event {
   taskId?: string;
   runId?: string;
   message: string;
+  descriptor?: MessageDescriptor;
 }
 /** One operation attempt, as it stood at a moment that mattered. */
 export interface OperationAttempt {
@@ -239,6 +479,10 @@ export interface Operation {
   id: string;
   kind: string;
   status: 'pending' | 'done' | 'uncertain' | 'failed';
+  runId?: string;
+  sessionId?: string;
+  turnId?: string;
+  clientUserMessageId?: string;
   result?: unknown;
   error?: string;
   /**
@@ -267,6 +511,10 @@ export interface Snapshot {
   events: Event[];
   settings: Settings;
   documents: DesignDocument[];
+  incidents?: Incident[];
+  clarifications?: Clarification[];
+  recoveryItems?: RecoveryItem[];
+  accountAllowances?: AccountAllowance[];
 }
 export interface PMActivity {
   timelineOrder?: number;

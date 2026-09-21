@@ -40,6 +40,7 @@ async function fixture(
   await git(source, ['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'source',
@@ -53,6 +54,7 @@ async function fixture(
     commands: { install: '', build: '', test: 'node verify.cjs', start: '', port: 3000 },
   });
   const message = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   const created = store.createTask({
     projectId: project.id,
     repoId: repo.id,
@@ -124,11 +126,14 @@ async function fixture(
       this.options = options;
       return 'fixture';
     }
-    override async turn() {
+    override async turn(_thread: string, prompt: string) {
       if (this.options!.instructions.includes('Task Developer')) {
         turns++;
         await dev(this.options!.cwd);
-      } else {
+      } else if (
+        prompt.includes('Current input intent: discuss') ||
+        prompt.includes('没有可交付的实现差异')
+      ) {
         await this.options!.toolHandler!('resolve_task', {
           taskId: created.id,
           guidance: 'Reuse the existing implementation; host finalizes it.',
@@ -139,6 +144,10 @@ async function fixture(
     }
   }
   const engine = new Engine(store, new Remote(store), ws, root, () => new Model());
+  await engine.start();
+  // These fixtures drive scheduler ticks explicitly; leave the production interval out of the
+  // long Git-history setup so it cannot claim a Dev Run before a scenario's legacy state is ready.
+  clearInterval((engine as any).timer);
   t.after(async () => {
     await engine.stop();
     store.close();
@@ -588,8 +597,11 @@ for (const change of [
         await metadata.close();
       }
     }
-    if (change === 'repo')
-      f.store.updateTask(f.task().id, { projectId: f.store.createProject('Other', '').id });
+    if (change === 'repo') {
+      const other = f.store.createProject('Other', '');
+      f.store.saveProjectAgentSelection(other.id, { mode: 'override', agent: 'codex' });
+      f.store.updateTask(f.task().id, { projectId: other.id });
+    }
     if (change === 'unknown-base')
       f.store.updateTask(f.task().id, {
         pendingMerge: { ...f.task().pendingMerge!, integratedBase: 'invalid-object' },
@@ -597,20 +609,19 @@ for (const change of [
     const result = await f.run();
     assert.equal(result.control, 'paused', JSON.stringify(result));
     assert.equal(result.retries, 2);
-    assert.match(
-      result.blocked!,
-      {
-        source: /来源证据不足/,
-        head: /HEAD.*不匹配/,
-        'merge-head': /MERGE_HEAD.*不匹配/,
-        branch: /分支不匹配/,
-        'common-dir': /Git 归属不匹配/,
-        repo: /项目归属不匹配/,
-        'unknown-base': /结果未知/,
-        outside: /冲突文件以外/,
-        index: /改变了 Git 索引/,
-      }[change],
-    );
+    const reason = {
+      source: /来源证据不足/,
+      head: /HEAD.*不匹配/,
+      'merge-head': /MERGE_HEAD.*不匹配/,
+      branch: /分支不匹配/,
+      'common-dir': /Git 归属不匹配/,
+      repo: /项目归属不匹配/,
+      'unknown-base': /结果未知/,
+      outside: /冲突文件以外/,
+      index: /改变了 Git 索引/,
+    }[change];
+    if (change === 'repo') assert.match(JSON.stringify(f.store.list('incident')), reason);
+    else assert.match(result.blocked!, reason);
     if (!['head', 'branch', 'common-dir'].includes(change))
       assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
     if (!['outside', 'index', 'common-dir'].includes(change)) assert.equal(f.turns(), 0);

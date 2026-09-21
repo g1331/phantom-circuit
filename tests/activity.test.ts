@@ -346,6 +346,7 @@ test('PM protocol activity follows its message and Run, survives reopen, and ret
   const file = join(root, 'state.sqlite');
   const store = new Store(file);
   const project = store.createProject('Activity', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const message = store.addMessage(project.id, 'user', 'Inspect the problem', 'discuss');
   const path = String.raw`D:\project\.phantom\workspaces\task-one\src\main.ts`;
   class Protocol extends Codex {
@@ -506,6 +507,7 @@ test('PM batches readable deltas, filters other Runs, publishes safe streaming t
   const root = await mkdtemp(join(tmpdir(), 'phantom-deltas-'));
   const store = new Store(join(root, 'state.sqlite'));
   const project = store.createProject('Deltas', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const message = store.addMessage(project.id, 'user', 'Inspect', 'discuss');
   let changes = 0;
   const streams: unknown[] = [];
@@ -627,6 +629,7 @@ test('a protocol-interrupted PM Run remains interrupted after a service restart'
   const file = join(root, 'state.sqlite');
   const store = new Store(file);
   const project = store.createProject('Interrupted', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   class Protocol extends Codex {
     override async start() {}
     override async stop() {}

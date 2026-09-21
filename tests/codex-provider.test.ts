@@ -331,3 +331,119 @@ test('custom Codex launch uses argument overrides and a child-only key binding; 
     'host environment must be unchanged',
   );
 });
+
+test('Codex uses turn/steer preconditions, queues followUps FIFO, and normalizes account and per-turn usage', async () => {
+  const script = `
+    const readline = require('node:readline');
+    const send = value => console.log(JSON.stringify(value));
+    let turnNumber = 0;
+    let threadReadNumber = 0;
+    readline.createInterface({ input: process.stdin }).on('line', line => {
+      const m = JSON.parse(line);
+      if (m.id === undefined) return;
+      if (m.method === 'initialize') { send({ id: m.id, result: {} }); return; }
+      if (m.method === 'thread/start' || m.method === 'thread/resume') {
+        send({ id: m.id, result: { thread: { id: 'fixture-thread' }, modelProvider: 'fixture-provider', model: m.params.model, reasoningEffort: m.params.config?.model_reasoning_effort } });
+        return;
+      }
+      if (m.method === 'account/read') {
+        send({ id: m.id, result: { account: { type: 'chatgpt', email: 'must-not-leak@example.invalid', planType: 'pro' }, requiresOpenaiAuth: false } });
+        return;
+      }
+      if (m.method === 'account/rateLimits/read') {
+        send({ id: m.id, result: { ordinaryUsageAllowed: true, accountId: 'must-not-leak', rateLimits: { primary: { usedPercent: 7, windowDurationMins: 60, resetsAt: 2000000000 }, secondary: null }, rateLimitsByLimitId: null } });
+        return;
+      }
+      if (m.method === 'account/usage/read') {
+        send({ id: m.id, result: { summary: { lifetimeTokens: 1234, peakDailyTokens: 99, longestRunningTurnSec: 4, currentStreakDays: 2, longestStreakDays: 3 }, dailyUsageBuckets: [{ startDate: '2026-09-21', tokens: 12 }] } });
+        return;
+      }
+      if (m.method === 'thread/read') {
+        threadReadNumber += 1;
+        const complete = m.params.threadId === 'fixture-thread' && m.params.includeTurns === true;
+        send({ id: m.id, result: { thread: { turns: complete ? [{ status: threadReadNumber === 4 ? 'inProgress' : 'completed', itemsView: threadReadNumber === 3 ? 'summary' : 'full', items: [2, 4].includes(threadReadNumber) ? [] : [{ type: 'userMessage', clientId: 'client-steer-1' }] }] : [] } } });
+        return;
+      }
+      if (m.method === 'turn/start') {
+        turnNumber += 1;
+        const id = 'turn-' + turnNumber;
+        send({ id: m.id, result: { turn: { id } } });
+        setTimeout(() => {
+          send({ method: 'turn/started', params: { threadId: m.params.threadId, turn: { id } } });
+          if (turnNumber > 1) {
+            send({ method: 'item/agentMessage/delta', params: { threadId: m.params.threadId, turnId: id, delta: 'follow-up-ok' } });
+            send({ method: 'turn/completed', params: { threadId: m.params.threadId, turn: { id, status: 'completed' } } });
+          } else {
+            send({ method: 'thread/tokenUsage/updated', params: { threadId: m.params.threadId, turnId: id, tokenUsage: { total: { totalTokens: 50, inputTokens: 45, cachedInputTokens: 5, cacheWriteInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 1 }, last: { totalTokens: 11, inputTokens: 9, cachedInputTokens: 1, cacheWriteInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 1 }, modelContextWindow: 1000 } } });
+          }
+        }, 5);
+        return;
+      }
+      if (m.method === 'turn/steer') {
+        const valid = m.params.threadId === 'fixture-thread' && m.params.expectedTurnId === 'turn-1' && m.params.clientUserMessageId === 'client-steer-1' && m.params.input[0].type === 'text';
+        if (!valid) { send({ id: m.id, error: { message: 'invalid steer request' } }); return; }
+        send({ id: m.id, result: { turnId: 'turn-1' } });
+        setTimeout(() => send({ method: 'turn/completed', params: { threadId: 'fixture-thread', turn: { id: 'turn-1', status: 'completed' } } }), 50);
+        return;
+      }
+      if (m.method === 'fixture/exit') { send({ id: m.id, result: {} }); setImmediate(() => process.exit(0)); return; }
+      send({ id: m.id, result: {} });
+    });
+  `;
+  const codex = new Codex((_binary, _args, options) =>
+    spawn(process.execPath, ['-e', script], options),
+  );
+  const notifications: Array<[string, any]> = [];
+  codex.on('notification', (method, params) => notifications.push([method, params]));
+  try {
+    await codex.start({
+      id: 'fixture-provider',
+      baseUrl: 'http://localhost:9876/v1',
+      apiKey: 'fixture-key',
+    });
+    const session = await codex.createSession({
+      cwd: process.cwd(),
+      profile: { model: 'fixture-model', effort: 'low' },
+      instructions: 'fixture',
+      writable: false,
+    });
+    const initial = session.prompt('initial', {
+      profile: { model: 'fixture-model', effort: 'low' },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    const steered = session.steer('steer-now', {
+      clientUserMessageId: 'client-steer-1',
+      expectedTurnId: 'turn-1',
+    });
+    const firstFollowUp = session.followUp('follow-one');
+    const secondFollowUp = session.followUp('follow-two');
+    await steered;
+    const initialResult = await initial;
+    assert.equal(initialResult.usage?.totalTokens, 11);
+    await Promise.all([firstFollowUp, secondFollowUp]);
+    assert.deepEqual(
+      notifications
+        .filter(([method]) => method === 'turn/completed')
+        .map(([, params]) => params.turn.id),
+      ['turn-1', 'turn-2', 'turn-3'],
+    );
+    const usageNotification = notifications.find(
+      ([method]) => method === 'thread/tokenUsage/updated',
+    )?.[1];
+    assert.equal(usageNotification.usage.totalTokens, 11);
+    assert.equal(usageNotification.usage.contextWindow, 1000);
+    const allowance = await codex.accountAllowance();
+    assert.equal(allowance.status, 'available');
+    assert.deepEqual(allowance.account, { type: 'chatgpt', planType: 'pro' });
+    assert.equal('accountId' in allowance, false);
+    assert.equal(allowance.usage?.lifetimeTokens, 1234);
+    assert.equal(allowance.usage?.dailyUsageBuckets?.[0].tokens, 12);
+    assert.equal(await codex.reconcileSteer('fixture-thread', 'client-steer-1'), 'accepted');
+    assert.equal(await codex.reconcileSteer('fixture-thread', 'missing'), 'not_accepted');
+    assert.equal(await codex.reconcileSteer('fixture-thread', 'unknown'), 'unknown');
+    assert.equal(await codex.reconcileSteer('fixture-thread', 'not-yet-visible'), 'unknown');
+  } finally {
+    await codex.request('fixture/exit').catch(() => {});
+    await codex.stop();
+  }
+});

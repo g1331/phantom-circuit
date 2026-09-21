@@ -4,7 +4,7 @@ A Windows-first, self-hosted AI engineering orchestrator. Discuss requirements w
 
 ## Run locally
 
-Requirements: Node.js 24+, Git, PowerShell 7+ (`pwsh.exe` on PATH on Windows), GitHub CLI (`gh auth login`) and Codex CLI with an authenticated account. This implementation was developed against Codex CLI 0.154.0. Target repositories must already have a local checkout whose `origin` matches GitHub. Configured install/build/test commands use PowerShell 7 on Windows, including `&&` chains.
+Requirements: Node.js 24+, Git, PowerShell 7+ (`pwsh.exe` on PATH on Windows), GitHub CLI (`gh auth login`), and an authenticated Oh My Pi (`omp`) installation. Codex CLI is an optional backend. The adapters have been exercised with OMP 18.1.19 and Codex app-server; run the capability probes for your installed versions. Target repositories must already have a local checkout whose `origin` matches GitHub. Configured install/build/test commands use PowerShell 7 on Windows, including `&&` chains.
 
 ```powershell
 npm ci
@@ -16,21 +16,24 @@ Open **http://127.0.0.1:4317**. Create a project, connect a repository and expli
 
 Use `npm run dev:web` in a second terminal for frontend development. The Vite development server proxies API requests to port 4317.
 
-During discussion, the PM can persist glossary/ADR drafts locally using the upstream document formats. Accepted documents are attached as immutable snapshots to a documentation task under an explicit implementation request, then published through the normal Dev/review/merge loop. Discussion alone never starts a documentation Dev. PM contexts refresh from managed default-branch views so merged decisions are not read from a stale original checkout.
+During discussion, the PM can persist glossary/ADR drafts locally using the upstream document formats. Accepted documents accompany the corresponding implementation as immutable snapshots; `revise_task` can explicitly replace accepted snapshots before delivery. A requirement normally produces one Task, including its documentation. Discussion alone never authorizes implementation. PM contexts refresh from managed default-branch views.
 
 ## Controls
 
 - Closing a work switch stops new claims; existing tasks finish development, review, revision and merge. Pause interrupts a task separately; cancel retains its branch, worktree and PR.
 - Global/project/repository Dev limits apply together. Defaults: 4 / 4 / 2. Independent Review has a separate global two-session limit; PM activity is separate.
-- Backend defaults to `gpt-5.6-luna / max`; frontend and ordinary fullstack to `gpt-6-astra / low`; complex work, PM and Review to `gpt-6-astra / medium`. The host checks model availability and effort support; it does not silently substitute models.
+- New Projects inherit the software's default Agent (OMP). A Project can select OMP or Codex, and each role can inherit its global model or pin a local assignment. OMP models are initialized once from its `default`, `slow` and `advisor` roles. Existing Projects retain explicit Codex assignments. Runs fix their resolved configuration; changing settings does not rewrite history or silently substitute models.
+- Normal Tasks receive one combined primary review. Complex work, rework or primary escalation requires a second, different model. Current tests, required reviews and remote revision/check evidence govern automatic merge; no additional PM merge-approval turn is needed.
 - Each task uses a managed branch and worktree. The original checkout is not used for development. Dev leaves implementation files for host-owned staging, commit and formal validation. A durable finalization checkpoint lets interrupted host work resume without another Dev session. Known Git/process/environment failures pause without consuming product rework attempts; actual test/review failures still require corrections. Reviews bind both base and head revisions. The host verifies configured tests and GitHub checks before requesting squash merge; branch protection is not bypassed.
 - PM owns technical decisions. Product ambiguity and unavailable external authority remain user decisions. Skill confirmation points are adapted to this delegation in `prompts/`.
 
 ## State and recovery
 
-`.phantom/config.json` contains the local port. `.phantom/phantom.sqlite` stores project configuration, routing, conversation messages, tasks, runs, events and external operation records. `.phantom/workspaces/` contains managed bare repositories, task worktrees and previews. `.phantom/messages/` holds uploaded message image binaries for as long as their messages exist. Secrets are not stored as project configuration. Back up `.phantom/` and Codex's own persisted sessions with the service stopped to preserve both host and conversation history.
+`%USERPROFILE%\.phantom` is the Windows data root (`~/.phantom` on other hosts). It contains `config.json`, `phantom.sqlite`, managed `workspaces/`, image `messages/`, protected credentials, `agents/omp/sessions/` and backups. On first startup the host checks checkout-local data, creates a consistent SQLite backup and adopts authoritative referenced files. Existing dirty or paused worktrees retain explicitly recorded legacy paths; newly created worktrees use the home root. Preserve the old directory and `migration.json` rollback information until you have verified your migrated projects.
 
-On startup, unfinished runs are marked interrupted and their tasks pause for worktree/remote verification. Resume preserves pending work. An external mutation whose result is unknown is queried remotely before retrying; if it cannot be reconciled, it remains blocked rather than creating duplicates. Do not delete the database as a recovery shortcut.
+On startup, unfinished Runs become interrupted and durable recovery items are reconciled before new claims. Each Project selects automatic continuation (default) or manual continuation; user-paused work remains paused. Incidents preserve redacted failure evidence and trigger one PM assessment, while product Clarifications retain their source intent and answers. Queue sends a later PM turn; Steer addresses the current one. Unknown external outcomes require evidence before retry: OMP currently cannot prove a lost steering acknowledgement through RPC history, so those requests remain uncertain. Do not delete the database as a recovery shortcut.
+
+The UI supports Chinese and English, board/list Task views, role configuration, recovery actions and resource statistics. Reported Run tokens, account allowance and estimated cost are separate; absent fields remain unknown, and official account access is not billed using public API prices. Completed worktrees are removed only after verified handoff and safety checks; cleanup failures remain visible maintenance outcomes.
 
 ## Local experience environments
 
@@ -38,7 +41,7 @@ Set the repository's startup command, port and validation commands in its config
 
 ## Engineering skills
 
-The 14 bundled Matt Pocock skills and referenced files are pinned in `.agents/skills/manifest.json`. PM uses discussion, domain-modeling, specification and ticket skills; Dev uses implement/TDD/debugging; independent Review uses Standards and Spec axes. The host owns scheduling and external effects. To restore the exact bundled revision:
+The 14 bundled Matt Pocock skills and referenced files are pinned in `.agents/skills/manifest.json`. Project adaptations in `prompts/` use a combined independent review and risk-based escalation; upstream skill files are preserved. The host owns scheduling and external effects. To restore the exact bundled revision:
 
 ```powershell
 npm run skills:install
@@ -58,12 +61,12 @@ npm run probe
 
 Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on port 4318. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
 
-`npm run probe -- --turn` additionally makes two metered Codex calls to verify a model response and conversation recovery across process restart. It does not mutate repositories.
+`npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 
 `npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt, bundled skill context and registered host tools, using a temporary project without repositories or GitHub writes.
 
-Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner. The current session has not created a remote source repository or modified a user's existing GitHub project.
+Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner.
 
 ## MVP boundaries
 
-Single user, loopback-only local service, trusted repositories, Windows-native execution. Worktrees and prompts do not provide container-level protection against hostile repository code. No cloud worker fleet, multi-user access, production deployment or alternate Agent runtime is included. Arbitrary project stacks need valid command configuration; unsupported model/permissions states are surfaced instead of hidden by fallbacks.
+Single user, loopback-only local service, trusted repositories, Windows-native execution. Worktrees and prompts do not provide container-level protection against hostile repository code. OMP and Codex are supported; cloud workers, multi-user access and automatic production deployment are outside this implementation. Arbitrary project stacks need valid commands; unsupported model/permission states are surfaced explicitly.

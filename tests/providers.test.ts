@@ -146,6 +146,7 @@ async function fixture(t: any, createCodex?: () => Codex) {
   await mkdir(resolve('.phantom/test'), { recursive: true });
   const dir = await mkdtemp(resolve('.phantom/test/providers-'));
   const store = new Store(join(dir, 'state.sqlite'));
+  store.saveSettings({ ...store.settings(), defaultAgent: 'codex' });
   const ws = new Workspaces(dir, store);
   const app = createApp(
     store,

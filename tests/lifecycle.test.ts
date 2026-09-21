@@ -36,6 +36,7 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   await git(['push', '-u', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const p = store.createProject('Fixture', '');
+  store.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
   const providers = new Providers(store);
   const upstream = await providers.save({
     name: 'Lifecycle upstream',
@@ -47,6 +48,8 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   assigned.pm = { providerId: upstream.id, model: 'pm-model', effort: 'medium' };
   assigned.review = { providerId: 'codex', model: 'review-model', effort: 'high' };
   store.saveProjectProfiles(p.id, assigned);
+  const secondaryReview = { providerId: 'codex', model: 'secondary-review-model', effort: 'high' };
+  if (route === 'complex') store.saveProjectSecondaryReviewProfile(p.id, secondaryReview);
   const observed: string[] = [];
 
   const repo = store.createRepo({
@@ -74,10 +77,10 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
     complexity: route === 'complex' ? 'complex' : 'normal',
     priority: 0,
   });
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   let issue = { number: 1, body: '', state: 'open' };
   let merged = false;
   let rejected = false;
-  let pmRejected = false;
   let devTurns = 0;
   const axes: string[] = [];
   class FakeGitHub extends GitHub {
@@ -130,22 +133,31 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   class FakeCodex extends Codex {
     cwd = '';
     role = '';
+    axis = '';
     providerId = 'codex';
+    handler?: Parameters<Codex['thread']>[0]['toolHandler'];
     override async start(connection?: Parameters<Codex['start']>[0]) {
       this.providerId = connection?.id ?? 'codex';
     }
     override async stop() {}
     override async thread(o: Parameters<Codex['thread']>[0]) {
       this.cwd = o.cwd;
+      this.handler = o.toolHandler;
       this.role = o.instructions.includes('Task Developer')
         ? 'dev'
-        : o.instructions.includes('Independent Reviewer')
+        : o.instructions.includes('Independent Review')
           ? 'review'
           : 'pm';
       const expected =
-        assigned[this.role === 'dev' ? route : this.role === 'review' ? 'review' : 'pm'];
+        this.role === 'dev'
+          ? assigned[route]
+          : this.role === 'review'
+            ? o.profile.model === secondaryReview.model
+              ? secondaryReview
+              : assigned.review
+            : assigned.pm;
       assert.equal(this.providerId, expected.providerId);
-      assert.deepEqual(o.profile, expected);
+      assert.deepEqual(o.profile, { model: expected.model, effort: expected.effort });
       observed.push(this.role);
       if (this.role === 'dev') {
         const settings = store.settings();
@@ -164,32 +176,52 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
         return 'Implemented in the task worktree; host must commit and validate.';
       }
       if (this.role === 'review') {
-        if (prompt.includes('Axis: spec') && !rejected) {
+        const axis = /Axis: (primary|secondary)/.exec(prompt)?.[1] ?? this.axis;
+        this.axis = axis;
+        assert.ok(axis, 'the host must name the Policy 2 review lane');
+        if (axis === 'primary' && route === 'complex' && !rejected) {
           rejected = true;
+          const evidence = store.task(task.id);
+          await this.handler?.('submit_review', {
+            approved: false,
+            summary: 'Please clarify the implementation comment',
+            findings: ['Add an implementation revision comment.'],
+            verdict: 'rework',
+            head: evidence.head,
+            base: evidence.base,
+            tests: evidence.tests,
+          });
           return JSON.stringify({
             approved: false,
             summary: 'Please clarify the implementation comment',
             findings: ['Add an implementation revision comment.'],
+            verdict: 'rework',
+            head: evidence.head,
+            base: evidence.base,
+            tests: evidence.tests,
           });
         }
+        const evidence = store.task(task.id);
+        await this.handler?.('submit_review', {
+          approved: true,
+          summary: 'Inspected the task diff; behavior and conventions match.',
+          findings: [],
+          verdict: 'pass',
+          head: evidence.head,
+          base: evidence.base,
+          tests: evidence.tests,
+        });
         return JSON.stringify({
           approved: true,
           summary: 'Inspected the task diff; behavior and conventions match.',
           findings: [],
+          verdict: 'pass',
+          head: evidence.head,
+          base: evidence.base,
+          tests: evidence.tests,
         });
       }
-      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
-      if (!pmRejected) {
-        pmRejected = true;
-        return JSON.stringify({
-          approved: false,
-          reason: 'Clarify the revision comment before delivery.',
-        });
-      }
-      return JSON.stringify({
-        approved: true,
-        reason: 'Acceptance criteria and both reviews pass.',
-      });
+      assert.fail('the lifecycle must not call PM for merge acceptance');
     }
   }
   const ws = new Workspaces(join(root, 'workspaces'), store);
@@ -198,6 +230,7 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   await command('git', ['config', 'user.email', 'test@example.invalid'], mirror);
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new FakeCodex());
   try {
+    await engine.start();
     for (let i = 0; i < 250 && store.task(task.id).stage !== 'done'; i++) {
       await engine.tick();
       await new Promise((r) => setTimeout(r, 50));
@@ -211,25 +244,34 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
     assert.match(issue.body, /- \[x\] 2 \+ 3 = 5/);
     assert.equal(issue.state, 'closed');
     assert.equal(result.issueBody, issue.body);
-    assert.equal(devTurns, 3);
-    assert.ok(['dev', 'pm', 'review'].every((role) => observed.includes(role)));
+    assert.equal(devTurns, route === 'complex' ? 2 : 1);
+    assert.ok(['dev', 'review'].every((role) => observed.includes(role)));
+    assert.equal(observed.includes('pm'), false, 'merge acceptance must not call PM');
     for (const run of store.list('run')) {
-      assert.deepEqual(run.profileConfig, assigned[run.profile]);
-      assert.equal(run.provider?.id, assigned[run.profile].providerId);
+      const expected =
+        run.role === 'review' && run.secondaryReview ? secondaryReview : assigned[run.profile];
+      assert.deepEqual(run.profileConfig, expected);
+      assert.equal(run.provider?.id, expected.providerId);
     }
     assert.ok(!JSON.stringify(store.snapshot()).includes('lifecycle-private-key'));
     assert.equal(merged, true);
     const triggers = store.snapshot().activities.filter((a) => a.kind === 'trigger');
-    assert.ok(triggers.some((a) => a.title === '宿主事件：Review 后验收' && a.taskId === task.id));
-    assert.ok(triggers.every((a) => store.get('run', a.runId)?.role === 'pm'));
-    assert.equal(result.reviews.length, 2);
+    assert.equal(
+      triggers.some((a) => a.title === '宿主事件：Review 后验收' && a.taskId === task.id),
+      false,
+      'Policy 2 merge acceptance must not create a PM trigger',
+    );
+    assert.equal(result.reviews.length, route === 'complex' ? 2 : 1);
     assert.equal(result.tests[0].exitCode, 0);
     assert.equal((await command('git', ['status', '--porcelain'], source)).stdout, '');
     assert.equal(
       (await command('git', ['branch', '--show-current'], source)).stdout.trim(),
       'main',
     );
-    assert.ok(axes.includes('standards') && axes.includes('spec'));
+    assert.deepEqual(
+      [...new Set(axes)].sort(),
+      route === 'complex' ? ['primary', 'secondary'] : ['primary'],
+    );
     assert.equal(mergeReady({ ...result, head: 'unreviewed-head' }), false);
     assert.equal(mergeReady({ ...result, base: 'new-base' }), false);
   } finally {

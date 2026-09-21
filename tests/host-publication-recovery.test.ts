@@ -34,6 +34,7 @@ async function fixture() {
   await git(['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'source',
@@ -60,6 +61,7 @@ async function fixture() {
     complexity: 'normal',
     priority: 0,
   });
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   const ws = new Workspaces(join(root, 'workspaces'), store);
   task = await ws.prepare(task);
   await git(['config', 'user.name', 'Phantom Test'], task.worktree);
@@ -90,6 +92,7 @@ async function fixture() {
   }
   const github = new Remote(store);
   const engine = new Engine(store, github, ws, root, () => new Agent());
+  await engine.start();
   async function cycle() {
     await engine.tick();
     for (let n = 0; n < 500 && store.activeRuns().length; n++)
@@ -231,7 +234,11 @@ test('host recovery authorizes one controlled publication and completes without 
       'the worktree is preserved',
     );
     assert.equal(await f.ws.git(f.task().worktree!, ['status', '--porcelain']), '');
-    assert.equal(await f.ws.git(f.source, ['status', '--porcelain']), '', 'origin checkout untouched');
+    assert.equal(
+      await f.ws.git(f.source, ['status', '--porcelain']),
+      '',
+      'origin checkout untouched',
+    );
 
     // A further tick adopts the completed operation instead of publishing again.
     await f.cycle();
@@ -286,6 +293,24 @@ test('two concurrent resumes coordinate once and leave the task publishable', as
     console.log('  concurrent resume outcomes: %s', JSON.stringify(settled.map((s) => s.status)));
   } finally {
     await f.close();
+  }
+});
+
+test('engine shutdown drains a review Incident assessment before the Store closes', async () => {
+  const f = await fixture();
+  try {
+    await blockedOnPublication(f);
+    await f.engine.resume(f.task().id);
+    const result = await f.cycle();
+    assert.equal(result.stage, 'reviewing', result.blocked);
+
+    // The next public tick launches the review. The fixture reviewer returns a non-structured
+    // handoff, so its failure schedules a PM Incident assessment while shutdown is racing it.
+    await f.engine.tick();
+    await f.engine.stop();
+    assert.equal(f.store.activeRuns().length, 0, 'stop must finish every Run before Store close');
+  } finally {
+    f.store.close();
   }
 });
 

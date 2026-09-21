@@ -14,6 +14,7 @@ import type { Task } from '../src/shared/types.ts';
 function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
   let store = new Store(dbPath);
   const p = store.createProject('Completion', '');
+  store.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: p.id,
     name: 'repo',
@@ -45,14 +46,17 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
     stage: 'merging',
     mergeApproval: { head: 'head', base: 'base' },
     tests: [{ command: 'test', exitCode: 0, output: 'pass', head: 'head', at: 'now' }],
-    reviews: ['standards', 'spec'].map((axis) => ({
-      axis: axis as 'standards' | 'spec',
-      head: 'head',
-      base: 'base',
-      approved: true,
-      findings: [],
-      summary: 'pass',
-    })),
+    reviews: [
+      {
+        axis: 'primary' as const,
+        head: 'head',
+        base: 'base',
+        approved: true,
+        findings: [],
+        summary: 'pass',
+        verdict: 'pass' as const,
+      },
+    ],
   });
   const remote = { body, state: 'open' };
   let merged = true;
@@ -62,6 +66,7 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
   let projectUnavailable = false;
   const statuses: string[] = [];
   const questions: string[] = [];
+  let pmCalls = 0;
   let revision: unknown;
   class Remote extends GitHub {
     override async api<T = any>(_endpoint: string, method = 'GET', data?: any): Promise<T> {
@@ -99,10 +104,12 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
     override async stop() {}
     handler?: Parameters<Codex['thread']>[0]['toolHandler'];
     override async thread(options: Parameters<Codex['thread']>[0]) {
+      pmCalls++;
       this.handler = options.toolHandler;
       return 'pm';
     }
     override async turn(_id: string, text: string) {
+      pmCalls++;
       questions.push(text);
       if (revision) await this.handler!('revise_task', revision);
       return 'Needs user confirmation';
@@ -143,6 +150,7 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
     writes: () => writes,
     statuses,
     questions,
+    pmCalls: () => pmCalls,
     unmerged: () => {
       merged = false;
     },
@@ -311,19 +319,11 @@ for (const stage of ['developing', 'reviewing'] as const) {
     }
   });
 }
-for (const invalid of [
-  'tests',
-  'standards',
-  'spec',
-  'head',
-  'base',
-  'unmerged',
-  'paused',
-] as const) {
+for (const invalid of ['tests', 'primary', 'head', 'base', 'unmerged', 'paused'] as const) {
   test(`completion remains unchecked with invalid ${invalid} evidence`, async () => {
     const f = fixture();
     if (invalid === 'tests') f.patch({ tests: f.task().tests.map((t) => ({ ...t, exitCode: 1 })) });
-    if (invalid === 'standards' || invalid === 'spec')
+    if (invalid === 'primary')
       f.patch({
         reviews: f.task().reviews.map((r) => (r.axis === invalid ? { ...r, approved: false } : r)),
       });
@@ -366,12 +366,18 @@ test('external Issue drift pauses completion for PM without adopting or overwrit
   }
 });
 
-for (const invalid of ['evidence', 'pm-acceptance', 'unmerged', 'drift', 'marker'] as const) {
+for (const invalid of ['evidence', 'merge-witness', 'unmerged', 'drift', 'marker'] as const) {
   test(`historical compensation skips ${invalid} and records a concrete blocker`, async () => {
     const f = fixture();
-    f.patch({ stage: 'done' });
+    legacyCompletion(f);
     if (invalid === 'evidence') f.patch({ reviews: [] });
-    if (invalid === 'pm-acceptance') f.patch({ mergeApproval: undefined });
+    if (invalid === 'merge-witness')
+      f.store.put('operation', `merge:${f.task().id}:${f.task().head}`, {
+        id: `merge:${f.task().id}:${f.task().head}`,
+        kind: 'merge-pr',
+        status: 'done',
+        result: undefined,
+      });
     if (invalid === 'unmerged') f.unmerged();
     if (invalid === 'drift') f.remote.body += '\nExternal change';
     if (invalid === 'marker') f.patch({ issueBody: 'Unmanaged Issue' });
@@ -467,7 +473,7 @@ test('revise_task publishes unchecked criteria and invalidates evidence until th
   }
 });
 
-test('an externally merged PR without pinned PM acceptance cannot complete its Issue', async () => {
+test('an externally merged PR without deterministic merge evidence cannot complete its Issue or call PM', async () => {
   const f = fixture();
   const engine = f.engine();
   try {
@@ -475,7 +481,8 @@ test('an externally merged PR without pinned PM acceptance cannot complete its I
     await engine.sync();
     assert.equal(f.task().stage, 'merging');
     assert.equal(f.writes(), 0);
-    assert.match(f.task().blocked ?? '', /PM/);
+    assert.match(f.task().blocked ?? '', /验收证据|合并状态/);
+    assert.equal(f.pmCalls(), 0, 'merge completion must not call PM for an acceptance decision');
   } finally {
     await engine.stop();
     f.store.close();
@@ -483,8 +490,19 @@ test('an externally merged PR without pinned PM acceptance cannot complete its I
 });
 
 function legacyCompletion(f: ReturnType<typeof fixture>) {
-  const { mergeApproval: _approval, completionDeliveryPending: _delivery, ...legacy } = f.task();
-  f.store.put('task', legacy.id, { ...legacy, stage: 'done' });
+  const {
+    mergeApproval: _approval,
+    completionDeliveryPending: _delivery,
+    reviewPolicyVersion: _policy,
+    ...legacy
+  } = f.task();
+  const primary = f.task().reviews.find((review) => review.axis === 'primary')!;
+  const oldReviews = (['standards', 'spec'] as const).map((axis) => ({
+    ...primary,
+    axis,
+    verdict: undefined,
+  }));
+  f.store.put('task', legacy.id, { ...legacy, stage: 'done', reviews: oldReviews });
   const id = `merge:${legacy.id}:${legacy.head}`;
   f.store.put('operation', id, {
     id,

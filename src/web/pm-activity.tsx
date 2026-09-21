@@ -1,28 +1,26 @@
 import { useEffect, useState } from 'react';
 import type { PMActivity, Run, RunStatus } from '../shared/types.ts';
+import { useLocale } from './locale/provider.tsx';
 
-const statuses: Record<RunStatus, string> = {
-  queued: '排队',
-  running: '进行中',
-  waiting: '等待结果',
-  paused: '已暂停',
-  interrupted: '已中断',
-  failed: '失败',
-  completed: '已完成',
-};
-const labels: Record<keyof PMActivity['details'], string> = {
-  source: '触发来源',
-  command: '命令',
-  cwd: '工作目录',
-  paths: '文件路径',
-  input: '参数',
-  output: '结果摘要',
-  error: '错误',
-  summary: '摘要',
-};
-const timestamp = (value: string) => new Date(value).toLocaleString('zh-CN');
-const duration = (start: string, end: string | number) =>
-  `${Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 1000))} 秒`;
+const statuses = {
+  queued: 'ui.queued2',
+  running: 'ui.running2',
+  waiting: 'ui.waitingForResults',
+  paused: 'ui.paused',
+  interrupted: 'ui.interrupted',
+  failed: 'ui.failed',
+  completed: 'ui.completed2',
+} as const;
+const labels = {
+  source: 'ui.trigger',
+  command: 'ui.command',
+  cwd: 'ui.workingDirectory',
+  paths: 'ui.filePaths',
+  input: 'ui.input',
+  output: 'ui.resultSummary',
+  error: 'ui.error',
+  summary: 'ui.summary',
+} as const;
 
 function compact(activity: PMActivity, roots: string[]) {
   let text = activity.details.command ?? activity.details.paths ?? activity.details.summary ?? '';
@@ -34,12 +32,16 @@ function compact(activity: PMActivity, roots: string[]) {
 }
 
 export function ActivityRow({ activity, roots }: { activity: PMActivity; roots: string[] }) {
+  const { t, date, duration: formatDuration, activityTitle } = useLocale();
+  const timestamp = (value: string) => date(value, { dateStyle: 'short', timeStyle: 'medium' });
+  const duration = (start: string, end: string | number) =>
+    formatDuration((new Date(end).getTime() - new Date(start).getTime()) / 1000);
   return (
     <details className="pm-activity" data-status={activity.status}>
       <summary>
-        <span className="activity-title">{activity.title}</span>
+        <span className="activity-title">{activityTitle(activity.title)}</span>
         <span className="activity-preview">{compact(activity, roots)}</span>
-        <span className="activity-status">{statuses[activity.status]}</span>
+        <span className="activity-status">{t(statuses[activity.status])}</span>
       </summary>
       <dl>
         <dt>Run</dt>
@@ -58,19 +60,20 @@ export function ActivityRow({ activity, roots }: { activity: PMActivity; roots: 
         )}
         {activity.eventId !== undefined && (
           <>
-            <dt>源 Event</dt>
+            <dt> {t('ui.sourceEvent')} </dt>
             <dd>{activity.eventId}</dd>
           </>
         )}
-        <dt>开始</dt>
+        <dt> {t('ui.started')} </dt>
         <dd>{timestamp(activity.startedAt)}</dd>
-        <dt>最后更新</dt>
+        <dt> {t('ui.lastUpdated')} </dt>
         <dd>{timestamp(activity.updatedAt)}</dd>
         {activity.endedAt && (
           <>
-            <dt>完成</dt>
+            <dt> {t('ui.completed3')} </dt>
             <dd>
-              {timestamp(activity.endedAt)} · 耗时 {duration(activity.startedAt, activity.endedAt)}
+              {timestamp(activity.endedAt)} {t('ui.duration')}{' '}
+              {duration(activity.startedAt, activity.endedAt)}
             </dd>
           </>
         )}
@@ -78,9 +81,9 @@ export function ActivityRow({ activity, roots }: { activity: PMActivity; roots: 
           .filter(([, value]) => value)
           .map(([key, value]) => (
             <div className="activity-detail" key={key}>
-              <dt>{labels[key as keyof PMActivity['details']]}</dt>
+              <dt>{t(labels[key as keyof PMActivity['details']])}</dt>
               <dd>
-                <pre>{value}</pre>
+                <pre>{key === 'source' ? activityTitle(value!) : value}</pre>
               </dd>
             </div>
           ))}
@@ -90,6 +93,10 @@ export function ActivityRow({ activity, roots }: { activity: PMActivity; roots: 
 }
 
 export function PMProgress({ run, activities }: { run: Run; activities: PMActivity[] }) {
+  const { t, date, duration: formatDuration, activityTitle } = useLocale();
+  const timestamp = (value: string) => date(value, { dateStyle: 'short', timeStyle: 'medium' });
+  const duration = (start: string, end: string | number) =>
+    formatDuration((new Date(end).getTime() - new Date(start).getTime()) / 1000);
   const [clock, setClock] = useState(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 1000);
@@ -104,11 +111,12 @@ export function PMProgress({ run, activities }: { run: Run; activities: PMActivi
   return (
     <div className="pm-progress" role="status">
       <span>
-        {stale ? '等待新活动（超过 60 秒未更新，无法确认是否仍在推进）' : statuses[run.status]} ·{' '}
-        {latest?.title ?? '准备上下文'}
+        {stale ? t('ui.waitingForActivityNoUpdateForOver') : t(statuses[run.status])} ·{' '}
+        {latest ? activityTitle(latest.title) : t('ui.preparingContext')}
       </span>
       <small>
-        最后活动 {timestamp(updatedAt)} · 已运行 {duration(run.startedAt, clock)}
+        {t('ui.lastActivity')} {timestamp(updatedAt)} {t('ui.elapsed')}{' '}
+        {duration(run.startedAt, clock)}
       </small>
     </div>
   );

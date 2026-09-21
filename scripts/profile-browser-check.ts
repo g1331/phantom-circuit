@@ -6,6 +6,16 @@ import { createServer } from 'node:http';
 
 export async function checkProfiles(page: Page, store: Store, artifacts: string) {
   const project = store.list('project')[0];
+  // This suite verifies explicitly pinned Codex profiles; runtime-browser-check covers inheritance.
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
+  store.saveProjectProfileModes(project.id, {
+    pm: 'pinned',
+    review: 'pinned',
+    backend: 'pinned',
+    frontend: 'pinned',
+    fullstack: 'pinned',
+    complex: 'pinned',
+  });
   const original = project.profiles.pm.effort;
   await page.getByRole('button', { name: '运行设置', exact: true }).click();
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');

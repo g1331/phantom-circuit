@@ -1,0 +1,3 @@
+# Resolve backend and model inheritance when a Run starts
+
+OMP is the software default and Codex remains selectable through the same host-owned execution interface; a Project inherits the default or explicitly selects one backend for its roles. Role models independently follow global assignments or remain pinned, while each Run fixes the resolved backend, Provider, model, effort and available version evidence; legacy Projects retain explicit Codex assignments, superseding ADR 0004's copy-only configuration without silently changing existing work. OMP authentication remains owned by OMP and its role defaults are sampled once, while Phantom sessions remain separate from interactive sessions.

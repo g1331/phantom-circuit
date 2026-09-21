@@ -9,6 +9,7 @@ import type {
   Task,
   ReviewResult,
 } from '../shared/types.ts';
+import { engineeringTitle, expectedTaskBranch, pullRequestBody } from './task-naming.ts';
 
 /** The identity fields reconciliation needs; GitHub returns them on every PR resource. */
 interface PullRef {
@@ -567,6 +568,14 @@ export class GitHub {
   private taskRevision(task: Task) {
     return `${task.repoId}:${task.branch}@${task.head ?? '-'}#${task.base ?? '-'}`;
   }
+  private assertTaskBranch(task: Task) {
+    try {
+      const expected = expectedTaskBranch(task);
+      if (!task.branch || task.branch !== expected) throw new Error(`应为 ${expected}`);
+    } catch (error) {
+      throw new Fault(`任务分支与命名契约不匹配：${String(error)}`, 409);
+    }
+  }
   private reviewFault(reason: string) {
     return new Fault(`远端 Task PR 需要人工核对：${reason}`, 409);
   }
@@ -686,6 +695,7 @@ export class GitHub {
    * be read as "absent", which would let an authorized retry create a duplicate.
    */
   async findTaskPR(task: Task): Promise<PullState | undefined> {
+    this.assertTaskBranch(task);
     const candidates = await this.pullCandidates(task);
     if (candidates.review) throw this.reviewFault(candidates.review);
     return candidates.adoptable;
@@ -740,18 +750,17 @@ export class GitHub {
   async publishPR(task: Task): Promise<PullState> {
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
-    const marker = `<!-- phantom-task:${task.id} -->`;
-    const evidence = task.tests.map((t) => `- ${t.command}: exit ${t.exitCode}`).join('\n');
+    this.assertTaskBranch(task);
     const result = await this.operation(
       `pr:${task.id}`,
       'create-pr',
       () => this.findTaskPR(task),
       () =>
         this.api(`repos/${repo.github}/pulls`, 'POST', {
-          title: task.title,
+          title: engineeringTitle(task),
           head: task.branch,
           base: repo.defaultBranch,
-          body: `${marker}\n${task.spec}\n\n## Validation\n${evidence}\n\nCloses #${task.issue}`,
+          body: pullRequestBody(task),
         }),
       this.taskRevision(task),
     );
@@ -837,7 +846,7 @@ export class GitHub {
         ),
       () =>
         this.api(`repos/${repo.github}/issues/${task.pr}/comments`, 'POST', {
-          body: `${marker}\n## ${review.axis === 'standards' ? 'Standards' : 'Spec'}\n${review.approved ? 'Pass' : 'Changes requested'}\n\n${review.summary}\n${review.findings.map((x) => `- ${x}`).join('\n')}\n\nReviewed head: ${review.head}; base: ${review.base}. AI review evidence; not a GitHub approval.`,
+          body: `${marker}\n## ${{ standards: 'Standards', spec: 'Spec', primary: 'Comprehensive Review', secondary: 'Independent Risk Review' }[review.axis]}\n${review.approved ? 'Pass' : 'Changes requested'}\n\n${review.summary}\n${review.findings.map((x) => `- ${x}`).join('\n')}\n\nReviewed head: ${review.head}; base: ${review.base}. AI review evidence; not a GitHub approval.`,
         }),
     );
   }

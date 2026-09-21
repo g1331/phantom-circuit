@@ -11,8 +11,109 @@ import { Store, Fault, redact } from './store.ts';
 import { Engine } from './engine.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
-import { Providers } from './providers.ts';
-import { commandSchema, limit } from './schemas.ts';
+import { OmpBackend } from './omp.ts';
+import {
+  AgentRuntime,
+  Providers,
+  type AgentProbeResponse,
+  type AgentRuntimeFactories,
+} from './providers.ts';
+import { bootstrapAgentSettings } from './agent-settings.ts';
+import {
+  attachedHostDescriptor,
+  renderHostMessage,
+  requestHostLocale,
+} from '../shared/host-messages.ts';
+import type { AgentKind, ClarificationAnswer, ProfileMode, ProfileName } from '../shared/types.ts';
+import type { AgentBackend } from './agent-backend.ts';
+import { commandSchema, limit, profileSchema, profileSetSchema } from './schemas.ts';
+
+type RuntimeEngineContract = Engine & {
+  answerClarification(
+    projectId: string,
+    clarificationId: string,
+    answers: ClarificationAnswer[],
+  ): Promise<unknown>;
+  cancelClarification(projectId: string, clarificationId: string): Promise<unknown>;
+  resumeRecovery(projectId: string, recoveryId?: string): Promise<unknown>;
+  cancelRecovery(projectId: string, recoveryId: string): Promise<unknown>;
+  resolveIncident(
+    projectId: string,
+    incidentId: string,
+    action: 'resolved' | 'paused' | 'waiting_user',
+    guidance?: string,
+  ): Promise<unknown>;
+};
+
+const profileNames: ProfileName[] = ['backend', 'frontend', 'fullstack', 'complex', 'pm', 'review'];
+const profileModesSchema = z
+  .object(
+    Object.fromEntries(
+      profileNames.map((name) => [name, z.enum(['inherit', 'pinned'])]),
+    ) as unknown as Record<ProfileName, z.ZodType<ProfileMode>>,
+  )
+  .strict();
+const agentSelectionSchema = z.union([
+  z.object({ mode: z.literal('inherit') }).strict(),
+  z.object({ mode: z.literal('override'), agent: z.enum(['omp', 'codex']) }).strict(),
+]);
+const runtimeSchema = z
+  .object({
+    agentSelection: agentSelectionSchema.optional(),
+    profileModes: profileModesSchema.optional(),
+    profiles: profileSetSchema.optional(),
+    ompProfiles: profileSetSchema.optional(),
+    secondaryReviewProfile: profileSchema.nullable().optional(),
+    secondaryReviewProfiles: z
+      .object({
+        omp: profileSchema.nullable().optional(),
+        codex: profileSchema.nullable().optional(),
+      })
+      .strict()
+      .optional(),
+    recoveryPolicy: z.enum(['automatic', 'manual']).optional(),
+  })
+  .strict();
+
+function asRuntimeEngine(engine: Engine): RuntimeEngineContract {
+  return engine as RuntimeEngineContract;
+}
+
+function nullableSecondary(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const input = value as Record<string, unknown>;
+  const next = { ...input };
+  if (input.secondaryReviewProfile === null) next.secondaryReviewProfile = undefined;
+  if (typeof next.secondaryReviewProfiles === 'object' && next.secondaryReviewProfiles !== null) {
+    const profiles = next.secondaryReviewProfiles as Record<string, unknown>;
+    next.secondaryReviewProfiles = Object.fromEntries(
+      Object.entries(profiles).filter(([, profile]) => profile !== null),
+    );
+  }
+  return next;
+}
+
+function routeLocale(req: {
+  query?: unknown;
+  headers: Record<string, string | string[] | undefined>;
+}) {
+  const query =
+    typeof req.query === 'object' && req.query !== null
+      ? (req.query as { locale?: unknown })
+      : undefined;
+  return requestHostLocale(query?.locale, req.headers['accept-language']);
+}
+
+function modelCountCoverage(usage: Record<string, unknown>) {
+  const fields = [
+    'inputTokens',
+    'outputTokens',
+    'cachedInputTokens',
+    'cacheWriteTokens',
+    'reasoningOutputTokens',
+  ];
+  return fields.filter((field) => usage[field] !== undefined);
+}
 
 export function createApp(
   store: Store,
@@ -20,8 +121,16 @@ export function createApp(
   previews: Previews,
   port = 4317,
   createCodex: () => Codex = () => new Codex(),
+  createOmp: () => AgentBackend = () => new OmpBackend(),
 ) {
   const providers = new Providers(store, createCodex);
+  const agents = new AgentRuntime(store, providers, {
+    codex: createCodex,
+    omp: createOmp,
+  } satisfies AgentRuntimeFactories);
+  // The hook is process-scoped and only replaces the untouched software seed. It never reads or
+  // persists OMP credentials; API handlers below await it where settings need to be deterministic.
+  const agentSettingsReady = bootstrapAgentSettings(store).catch(() => undefined);
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
   const images = new MessageImages(store, engine.dataDir);
   void app.register(multipart, { limits: imageLimits });
@@ -53,17 +162,38 @@ export function createApp(
             (providerRequest && (error as { statusCode?: number }).statusCode === 400)
           ? 400
           : 500;
-    reply
-      .code(status)
-      .send({
-        error: uploadStorageFailure
-          ? '图片保存失败，请检查本地磁盘空间和权限后重试'
-          : uploadLimit
-            ? '上传超限：每条消息最多 4 张图片，每张不超过 10 MiB'
-            : providerRequest && !(error instanceof Fault)
-              ? 'Provider 请求无效，请检查输入或稍后重试'
-              : redact(error instanceof Error ? error.message : String(error)),
-      });
+    const legacy = uploadStorageFailure
+      ? '图片保存失败，请检查本地磁盘空间和权限后重试'
+      : uploadLimit
+        ? '上传超限：每条消息最多 4 张图片，每张不超过 10 MiB'
+        : providerRequest && !(error instanceof Fault)
+          ? 'Provider 请求无效，请检查输入或稍后重试'
+          : redact(error instanceof Error ? error.message : String(error));
+    const descriptor = uploadStorageFailure
+      ? { code: 'upload_storage_failed', params: {}, legacy }
+      : uploadLimit
+        ? { code: 'upload_limit_exceeded', params: {}, legacy }
+        : attachedHostDescriptor(error, status, legacy);
+    const params = Object.fromEntries(
+      Object.entries(descriptor.params ?? {}).map(([key, value]) => [
+        key,
+        typeof value === 'string' ? redact(value) : value,
+      ]),
+    );
+    const safeDescriptor = {
+      ...descriptor,
+      params,
+      ...(descriptor.detail ? { detail: redact(descriptor.detail) } : {}),
+    };
+    const locale = routeLocale(req);
+    const message = renderHostMessage(safeDescriptor, locale);
+    reply.code(status).send({
+      code: safeDescriptor.code,
+      params: safeDescriptor.params,
+      error: legacy,
+      message,
+      detail: safeDescriptor.detail ?? legacy,
+    });
   });
   app.addHook('onRequest', async (req, reply) => {
     if (!allowed.has(req.headers.host ?? '')) throw new Fault('不允许的 Host', 403);
@@ -109,7 +239,10 @@ export function createApp(
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return store.setTaskPriority(id, req.body, { actor: 'user' });
   });
-  app.get('/api/state', async () => store.snapshot());
+  app.get('/api/state', async () => {
+    await agentSettingsReady;
+    return store.snapshot();
+  });
   const providerId = (params: unknown) => z.object({ id: z.string() }).parse(params).id;
   app.get('/api/providers', async () => providers.list());
   app.get('/api/providers/:id', async (req) => providers.get(providerId(req.params)));
@@ -117,6 +250,9 @@ export function createApp(
   app.patch('/api/providers/:id', async (req) => providers.save(req.body, providerId(req.params)));
   app.delete('/api/providers/:id', async (req) => providers.remove(providerId(req.params)));
   app.post('/api/providers/:id/models', async (req) => providers.models(providerId(req.params)));
+  app.patch('/api/providers/:id/prices', async (req) =>
+    providers.savePrices(providerId(req.params), req.body),
+  );
   app.post('/api/providers/:id/reveal-key', async (req) => {
     if (
       !z
@@ -157,7 +293,61 @@ export function createApp(
       store.changes.off('delta', delta);
     });
   });
+  const agentParam = (params: unknown): AgentKind =>
+    z.object({ agent: z.enum(['omp', 'codex']) }).parse(params).agent;
+  const agentQuery = (query: unknown) =>
+    z
+      .object({
+        providerId: z.string().trim().min(1).max(100).optional(),
+        force: z.enum(['1', 'true']).optional(),
+        locale: z.string().trim().min(1).max(20).optional(),
+      })
+      .strict()
+      .parse(query ?? {});
+  const unavailable = (error: unknown) => ({
+    available: false,
+    ok: false,
+    error: redact(error instanceof Error ? error.message : String(error)),
+  });
+  app.get('/api/agents/:agent/models', async (req) => {
+    const agent = agentParam(req.params);
+    const { providerId } = agentQuery(req.query);
+    try {
+      return { models: await agents.models(agent, providerId), available: true, ok: true };
+    } catch (error) {
+      if (error instanceof Fault && error.status < 500) throw error;
+      return { models: [], ...unavailable(error) };
+    }
+  });
+  app.get('/api/agents/:agent/probe', async (req) => {
+    const agent = agentParam(req.params);
+    const { providerId } = agentQuery(req.query);
+    try {
+      const result: AgentProbeResponse = await agents.probe(agent, providerId);
+      return { available: true, ok: true, ...result };
+    } catch (error) {
+      if (error instanceof Fault && error.status < 500) throw error;
+      return unavailable(error);
+    }
+  });
+  const allowance = async (req: { params: unknown; query: unknown; body?: unknown }) => {
+    const agent = agentParam(req.params);
+    const query = agentQuery(req.query);
+    const body =
+      req.body === undefined
+        ? {}
+        : z.object({ force: z.boolean().optional() }).strict().parse(req.body);
+    return agents.allowance(
+      agent,
+      query.providerId ?? (agent === 'codex' ? 'codex' : 'omp'),
+      query.force === '1' || query.force === 'true' || body.force === true,
+    );
+  };
+  app.get('/api/agents/:agent/allowance', allowance);
+  app.post('/api/agents/:agent/allowance', allowance);
+  app.post('/api/agents/:agent/allowance/refresh', allowance);
   app.post('/api/projects', async (req) => {
+    await agentSettingsReady;
     const b = z
       .object({
         name: z.string().trim().min(1).max(100),
@@ -170,6 +360,45 @@ export function createApp(
   app.patch('/api/projects/:id/profiles', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return providers.saveAssignments(req.body, id);
+  });
+  app.patch('/api/projects/:id/runtime', async (req) => {
+    await agentSettingsReady;
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const parsed = runtimeSchema.parse(req.body);
+    const warnings: string[] = [];
+    if (parsed.profiles) {
+      const saved = await providers.saveAssignments(parsed.profiles, id);
+      warnings.push(...(saved.warnings ?? []));
+    }
+    if (parsed.ompProfiles) store.saveProjectOmpProfiles(id, parsed.ompProfiles);
+    const {
+      profiles: _profiles,
+      ompProfiles: _ompProfiles,
+      secondaryReviewProfile,
+      secondaryReviewProfiles,
+      ...runtime
+    } = parsed;
+    if (Object.keys(runtime).length || secondaryReviewProfile || secondaryReviewProfiles) {
+      store.saveProjectRuntimeConfig(id, {
+        ...runtime,
+        ...(secondaryReviewProfile ? { secondaryReviewProfile } : {}),
+        ...(secondaryReviewProfiles
+          ? {
+              secondaryReviewProfiles: Object.fromEntries(
+                Object.entries(secondaryReviewProfiles).filter(([, profile]) => profile !== null),
+              ),
+            }
+          : {}),
+      });
+    }
+    if (secondaryReviewProfile === null) {
+      const project = store.project(id);
+      delete project.secondaryReviewProfile;
+      store.put('project', id, project);
+      store.changes.emit('change');
+    }
+    const project = store.project(id);
+    return warnings.length ? { ...project, warnings } : project;
   });
   app.patch('/api/projects/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
@@ -231,10 +460,13 @@ export function createApp(
             .object({
               content: z.string().trim().min(1).max(30000),
               intent: z.enum(['discuss', 'implement', 'feedback']),
+              deliveryMode: z.enum(['queue', 'steer']).optional(),
             })
             .strict()
             .parse(req.body);
-          return store.addMessage(id, 'user', b.content, b.intent);
+          return store.addMessage(id, 'user', b.content, b.intent, undefined, {
+            deliveryMode: b.deliveryMode,
+          });
         })();
     void engine
       .chat(m)
@@ -243,6 +475,108 @@ export function createApp(
       );
     reply.code(202);
     return m;
+  });
+  const answerSchema = z
+    .object({
+      answers: z
+        .array(
+          z
+            .object({
+              questionId: z.string().trim().min(1).max(100),
+              value: z.union([z.string().max(10000), z.array(z.string().max(10000)).max(20)]),
+            })
+            .strict(),
+        )
+        .max(20),
+    })
+    .strict();
+  const projectEntity = (
+    kind: 'clarification' | 'recovery' | 'incident',
+    projectId: string,
+    id: string,
+  ) => {
+    const value = store.get(kind, id);
+    if (!value) throw new Fault(`${kind} 不存在`, 404);
+    if (value.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
+    return value;
+  };
+  app.post('/api/projects/:projectId/clarifications/:id/answer', async (req) => {
+    const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
+    projectEntity('clarification', projectId, id);
+    const { answers } = answerSchema.parse(req.body);
+    return asRuntimeEngine(engine).answerClarification(projectId, id, answers);
+  });
+  app.post('/api/projects/:projectId/clarifications/:id/cancel', async (req) => {
+    const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
+    projectEntity('clarification', projectId, id);
+    if (req.body !== undefined && req.body !== null) z.object({}).strict().parse(req.body);
+    return asRuntimeEngine(engine).cancelClarification(projectId, id);
+  });
+  app.post('/api/projects/:projectId/recovery/resume', async (req) => {
+    const { projectId } = z.object({ projectId: z.string() }).parse(req.params);
+    const body = z
+      .object({ id: z.string().optional() })
+      .strict()
+      .parse(req.body ?? {});
+    if (body.id) projectEntity('recovery', projectId, body.id);
+    return asRuntimeEngine(engine).resumeRecovery(projectId, body.id);
+  });
+  app.post('/api/projects/:projectId/recovery/:id/cancel', async (req) => {
+    const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
+    projectEntity('recovery', projectId, id);
+    if (req.body !== undefined && req.body !== null) z.object({}).strict().parse(req.body);
+    return asRuntimeEngine(engine).cancelRecovery(projectId, id);
+  });
+  app.post('/api/projects/:projectId/incidents/:id/resolve', async (req) => {
+    const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
+    projectEntity('incident', projectId, id);
+    const body = z
+      .object({
+        action: z.enum(['resolved', 'paused', 'waiting_user']),
+        guidance: z.string().trim().max(16000).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    return asRuntimeEngine(engine).resolveIncident(projectId, id, body.action, body.guidance);
+  });
+  app.get('/api/tasks/:id/usage', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    store.task(id);
+    const runs = store.list('run').filter((run) => run.taskId === id);
+    const usage = store.taskUsage(id);
+    const costs = store.taskCosts(id);
+    const cost = costs.length === 1 ? costs[0] : undefined;
+    const runCosts = Object.fromEntries(runs.map((run) => [run.id, store.runCost(run.id)]));
+    const usageFields = modelCountCoverage(usage as Record<string, unknown>);
+    const pricedFields = new Set(costs.flatMap((estimate) => estimate.coverage ?? []));
+    const missing = usageFields.filter((field) => !pricedFields.has(field));
+    const durationMs = runs.reduce((total, run) => {
+      if (run.durationMs !== undefined) return total + Math.max(0, run.durationMs);
+      if (!run.endedAt) return total;
+      const duration = Date.parse(run.endedAt) - Date.parse(run.startedAt);
+      return total + (Number.isFinite(duration) && duration > 0 ? duration : 0);
+    }, 0);
+    const started = runs
+      .map((run) => Date.parse(run.startedAt))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)[0];
+    const ended = runs
+      .map((run) => (run.endedAt ? Date.parse(run.endedAt) : Date.now()))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => b - a)[0];
+    const elapsedMs =
+      started === undefined || ended === undefined ? null : Math.max(0, ended - started);
+    const available = usageFields.length - missing.length;
+    return {
+      usage,
+      ...(cost ? { cost } : {}),
+      costs,
+      runCosts,
+      runs,
+      coverage: { available, total: usageFields.length, missing },
+      durationMs,
+      elapsedMs,
+    };
   });
   app.get(
     '/api/projects/:projectId/messages/:messageId/images/:attachmentId',
@@ -281,7 +615,10 @@ export function createApp(
     else engine.control(id, action);
     return store.task(id);
   });
-  app.patch('/api/settings', async (req) => providers.saveAssignments(req.body));
+  app.patch('/api/settings', async (req) => {
+    await agentSettingsReady;
+    return providers.saveAssignments(nullableSecondary(req.body));
+  });
   app.get('/api/health', async () => {
     const results = await Promise.allSettled([
       engine.github.identity(),

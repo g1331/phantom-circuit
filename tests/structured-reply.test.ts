@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -13,14 +12,22 @@ import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Profile, ReviewResult, Task } from '../src/shared/types.ts';
 
-type Kind = 'review' | 'feedback' | 'merge';
+type Kind = 'review' | 'feedback';
 /** Prose the model may legitimately print around its structured verdict. `attempt` counts the
  * structured turns this run already took, so a re-ask is identified by turn order, not wording. */
 type Respond = (kind: Kind, prompt: string, json: string, attempt: number) => string;
 
-const REVIEW_AXES = ['standards', 'spec'] as const;
+const REVIEW_AXES = ['primary', 'secondary'] as const;
 
-async function lifecycle(respond: Respond, options: { feedback?: boolean } = {}) {
+async function lifecycle(
+  respond: Respond,
+  options: {
+    feedback?: boolean;
+    reviewViaTool?: boolean;
+    reviewToolFinal?: 'json' | 'prose';
+    reviewToolWrongRevision?: boolean;
+  } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-structured-'));
   const source = join(root, 'source');
   const remote = join(root, 'remote.git');
@@ -40,6 +47,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
   await git(['push', '-u', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Structured', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const providers = new Providers(store);
   const upstream = await providers.save({
     name: 'Structured upstream',
@@ -76,17 +84,18 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
     complexity: 'normal',
     priority: 0,
   });
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   if (options.feedback)
     store.updateTask(task.id, {
       pendingFeedback: ['An external reviewer asked for a clearer revision comment.'],
     });
   const turns = {
-    review: { standards: 0, spec: 0 } as Record<(typeof REVIEW_AXES)[number], number>,
+    review: { primary: 0, secondary: 0 } as Record<(typeof REVIEW_AXES)[number], number>,
     feedback: 0,
-    merge: 0,
   };
   const withoutSchema: string[] = [];
   const axes: string[] = [];
+  let pmCalls = 0;
   let issue: any = { body: '', state: 'open' };
   let merged = false;
   class FakeGitHub extends GitHub {
@@ -139,13 +148,16 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
     cwd = '';
     role = '';
     axis = '';
+    handler?: Parameters<Codex['thread']>[0]['toolHandler'];
     override async start() {}
     override async stop() {}
     override async thread(options: Parameters<Codex['thread']>[0]) {
       this.cwd = options.cwd;
+      this.handler = options.toolHandler;
+      if (options.instructions.includes('Project PM')) pmCalls++;
       this.role = options.instructions.includes('Task Developer')
         ? 'dev'
-        : options.instructions.includes('Independent Reviewer')
+        : options.instructions.includes('Independent Review')
           ? 'review'
           : 'pm';
       return `fixture-${this.role}`;
@@ -162,10 +174,33 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
         return 'Implemented in the task worktree; host must commit and validate.';
       }
       if (this.role === 'review') {
-        const matched = /Axis: (standards|spec)/.exec(prompt);
+        const matched = /Axis: (primary|secondary)/.exec(prompt);
         if (matched) this.axis = matched[1];
-        const attempt = ++turns.review[this.axis as 'standards' | 'spec'];
+        const attempt = ++turns.review[this.axis as (typeof REVIEW_AXES)[number]];
+        if (options.reviewViaTool !== false) {
+          assert.ok(this.handler, 'the host must expose submit_review to reviewers');
+          const evidence = store.task(task.id);
+          const input: Record<string, unknown> = {
+            approved: true,
+            summary: `Inspected the ${this.axis} diff; behavior and conventions match.`,
+            findings: [],
+            verdict: 'pass',
+          };
+          if (options.reviewToolWrongRevision) input.head = 'wrong-revision';
+          await this.handler('submit_review', input);
+          if (options.reviewToolFinal === 'prose') return 'The host accepted this review.';
+          return JSON.stringify({
+            approved: true,
+            summary: `Inspected the ${this.axis} diff; behavior and conventions match.`,
+            findings: [],
+            verdict: 'pass',
+            head: evidence.head,
+            base: evidence.base,
+            tests: evidence.tests,
+          });
+        }
         if (!outputSchema) withoutSchema.push(`review:${this.axis}`);
+        const evidence = store.task(task.id);
         return respond(
           'review',
           prompt,
@@ -173,11 +208,16 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
             approved: true,
             summary: `Inspected the ${this.axis} diff; behavior and conventions match.`,
             findings: [],
+            verdict: 'pass',
+            head: evidence.head,
+            base: evidence.base,
+            tests: evidence.tests,
           }),
           attempt,
         );
       }
       if (prompt.includes('Evaluate external feedback')) {
+        pmCalls++;
         const attempt = ++turns.feedback;
         if (!outputSchema) withoutSchema.push('feedback');
         return respond(
@@ -190,17 +230,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
           attempt,
         );
       }
-      const attempt = ++turns.merge;
-      if (!outputSchema) withoutSchema.push('merge');
-      return respond(
-        'merge',
-        prompt,
-        JSON.stringify({
-          approved: true,
-          reason: 'Acceptance criteria and both reviews pass.',
-        }),
-        attempt,
-      );
+      assert.fail('Policy 2 merge completion must not call PM for acceptance');
     }
   }
   const ws = new Workspaces(join(root, 'workspaces'), store);
@@ -209,6 +239,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
   await command('git', ['config', 'user.email', 'test@example.invalid'], mirror);
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new StructuredModel());
   try {
+    await engine.start();
     for (let i = 0; i < 400; i++) {
       const current = store.task(task.id);
       if (current.stage === 'done' || (current.blocked && !store.activeRuns().length)) break;
@@ -225,6 +256,7 @@ async function lifecycle(respond: Respond, options: { feedback?: boolean } = {})
     turns,
     withoutSchema,
     axes,
+    pmCalls: () => pmCalls,
     close: () => store.close(),
   };
 }
@@ -243,7 +275,7 @@ const shapes: [string, (json: string) => string][] = [
 ];
 
 for (const [name, wrap] of shapes)
-  test(`review, feedback and merge turns accept ${name} without losing schema enforcement`, async () => {
+  test(`review and feedback turns accept ${name} without losing schema enforcement`, async () => {
     const run = await lifecycle((_kind, _prompt, json) => wrap(json), { feedback: true });
     try {
       const task = run.task();
@@ -253,11 +285,11 @@ for (const [name, wrap] of shapes)
         JSON.stringify({ blocked: task.blocked, events: run.events().slice(0, 5) }),
       );
       assert.deepEqual(run.withoutSchema, [], 'structured turns must still carry the JSON schema');
-      assert.equal(run.turns.review.standards, 1, 'a parsable reply needs no re-ask');
-      assert.equal(run.turns.review.spec, 1, 'a parsable reply needs no re-ask');
+      assert.equal(run.turns.review.primary, 1, 'a host-submitted review needs one turn');
+      assert.equal(run.turns.review.secondary, 0, 'a normal task needs no secondary review');
       assert.equal(run.turns.feedback, 1, 'the feedback verdict must be parsed on the first reply');
-      assert.equal(run.turns.merge, 1, 'the merge decision must be parsed on the first reply');
-      assert.deepEqual([...run.axes].sort(), ['spec', 'standards']);
+      assert.equal(run.pmCalls(), 2, 'PM may evaluate feedback but never merge acceptance');
+      assert.deepEqual([...run.axes].sort(), ['primary']);
       assert.ok(
         run
           .events()
@@ -274,6 +306,38 @@ for (const [name, wrap] of shapes)
     }
   });
 
+test('an accepted review tool owns pinned evidence when the model finishes with prose', async () => {
+  const run = await lifecycle((_kind, _prompt, json) => json, {
+    reviewToolFinal: 'prose',
+  });
+  try {
+    const task = run.task();
+    assert.equal(task.stage, 'done', JSON.stringify({ blocked: task.blocked }));
+    assert.equal(task.reviews.length, 1);
+    assert.equal(run.turns.review.primary, 1, 'the accepted host tool must end the review turn');
+    assert.equal(run.withoutSchema.length, 0);
+  } finally {
+    run.close();
+  }
+});
+
+test('a review tool call cannot smuggle a different pinned revision', async () => {
+  const run = await lifecycle((_kind, _prompt, json) => json, {
+    reviewToolWrongRevision: true,
+  });
+  try {
+    const task = run.task();
+    assert.equal(task.control, 'paused');
+    assert.notEqual(task.stage, 'done');
+    assert.equal(task.reviews.length, 0, 'rejected tool input must not become review evidence');
+    assert.ok(
+      run.store.list('run').some((entry) => entry.role === 'review' && entry.status === 'failed'),
+    );
+  } finally {
+    run.close();
+  }
+});
+
 test('a reply without JSON pauses the task with a readable domain reason instead of a SyntaxError', async () => {
   const first = 'Evidence is unavailable in this pinned worktree';
   const second = 'Still prose after the explicit JSON-only instruction';
@@ -283,37 +347,41 @@ test('a reply without JSON pauses the task with a readable domain reason instead
       const marker = attempt > 1 ? second : first;
       return `${marker}. ${'supporting detail '.repeat(400)}`;
     },
-    { feedback: true },
+    { feedback: true, reviewViaTool: false },
   );
   try {
     const task = run.task();
     assert.equal(task.control, 'paused');
     assert.equal(task.stage !== 'done', true, 'an unparsable review must never count as a pass');
     assert.equal(task.reviews.length, 0);
-    assert.match(task.blocked ?? '', /评审回合未返回可解析的结构化结果/);
+    const reviewRun = run.store
+      .list('run')
+      .find((r) => r.taskId === task.id && r.role === 'review');
+    const reviewError = reviewRun?.error ?? '';
+    assert.match(reviewError, /评审回合未返回可解析的结构化结果/);
     assert.doesNotMatch(
       task.blocked ?? '',
       /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse|ZodError|invalid_type/i,
     );
     assert.ok(
-      (task.blocked ?? '').includes(first),
+      reviewError.includes(first),
       'the redacted reply that failed first must be retained as bounded evidence',
     );
     assert.ok(
-      (task.blocked ?? '').includes(second),
+      reviewError.includes(second),
       'the redacted reply to the bounded re-ask must be retained as bounded evidence',
     );
     assert.ok(
-      Buffer.byteLength(task.blocked ?? '') < 2560,
+      Buffer.byteLength(reviewError) < 2560,
       'the retained reply evidence must be length limited',
     );
     assert.deepEqual(
       run.turns.review,
-      { standards: 2, spec: 2 },
+      { primary: 2, secondary: 0 },
       'each review axis may re-ask at most once before pausing',
     );
     assert.ok(
-      run.turns.feedback <= 1 && run.turns.merge <= 1,
+      run.turns.feedback <= 1,
       'a review pause must not start unbounded extra structured turns',
     );
     assert.ok(
@@ -326,9 +394,12 @@ test('a reply without JSON pauses the task with a readable domain reason instead
 });
 
 test('a parser exception from a structured turn never reaches the task as raw JavaScript text', async () => {
-  const run = await lifecycle(() => {
-    throw new SyntaxError('Unexpected token \'E\', "Evidence i"... is not valid JSON');
-  });
+  const run = await lifecycle(
+    () => {
+      throw new SyntaxError('Unexpected token \'E\', "Evidence i"... is not valid JSON');
+    },
+    { reviewViaTool: false },
+  );
   try {
     const task = run.task();
     assert.equal(task.control, 'paused');
@@ -337,10 +408,15 @@ test('a parser exception from a structured turn never reaches the task as raw Ja
       task.blocked ?? '',
       /SyntaxError|Unexpected token|is not valid JSON|JSON\.parse/i,
     );
-    assert.match(task.blocked ?? '', /无法解析的结构化输出/);
     assert.ok(
-      run.events().some((e) => e.type === 'blocked' && /无法解析的结构化输出/.test(e.message)),
-      'the PM-visible incident must carry the domain reason, not the raw parser text',
+      run.store
+        .list('incident')
+        .some((incident) => incident.taskId === task.id && incident.phase.startsWith('review')),
+      'the parser failure must retain a durable review Incident, independently of PM/shutdown wording',
+    );
+    assert.ok(
+      run.events().some((e) => e.type === 'incident' && /review/.test(e.message)),
+      'the parser failure must create a PM-visible incident',
     );
     // The Run record is the surface the UI reports failures from, and `store.list('run')` is how the
     // existing lifecycle/feedback tests read it: the raw exception must stay visible there.
@@ -360,13 +436,13 @@ test('a parseable candidate that fails the schema does not hide the later valid 
       kind === 'review'
         ? `\`\`\`json\n{"note":"shape example only, not the verdict"}\n\`\`\`\nEvidence is taken from the pinned diff.\n${json}\n`
         : json,
-    { feedback: true },
+    { feedback: true, reviewViaTool: false },
   );
   try {
     const task = run.task();
     assert.equal(task.stage, 'done', JSON.stringify({ blocked: task.blocked }));
-    assert.equal(run.turns.review.standards, 1, 'a stale example object must not force a re-ask');
-    assert.equal(run.turns.review.spec, 1);
+    assert.equal(run.turns.review.primary, 1, 'a stale example object must not force a re-ask');
+    assert.equal(run.turns.review.secondary, 0);
   } finally {
     run.close();
   }
@@ -378,26 +454,28 @@ test('prose containing many brace characters still yields the balanced verdict o
       kind === 'review'
         ? `${'{ '.repeat(200)}Evidence is taken from the pinned diff. ${json}\n`
         : json,
-    { feedback: true },
+    { feedback: true, reviewViaTool: false },
   );
   try {
     const task = run.task();
     assert.equal(task.stage, 'done', JSON.stringify({ blocked: task.blocked }));
-    assert.equal(run.turns.review.standards, 1);
-    assert.equal(run.turns.review.spec, 1);
+    assert.equal(run.turns.review.primary, 1);
+    assert.equal(run.turns.review.secondary, 0);
   } finally {
     run.close();
   }
 });
 
 test('a reply that violates the strict schema is still rejected and pauses with a readable reason', async () => {
-  const run = await lifecycle(() =>
-    JSON.stringify({
-      approved: true,
-      summary: 'Everything looks fine at the pinned revision.',
-      findings: [],
-      confidence: 0.98,
-    }),
+  const run = await lifecycle(
+    () =>
+      JSON.stringify({
+        approved: true,
+        summary: 'Everything looks fine at the pinned revision.',
+        findings: [],
+        confidence: 0.98,
+      }),
+    { reviewViaTool: false },
   );
   try {
     const task = run.task();
@@ -408,186 +486,29 @@ test('a reply that violates the strict schema is still rejected and pauses with 
       0,
       'an invalid verdict must not be recorded as review evidence',
     );
-    assert.match(task.blocked ?? '', /评审回合未返回可解析的结构化结果/);
+    const reviewRun = run.store
+      .list('run')
+      .find((r) => r.taskId === task.id && r.role === 'review');
+    assert.match(reviewRun?.error ?? '', /评审回合未返回可解析的结构化结果/);
     assert.doesNotMatch(
       task.blocked ?? '',
       /SyntaxError|unrecognized_keys|invalid_type|ZodError|issue(s)? on/i,
     );
-    assert.deepEqual(run.turns.review, { standards: 2, spec: 2 });
+    assert.deepEqual(run.turns.review, { primary: 2, secondary: 0 });
   } finally {
     run.close();
   }
 });
 
-test('an unparsable verdict is re-asked once on the same Codex thread and still carries the host output schema', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'phantom-protocol-'));
-  const store = new Store(join(root, 'db.sqlite'));
-  const project = store.createProject('Protocol', '');
-  const repo = store.createRepo({
-    projectId: project.id,
-    name: 'repo',
-    path: root,
-    github: 'fixture/protocol',
-    defaultBranch: 'main',
-    authorized: true,
-  });
-  const providers = new Providers(store);
-  const upstream = await providers.save({
-    name: 'Protocol upstream',
-    baseUrl: 'http://localhost:9999/v1',
-    apiKey: 'protocol-private-key',
-  });
-  const assigned = structuredClone(project.profiles);
-  assigned.pm = { providerId: upstream.id, model: 'pm-model', effort: 'medium' };
-  store.saveProjectProfiles(project.id, assigned);
-  const message = store.addMessage(project.id, 'user', 'Implement', 'implement');
-  const task = store.createTask({
-    projectId: project.id,
-    repoId: repo.id,
-    sourceMessageId: message.id,
-    title: 'Merge decision',
-    spec: 'Build it',
-    acceptance: ['Works'],
-    dependencies: [],
-    kind: 'backend',
-    complexity: 'normal',
-    priority: 0,
-  });
-  store.updateTask(task.id, {
-    worktree: root,
-    pr: 2,
-    head: 'head',
-    base: 'base',
-    stage: 'merging',
-    tests: [{ command: 'node verify.cjs', exitCode: 0, output: 'pass', head: 'head', at: 'now' }],
-    reviews: REVIEW_AXES.map((axis) => ({
-      axis,
-      head: 'head',
-      base: 'base',
-      approved: true,
-      findings: [],
-      summary: 'pass',
-    })),
-  });
-  const turnStarts: any[] = [];
-  let issue: any = { body: '', state: 'open' };
-  let merged = false;
-  class Remote extends GitHub {
-    override async setupProject() {}
-    override async pull(t: Task): Promise<PullState> {
-      return {
-        number: 2,
-        html_url: '',
-        state: merged ? 'closed' : 'open',
-        merged,
-        mergeable: true,
-        mergeable_state: 'clean',
-        head: { sha: t.head! },
-        base: { sha: t.base! },
-        body: '',
-      };
-    }
-    override async checks() {
-      return { ready: true };
-    }
-    override async feedback() {
-      return [];
-    }
-    override async merge(t: Task) {
-      merged = true;
-      return this.pull(t);
-    }
-    override async syncStatus() {}
-    override async api<T = any>(endpoint: string, method = 'GET', data?: any): Promise<T> {
-      if (method === 'POST' && endpoint.endsWith('/issues'))
-        issue = { number: 1, html_url: 'https://example.invalid/issues/1', ...data };
-      else if (method === 'PATCH' || method === 'POST') issue = { ...issue, ...data };
-      return { ...issue } as T;
-    }
-    override async paged() {
-      return [];
-    }
-  }
-  // Real app-server child process: records every turn/start request the host actually sends.
-  const script = `
-    const readline = require('node:readline');
-    let turns = 0;
-    const send = (value) => console.log(JSON.stringify(value));
-    readline.createInterface({ input: process.stdin }).on('line', (line) => {
-      const m = JSON.parse(line);
-      if (m.id === undefined) return;
-      if (m.method === 'initialize') return send({ id: m.id, result: {} });
-      if (m.method === 'thread/start' || m.method === 'thread/resume')
-        return send({ id: m.id, result: { thread: { id: 'fixture-thread' }, model: m.params.model, modelProvider: m.params.modelProvider, reasoningEffort: m.params.config.model_reasoning_effort } });
-      if (m.method === 'turn/start') {
-        turns += 1;
-        const id = 'turn-' + turns;
-        const threadId = m.params.threadId;
-        send({ method: 'fixture/turn-start', params: { threadId, input: m.params.input, outputSchema: m.params.outputSchema } });
-        send({ id: m.id, result: { turn: { id } } });
-        send({ method: 'turn/started', params: { threadId, turn: { id } } });
-        const text = turns === 1
-          ? 'Evidence is unavailable in this pinned worktree.'
-          : '{"approved":true,"reason":"Acceptance criteria and both reviews pass."}';
-        send({ method: 'item/agentMessage/delta', params: { threadId, turnId: id, delta: text } });
-        send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'completed' } } });
-        return;
-      }
-      if (m.method === 'fixture/exit') return setImmediate(() => process.exit(0));
-      send({ id: m.id, result: {} });
-    });
-  `;
-  const exits: Promise<void>[] = [];
-  const engine = new Engine(
-    store,
-    new Remote(store),
-    new Workspaces(join(root, 'ws'), store),
-    root,
-    () => {
-      const codex = new Codex((_binary, _args, options) => {
-        const child = spawn(process.execPath, ['-e', script], options);
-        exits.push(new Promise((resolve) => child.on('close', () => resolve())));
-        return child;
-      });
-      codex.on('notification', (method: string, params: any) => {
-        if (method === 'fixture/turn-start') turnStarts.push(params);
-      });
-      return codex;
-    },
-  );
+test('Policy 2 merge completion is deterministic and never asks PM for acceptance', async () => {
+  const run = await lifecycle((_kind, _prompt, json) => json);
   try {
-    for (let i = 0; i < 400; i++) {
-      const current = store.task(task.id);
-      if (current.stage === 'done' || (current.blocked && !store.activeRuns().length)) break;
-      await engine.tick();
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    const result = store.task(task.id);
-    assert.equal(
-      result.stage,
-      'done',
-      JSON.stringify({
-        blocked: result.blocked,
-        issue: result.issue,
-        issueBody: result.issueBody?.slice(0, 40),
-        events: store.events().slice(0, 8),
-      }),
-    );
-    assert.equal(merged, true);
-    assert.equal(turnStarts.length, 2, 'exactly one bounded re-ask is allowed');
-    assert.equal(turnStarts[0].threadId, 'fixture-thread');
-    assert.equal(turnStarts[1].threadId, 'fixture-thread', 'the re-ask stays on the same thread');
-    assert.ok(turnStarts[0].outputSchema, 'the host output schema must reach the first turn');
-    assert.ok(turnStarts[1].outputSchema, 'the host output schema must reach the re-ask');
-    const first = turnStarts[0].input[0].text as string;
-    const second = turnStarts[1].input[0].text as string;
-    assert.notEqual(first, second);
-    // The bounded re-ask must explicitly demand the agreed JSON; the exact wording is not pinned.
-    assert.match(second, /JSON/, 'the re-ask must require the agreed JSON, not another free reply');
-    assert.doesNotMatch(second, /Evidence is unavailable/);
+    assert.equal(run.task().stage, 'done', JSON.stringify({ blocked: run.task().blocked }));
+    assert.equal(run.pmCalls(), 0, 'a clean Policy 2 merge must not start a PM turn');
+    assert.equal(run.turns.feedback, 0);
+    assert.equal(run.turns.review.primary, 1);
+    assert.equal(run.turns.review.secondary, 0);
   } finally {
-    await engine.stop();
-    await Promise.allSettled(exits);
-    store.close();
+    run.close();
   }
 });

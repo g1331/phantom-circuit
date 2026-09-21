@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -6,11 +6,15 @@ import { Store } from '../src/server/store.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Engine } from '../src/server/engine.ts';
+import { bootstrapAgentSettings } from '../src/server/agent-settings.ts';
 
 // Metered opt-in integration check; no target repositories or external writes.
 const root = await mkdtemp(join(tmpdir(), 'phantom-pm-'));
 const store = new Store(join(root, 'state.sqlite'));
+await bootstrapAgentSettings(store);
 const project = store.createProject('Protocol acceptance', 'No repositories connected');
+store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'omp' });
+await mkdir(join(root, 'projects', project.id), { recursive: true });
 const engine = new Engine(
   store,
   new GitHub(store),
