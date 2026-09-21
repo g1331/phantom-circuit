@@ -1,0 +1,3 @@
+# Keep execution state independent of the source checkout
+
+Authoritative state lives under the user's home `.phantom`, with a consistent SQLite snapshot, independently verified rollback copy and drift checks protecting adoption of old checkout-local data. Registered worktrees that cannot be safely relocated retain explicit task-to-root mappings while new worktrees use the home root; process-lifetime ownership prevents competing hosts, including after a crash. Startup reconciles interrupted phases before new claims, applies the Project's automatic or manual recovery policy, and associates at most one successor with each recovery without replaying uncertain external writes or resuming user-paused work.

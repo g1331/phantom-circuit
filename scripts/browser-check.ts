@@ -12,9 +12,13 @@ import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 import { Codex } from '../src/server/codex.ts';
+import { OmpBackend } from '../src/server/omp.ts';
 import { checkProviders } from './provider-browser-check.ts';
 import { checkProfiles } from './profile-browser-check.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
+import { checkLocale } from './locale-browser-check.ts';
+import { checkUsability } from './usability-browser-check.ts';
+import { checkRuntimeUI } from './runtime-browser-check.ts';
 
 const artifacts = resolve('test-results');
 const port = Number(process.env.PHANTOM_BROWSER_PORT ?? 4318);
@@ -23,6 +27,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535)
 const origin = `http://127.0.0.1:${port}`;
 await mkdir(artifacts, { recursive: true });
 const store = new Store(':memory:');
+store.saveSettings({ ...store.settings(), defaultAgent: 'codex' });
 const imageState = await mkdtemp(join(tmpdir(), 'phantom-browser-images-'));
 const ws = new Workspaces(resolve('.cache/browser-workspaces'), store);
 class OfflinePM extends Codex {
@@ -31,7 +36,40 @@ class OfflinePM extends Codex {
   }
 }
 const engine = new Engine(store, new GitHub(store), ws, imageState, () => new OfflinePM());
-const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
+class BrowserOmp extends OmpBackend {
+  override async start() {}
+  override async stop() {}
+  override async modelCapabilities() {
+    return [
+      {
+        id: 'browser-omp',
+        model: 'browser-omp',
+        provider: 'fixture',
+        reasoningEfforts: ['low', 'high'],
+        supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }],
+      },
+    ];
+  }
+  override async accountAllowance() {
+    return { status: 'unavailable' as const, error: 'Browser fixture has no account allowance' };
+  }
+  override async probe() {
+    return {
+      backend: 'omp',
+      models: await this.modelCapabilities(),
+      capabilities: this.capabilities,
+      version: 'browser-fixture',
+    };
+  }
+}
+const app = createApp(
+  store,
+  engine,
+  new Previews(store, ws),
+  port,
+  profileProtocol,
+  () => new BrowserOmp(),
+);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let page: Page;
 try {
@@ -43,6 +81,7 @@ try {
   page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
     deviceScaleFactor: 1,
+    locale: 'zh-CN',
     reducedMotion: 'reduce',
   });
 } catch (error) {
@@ -176,7 +215,10 @@ try {
   await page.getByLabel('给 PM 的消息').fill('图片说明');
   await page.getByLabel('选择图片').setInputFiles(imageFile);
   await page.getByRole('button', { name: '发送消息' }).click();
-  await page.getByText('图片说明', { exact: true }).waitFor();
+  await page
+    .locator('.message.user .message-content')
+    .getByText('图片说明', { exact: true })
+    .waitFor();
   await page.screenshot({ path: resolve(artifacts, '07-images-desktop.png'), fullPage: true });
   const repo = store.createRepo({
     projectId: project.id,
@@ -274,8 +316,7 @@ try {
   await documents.getByText(/orbit-web.*CONTEXT.md/).click({ timeout: 5000 });
   await documents.getByRole('heading', { name: '项目词汇' }).waitFor();
   assert.equal(await documents.locator('script, a[href]').count(), 0);
-  await documents.getByRole('button', { name: '原始', exact: true }).click();
-  assert.equal(await documents.locator('pre').textContent(), domainContent);
+
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await documents.getByRole('button', { name: '复制', exact: true }).click();
   await documents.getByRole('status').getByText('已复制').waitFor();
@@ -284,7 +325,7 @@ try {
     store.snapshot().documents.find((d) => d.id === domainDoc.id)?.content,
     domainContent,
   );
-  await documents.getByRole('button', { name: '美化', exact: true }).click();
+
   await page.screenshot({
     path: resolve(artifacts, 'markdown-domain-desktop.png'),
     fullPage: true,
@@ -342,17 +383,7 @@ try {
   await feedbackBlock.getByRole('button', { name: '复制', exact: true }).click();
   await feedbackBlock.getByRole('status').getByText('已复制').waitFor();
   assert.equal(await readClipboard(), '## 体验反馈\n\n- 增加说明');
-  await taskDialog
-    .getByRole('region', { name: '任务说明', exact: true })
-    .getByRole('button', { name: '原始', exact: true })
-    .click();
-  assert.equal(
-    await taskDialog
-      .getByRole('region', { name: '任务说明', exact: true })
-      .locator('pre')
-      .textContent(),
-    '## 任务方案\n\n保留 **原始需求**。',
-  );
+  assert.equal(await taskDialog.getByRole('button', { name: /^(原始|美化)$/ }).count(), 0);
   await taskDialog.getByText('✓ npm test', { exact: true }).click();
   assert.equal(
     await taskDialog.locator('details[open] pre').textContent(),
@@ -389,6 +420,7 @@ try {
       });
     await page.getByRole('button', { name: '关闭窗口' }).click();
   }
+  await page.getByRole('button', { name: '列表', exact: true }).click();
   await page.getByLabel('搜索任务').fill('不会匹配');
   await page.getByText('还没有匹配的任务').waitFor();
   await page.getByLabel('搜索任务').fill('');
@@ -479,18 +511,16 @@ try {
   const userMarkdown = store.addMessage(project.id, 'user', literal);
   const userBlock = page.locator('.message.user').last();
   await userBlock.getByRole('heading', { name: '原样文本' }).waitFor({ timeout: 5000 });
-  await userBlock.getByRole('button', { name: '原始', exact: true }).focus();
+
+  await userBlock.getByRole('button', { name: '复制', exact: true }).focus();
   await page.keyboard.press('Enter');
-  assert.equal(
-    await userBlock.getByRole('button', { name: '原始', exact: true }).getAttribute('aria-pressed'),
-    'true',
-  );
-  assert.equal(await userBlock.locator('pre').textContent(), literal);
+  assert.equal(await userBlock.getByRole('button', { name: /^(原始|美化)$/ }).count(), 0);
+
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await userBlock.getByRole('button', { name: '复制', exact: true }).click();
   await userBlock.getByRole('status').getByText('已复制').waitFor();
   assert.equal(await readClipboard(), literal);
-  await userBlock.getByRole('button', { name: '美化', exact: true }).click();
+
   await userBlock.getByRole('heading', { name: '原样文本' }).waitFor();
   await userBlock.getByRole('button', { name: '复制', exact: true }).click();
   assert.equal(await readClipboard(), literal);
@@ -511,16 +541,14 @@ try {
   const streaming = page.locator('.message.assistant').last();
   await streaming.getByRole('heading', { name: '流式说明' }).waitFor();
   assert.equal(await streaming.locator('pre code').textContent(), 'npm test\n');
-  await streaming.getByRole('button', { name: '原始', exact: true }).click();
-  assert.equal(await streaming.locator('pre').textContent(), firstChunk);
+
   await streaming.getByRole('button', { name: '复制', exact: true }).click();
   await streaming.getByRole('status').getByText('已复制').waitFor();
   assert.equal(await readClipboard(), firstChunk);
   const secondChunk = '\nnpm run check\n```\n\n' + markdown + '\n\n' + unsafe;
   store.changes.emit('delta', { role: 'pm', runId: pmRun.id, text: secondChunk });
-  await streaming.locator('pre').filter({ hasText: '安全边界' }).waitFor();
-  assert.equal(await streaming.locator('pre').textContent(), firstChunk + secondChunk);
-  await streaming.getByRole('button', { name: '美化', exact: true }).click();
+  await streaming.getByRole('heading', { name: '安全边界' }).waitFor();
+
   await streaming.getByRole('heading', { name: '安全边界' }).waitFor();
   assert.equal(
     await streaming.locator('pre code').first().textContent(),
@@ -621,8 +649,7 @@ try {
         path: resolve(artifacts, `markdown-structure-${width}-${theme}.png`),
         fullPage: true,
       });
-      await longReply.getByRole('button', { name: '原始', exact: true }).click();
-      assert.equal(await longReply.locator('pre').textContent(), longMarkdown);
+
       await longReply.getByRole('button', { name: '复制', exact: true }).click();
       await longReply.getByRole('status').getByText('已复制').waitFor();
       assert.equal(await readClipboard(), longMarkdown);
@@ -630,7 +657,7 @@ try {
         await page.locator('.conversation').evaluate((el) => el.scrollWidth <= el.clientWidth),
         true,
       );
-      await longReply.getByRole('button', { name: '美化', exact: true }).click();
+
       await page.getByRole('tab', { name: '任务', exact: false }).click();
       await page.getByRole('button', { name: /简化仓库接入与授权提示/ }).click();
       const description = page.getByRole('region', { name: '任务说明', exact: true });
@@ -646,14 +673,13 @@ try {
         await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
         true,
       );
-      await description.getByRole('button', { name: '原始', exact: true }).click();
-      assert.equal(await description.locator('pre').textContent(), longMarkdown);
+
       assert.equal(
         await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
         true,
       );
       await page.screenshot({
-        path: resolve(artifacts, `markdown-task-raw-${width}-${theme}.png`),
+        path: resolve(artifacts, `markdown-task-${width}-${theme}.png`),
       });
       await page.getByRole('button', { name: '关闭窗口' }).click();
       await page.getByRole('tab', { name: '与 PM 讨论' }).click();
@@ -674,8 +700,7 @@ try {
         }),
         true,
       );
-      await documentBlock.getByRole('button', { name: '原始', exact: true }).click();
-      assert.equal(await documentBlock.locator('pre').textContent(), longMarkdown);
+
       await documentBlock.getByRole('button', { name: '复制', exact: true }).click();
       await documentBlock.getByRole('status').getByText('已复制').waitFor();
       assert.equal(await readClipboard(), longMarkdown);
@@ -695,7 +720,7 @@ try {
           delete (navigator.clipboard as Partial<Clipboard>).writeText;
         });
       }
-      await documentBlock.getByRole('button', { name: '美化', exact: true }).click();
+
       await documents.getByText(/orbit-web.*CONTEXT.md/).click();
     }
   }
@@ -717,14 +742,12 @@ try {
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page
-    .getByLabel('选择图片')
-    .setInputFiles(
-      Array.from({ length: 4 }, (_, i) => ({
-        ...imageFile,
-        name: `手机截图-${i}-很长的文件名用于验证换行.png`,
-      })),
-    );
+  await page.getByLabel('选择图片').setInputFiles(
+    Array.from({ length: 4 }, (_, i) => ({
+      ...imageFile,
+      name: `手机截图-${i}-很长的文件名用于验证换行.png`,
+    })),
+  );
   assert.equal(await page.locator('.image-drafts img').count(), 4);
   await page.screenshot({
     path: resolve(artifacts, '08-images-mobile-preview.png'),
@@ -756,9 +779,12 @@ try {
   assert.deepEqual(errors, []);
   await checkProviders(page, artifacts);
   await checkProfiles(page, store, artifacts);
+  await checkLocale(page, artifacts);
+  await checkUsability();
+  await checkRuntimeUI();
   assert.deepEqual(errors, []);
   console.log(
-    'Browser checks passed: project creation, claim switch/drain, task details, search, settings, reload, shared Markdown in chat/tasks/reviews/feedback/documents/Issue body, streaming, raw/pretty modes, clipboard success/failure, safe links/HTML, raw system messages/logs, image preview/removal, image-only and text/image send, upload errors, duplicate prevention, retry, four-image 390px layout, dark/light, 390px responsive; screenshots in test-results/.',
+    'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, board/list/stage/control filters, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',
   );
 } finally {
   await page.close();

@@ -4,17 +4,11 @@ import type { Role, Task } from '../shared/types.ts';
 export const SKILL_REVISION = '3cca18b368ae95cdbdebbff572ccafa662551015';
 const root = resolve('.agents/skills');
 const names: Record<Role, string[]> = {
-  pm: [
-    'grill-with-docs',
-    'grilling',
-    'domain-modeling',
-    'to-spec',
-    'to-tickets',
-    'triage',
-    'setup-matt-pocock-skills',
-  ],
+  // Skills are reference context only. Host policy and the current Task decide the workflow;
+  // there is no mandatory standards/spec ceremony hidden in the prompt.
+  pm: ['domain-modeling'],
   dev: ['implement', 'tdd', 'codebase-design', 'diagnosing-bugs', 'resolving-merge-conflicts'],
-  review: ['code-review', 'codebase-design'],
+  review: ['codebase-design'],
 };
 export async function instructions(role: Role) {
   const base = await readFile(resolve(`prompts/${role}.md`), 'utf8');

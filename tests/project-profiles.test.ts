@@ -6,10 +6,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('Projects inherit all defaults once and Runs retain their Project assignment', () => {
+test('explicit Codex Projects retain their pinned assignment', () => {
   const store = new Store(':memory:');
   try {
     const first = store.createProject('First', '');
+    store.saveProjectAgentSelection(first.id, { mode: 'override', agent: 'codex' });
+    store.saveProjectProfileModes(first.id, {
+      backend: 'pinned',
+      frontend: 'pinned',
+      fullstack: 'pinned',
+      complex: 'pinned',
+      pm: 'pinned',
+      review: 'pinned',
+    });
     const inherited = structuredClone(store.settings().profiles);
     const defaults = store.settings();
     defaults.profiles.pm.model = 'new-default';
@@ -29,6 +38,7 @@ test('Dev route upgrades cannot resume a thread from another Provider', () => {
   const store = new Store(':memory:');
   try {
     const project = store.createProject('Routing', '');
+    store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
     const repo = store.createRepo({
       projectId: project.id,
       name: 'repo',
@@ -73,7 +83,8 @@ test('profile saves are atomic, protect Provider references and invalidate futur
   const store = new Store(':memory:');
   try {
     const p = store.createProject('Independent', '');
-    store.put('project', p.id, { ...p, pmThreadId: 'old-thread' });
+    store.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
+    store.put('project', p.id, { ...store.project(p.id), pmThreadId: 'old-thread' });
     const active = store.run('pm', p.id, 'pm');
     store.put('provider', 'upstream', {
       id: 'upstream',

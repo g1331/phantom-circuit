@@ -1,0 +1,3 @@
+# Review once and escalate only when risk requires it
+
+A Task normally receives one fresh-context combined review; complex Tasks, rework and an explicit primary escalation require a second review with a different actual model from the current implementation and primary review. Current-revision tests, the required review verdicts and remote head/base/check evidence authorize the host to merge without a further PM acceptance model call; completed legacy Tasks retain their original evidence policy. One explicit requirement normally becomes one Task with its necessary domain documentation, replacing separate document-publication and dual-axis review lifecycles.

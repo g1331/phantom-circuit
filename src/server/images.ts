@@ -11,15 +11,16 @@ import type { ImageAttachment, Message } from '../shared/types.ts';
 export const imageLimits = {
   files: 4,
   fileSize: 10 * 1024 * 1024,
-  fields: 2,
+  fields: 3,
   fieldSize: 120000,
-  parts: 6,
+  parts: 7,
 };
 const formats = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' } as const;
 const messageFields = z
   .object({
     content: z.string().trim().max(30000).default(''),
     intent: z.enum(['discuss', 'implement', 'feedback']),
+    deliveryMode: z.enum(['queue', 'steer']).default('queue'),
   })
   .strict();
 
@@ -123,6 +124,7 @@ export class MessageImages {
           fieldsValue.intent,
           attachments,
           messageId,
+          { deliveryMode: fieldsValue.deliveryMode },
         ),
       );
     } catch (error) {

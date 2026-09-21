@@ -27,6 +27,7 @@ async function fixture() {
   await git(['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'source',
@@ -46,6 +47,7 @@ async function fixture() {
     },
   });
   const message = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   let task = store.createTask({
     projectId: project.id,
     repoId: repo.id,
@@ -68,15 +70,17 @@ async function fixture() {
   let turns = 0;
   let deliver = true;
   class Agent extends Codex {
+    developer = false;
     override async start() {
       starts++;
     }
     override async stop() {}
-    override async thread() {
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      this.developer = options.instructions.includes('Task Developer');
       return 'fixture';
     }
     override async turn() {
-      turns++;
+      if (this.developer) turns++;
       if (deliver) await writeFile(join(task.worktree!, 'implementation.txt'), 'implemented\n');
       return 'Handing off';
     }
@@ -95,6 +99,8 @@ async function fixture() {
     }
   }
   const engine = new Engine(store, new Remote(store), ws, root, () => new Agent());
+  await engine.start();
+  clearInterval((engine as any).timer);
   async function cycle() {
     await engine.tick();
     for (let n = 0; n < 500 && store.activeRuns().length; n++)
@@ -135,10 +141,10 @@ for (const committed of [false, true]) {
       }
       f.store.updateTask(f.task.id, { devPhase: 'finalize' });
       f.store.run('dev', f.task.projectId, 'backend', f.task);
-      f.store.recover();
+      const [recovery] = f.store.recover();
       assert.equal(f.store.activeRuns().length, 0);
       assert.equal(f.store.task(f.task.id).control, 'paused');
-      await f.engine.resume(f.task.id);
+      await f.engine.resumeRecovery(f.task.projectId, recovery.id);
       const result = await f.cycle();
       assert.equal(result.stage, 'reviewing', result.blocked);
       assert.equal(result.retries, 0);

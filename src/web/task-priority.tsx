@@ -15,6 +15,7 @@ import {
 } from '../shared/types.ts';
 import { priorityText, schedulingReasonText } from './priority-resources.ts';
 import { api } from './api.ts';
+import { useLocale } from './locale/provider.tsx';
 
 export function PriorityBadge({ value, locale }: { value: number; locale: PriorityLocale }) {
   return (
@@ -30,13 +31,14 @@ export function ClaimConditions({
   entry?: SchedulingExplanation['tasks'][number];
   locale: PriorityLocale;
 }) {
+  const { t } = useLocale();
   if (!entry) return null;
   const text = priorityText[locale];
   return (
     <div className="claim-conditions">
       <strong>{text.waiting}</strong>
       <p>
-        {text.stage}: {locale === 'zh-CN' ? stageLabels[entry.stage] : entry.stage}
+        {text.stage}: {t(`stage.${entry.stage}`)}
       </p>
       {entry.reasons.length ? (
         <ul>
@@ -59,13 +61,16 @@ export function ClaimOrder({
   locale,
   refresh,
   error,
+  refreshing,
 }: {
   schedule?: SchedulingExplanation;
   projects: Project[];
   locale: PriorityLocale;
   refresh: () => void;
   error: string;
+  refreshing?: boolean;
 }) {
+  const { t } = useLocale();
   const text = priorityText[locale];
   return (
     <section className="claim-order" aria-label={text.schedule}>
@@ -75,6 +80,13 @@ export function ClaimOrder({
         {text.refresh}
       </button>
       {error && <p role="alert">{text.scheduleFailed}</p>}
+      <p className="schedule-status" role="status">
+        {error && schedule
+          ? t('schedule.stale')
+          : refreshing
+            ? t(schedule ? 'schedule.refreshing' : 'schedule.loading')
+            : '\u00a0'}
+      </p>
       {schedule && (
         <>
           <p>

@@ -72,6 +72,7 @@ test('image-only PM messages survive restart with protected readable images', as
         payload: { name: 'Images' },
       })
     ).json();
+    store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
     const other = (
       await app.inject({
         method: 'POST',
@@ -268,6 +269,7 @@ test('PM sends the same managed images on first turn and retry in the same threa
         payload: { name: 'Protocol' },
       })
     ).json();
+    store.saveProjectAgentSelection(p.id, { mode: 'override', agent: 'codex' });
     const waitFor = async (id: string, status: string) => {
       for (let i = 0; i < 200; i++) {
         const state = (await app.inject({ url: '/api/state', headers })).json();

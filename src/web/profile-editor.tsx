@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ModelDiscovery, Profile, ProfileName, Provider, Settings } from '../shared/types.ts';
 import { api } from './api.ts';
+import { useLocale } from './locale/provider.tsx';
 
-const labels: Record<ProfileName, string> = {
-  pm: '项目 PM',
-  review: '独立 Review',
-  backend: '常规后端',
-  frontend: '前端',
-  fullstack: '前后端',
-  complex: '复杂任务',
-};
+const labels = {
+  pm: 'ui.projectPm',
+  review: 'ui.independentReview',
+  backend: 'ui.backend',
+  frontend: 'ui.frontend',
+  fullstack: 'ui.fullStack',
+  complex: 'ui.complexTasks',
+} as const;
 
 export function ProfileEditor({
   profiles,
@@ -21,6 +22,7 @@ export function ProfileEditor({
   change: (profiles: Settings['profiles']) => void;
 }) {
   const cache = useRef(new Map<string, Promise<ModelDiscovery>>());
+  const { t } = useLocale();
   const discover = useCallback((id: string, refresh = false) => {
     if (refresh || !cache.current.has(id))
       cache.current.set(
@@ -38,7 +40,7 @@ export function ProfileEditor({
       {(Object.keys(labels) as ProfileName[]).map((role) => (
         <Assignment
           key={role}
-          label={labels[role]}
+          label={t(labels[role])}
           profile={profiles[role]}
           providers={providers}
           discover={discover}
@@ -63,6 +65,7 @@ function Assignment({
   discover: (id: string, refresh?: boolean) => Promise<ModelDiscovery>;
 }) {
   const [discovery, setDiscovery] = useState<ModelDiscovery>();
+  const { t } = useLocale();
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   const provider = providers.find((p) => p.id === profile.providerId);
@@ -97,20 +100,23 @@ function Assignment({
             onChange={(e) => change({ providerId: e.target.value, model: '', effort: '' })}
           >
             {!provider && (
-              <option value={profile.providerId}>Provider 不存在：{profile.providerId}</option>
+              <option value={profile.providerId}>
+                {' '}
+                {t('ui.providerUnavailable')} {profile.providerId}
+              </option>
             )}
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {p.kind === 'codex' ? t('ui.officialCodexLogin') : p.name}
               </option>
             ))}
           </select>
         </label>
         <label>
-          模型
+          {t('ui.model')}{' '}
           {profile.customModel && custom ? (
             <input
-              aria-label={`${label}自定义模型 ID`}
+              aria-label={t('profile.customLabel', { profile: label })}
               required
               maxLength={256}
               value={profile.model}
@@ -118,7 +124,7 @@ function Assignment({
             />
           ) : (
             <select
-              aria-label={`${label}模型`}
+              aria-label={t('settings.modelLabel', { profile: label })}
               value={profile.model}
               required
               disabled={loading}
@@ -133,10 +139,10 @@ function Assignment({
                 });
               }}
             >
-              <option value="">{loading ? '正在获取模型…' : '选择模型'}</option>
+              <option value="">{loading ? t('ui.fetchingModels') : t('ui.selectAModel')}</option>
               {profile.model && !model && (
                 <option value={profile.model}>
-                  {profile.model}（{loading ? '正在获取列表…' : '未在当前列表中'}）
+                  {profile.model}（{loading ? t('ui.fetchingList') : t('ui.notInCurrentList')}）
                 </option>
               )}
               {models.map((m) => (
@@ -148,17 +154,19 @@ function Assignment({
           )}
         </label>
         <label>
-          推理档位
+          {t('ui.reasoningEffort')}{' '}
           {efforts ? (
             <select
-              aria-label={`${label}推理等级`}
+              aria-label={t('settings.effortLabel', { profile: label })}
               value={profile.effort}
               required
               disabled={loading}
               onChange={(e) => change({ ...profile, effort: e.target.value })}
             >
               {!efforts.includes(profile.effort) && (
-                <option value={profile.effort}>{profile.effort || '选择档位'}（未验证）</option>
+                <option value={profile.effort}>
+                  {profile.effort || t('ui.selectEffort')} {t('ui.unverified')}{' '}
+                </option>
               )}
               {efforts.map((effort) => (
                 <option key={effort} value={effort}>
@@ -168,11 +176,11 @@ function Assignment({
             </select>
           ) : (
             <input
-              aria-label={`${label}推理等级`}
+              aria-label={t('settings.effortLabel', { profile: label })}
               required
               value={profile.effort}
               onChange={(e) => change({ ...profile, effort: e.target.value })}
-              placeholder="如 low / medium / high"
+              placeholder={t('ui.forExampleLowMediumHigh')}
             />
           )}
         </label>
@@ -187,7 +195,7 @@ function Assignment({
             setRevision((r) => r + 1);
           }}
         >
-          刷新模型列表
+          {t('ui.refreshModelList')}{' '}
         </button>
         {custom && (
           <label className="assignment-custom">
@@ -196,21 +204,23 @@ function Assignment({
               checked={!!profile.customModel}
               onChange={(e) => change({ ...profile, customModel: e.target.checked })}
             />
-            自定义模型 ID
+            {t('ui.customModelId')}{' '}
           </label>
         )}
       </div>
-      {!provider && <p role="alert">Provider 已失效，请重新选择。</p>}
+      {!provider && <p role="alert"> {t('ui.providerIsUnavailableSelectAnotherProvider')} </p>}
       {discovery && !discovery.ok && (
         <p role="status">
           {discovery.error}
-          {custom ? '；可明确切换到自定义模型 ID。' : '；官方模型必须从有效列表选择。'}
+          {custom
+            ? t('ui.youCanExplicitlyChooseACustomModel')
+            : t('ui.officialModelsMustBeSelectedFromA')}
         </p>
       )}
       {custom && (
         <p className="muted">
-          {!efforts && '上游未提供已知推理档位，保存时将核对有效配置。'} 上游兼容性将在首次 Run
-          验证。
+          {!efforts && t('ui.theUpstreamDidNotProvideKnownReasoning')}{' '}
+          {t('ui.upstreamCompatibilityIsVerifiedOnTheFirst')}{' '}
         </p>
       )}
     </fieldset>

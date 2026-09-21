@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { Store, Fault, now, redact } from './store.ts';
 import { Codex, CodexTurnError, type ToolSpec } from './codex.ts';
+import { OmpBackend } from './omp.ts';
+import type { AgentBackend, AgentProfile, AgentToolSpec, AgentUsage } from './agent-backend.ts';
 import { PMActivities } from './pm-activity.ts';
 import { GitHub, IssueBodyConflict, isTransientGitHubError, type PullState } from './github.ts';
 import { Workspaces } from './workspaces.ts';
@@ -15,10 +17,40 @@ import {
   taskInput,
   jsonSchema,
   reviewSchema,
-  mergeSchema,
+  resolveIncidentInput,
 } from './schemas.ts';
 import { MessageImages } from './images.ts';
-import type { Message, Run, Task, ReviewResult } from '../shared/types.ts';
+import type {
+  Message,
+  MessageDescriptor,
+  Run,
+  Task,
+  ReviewResult,
+  Role,
+  RecoveryItem,
+} from '../shared/types.ts';
+
+/** The host only depends on this narrow adapter seam; Codex fakes remain valid constructors. */
+type AgentRuntime = Pick<AgentBackend, 'start' | 'stop' | 'thread' | 'turn'> &
+  Partial<Pick<AgentBackend, 'steer' | 'followUp' | 'abort' | 'reconcileSteer' | 'on' | 'off'>>;
+type AgentFactory = () => AgentRuntime;
+type AgentHooks = {
+  onDelta?: (text: string) => void;
+  onUsage?: (usage: AgentUsage) => void;
+};
+
+export const ROLE_ALLOWED_TOOLS: Record<Role, string[]> = {
+  pm: ['read', 'grep', 'glob'],
+  dev: ['read', 'bash', 'edit', 'write', 'grep', 'glob'],
+  review: ['read', 'bash', 'grep', 'glob'],
+};
+
+class ClarificationPause extends Error {
+  constructor(readonly clarificationId: string) {
+    super(`Clarification ${clarificationId} is waiting for the user`);
+    this.name = 'ClarificationPause';
+  }
+}
 
 const configureInput = z
   .object({ repoId: z.string(), commands: commandSchema, requiredChecks: z.array(z.string()) })
@@ -42,30 +74,115 @@ const reviseInput = z
     taskId: z.string(),
     spec: z.string().min(1).max(30000),
     acceptance: z.array(z.string().min(1)).min(1),
+    documentIds: z.array(z.string()).default([]),
     guidance: z.string().min(1),
   })
   .strict();
+const requestClarificationInput = z
+  .object({
+    sourceMessageId: z.string().min(1),
+    sourceIntent: z.enum(['discuss', 'implement', 'feedback']).optional(),
+    questions: z.array(z.record(z.string(), z.any())).min(1).max(3),
+  })
+  .strict();
+const submitReviewInput = z
+  .object({
+    approved: z.boolean(),
+    summary: z.string().min(1),
+    findings: z.array(z.string()),
+    verdict: z.enum(['pass', 'rework', 'escalate']),
+  })
+  .strict();
+// The advertised host tool deliberately exposes only the model-owned verdict. Keep accepting the
+// older direct adapter shape at the handler boundary so a legacy Codex adapter cannot bypass the
+// pinned-evidence check merely because it still sends redundant evidence fields.
+const submitReviewCallInput = submitReviewInput
+  .extend({
+    head: z.string().optional(),
+    base: z.string().optional(),
+    tests: z.array(z.any()).optional(),
+  })
+  .strict();
+const diagnosticDescriptor = (code: string, detail?: string): MessageDescriptor => ({
+  code,
+  ...(detail ? { detail: redact(detail).slice(-3000) } : {}),
+});
+
+type ReviewPayload = {
+  approved: boolean;
+  summary: string;
+  findings: string[];
+  verdict?: ReviewResult['verdict'];
+  head?: string;
+  base?: string;
+  tests?: unknown[];
+};
+
+/** Normalize contradictory model claims into a deterministic rework result. */
+function normalizeReviewVerdict(axis: ReviewResult['axis'], input: ReviewPayload): ReviewPayload {
+  const summary = input.summary.trim();
+  const findings = input.findings.filter(
+    (finding) => typeof finding === 'string' && finding.trim(),
+  );
+  if (input.verdict === 'pass' && input.approved && findings.length === 0)
+    return { ...input, summary, findings };
+  if (input.verdict === 'escalate' && axis === 'primary' && input.approved && findings.length === 0)
+    return { ...input, summary, findings };
+  if (input.verdict === 'rework' && !input.approved && findings.length > 0)
+    return { ...input, summary, findings };
+  // A secondary reviewer has no further axis to escalate to. A malformed or contradictory
+  // response therefore becomes ordinary concrete rework instead of leaving the task reviewing
+  // forever. The same rule makes primary contradictions safe and actionable.
+  return {
+    ...input,
+    approved: false,
+    verdict: 'rework',
+    summary: summary || 'Review verdict is contradictory',
+    findings: findings.length ? findings : [summary || 'Review verdict is contradictory'],
+  };
+}
+
 export function mergeReady(task: Task): boolean {
+  const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
+  const primaryResult = task.reviews.find(
+    (review) => review.axis === 'primary' && review.head === task.head && review.base === task.base,
+  );
+  const secondaryRequired =
+    task.secondaryReviewRequired === true ||
+    task.complexity === 'complex' ||
+    task.retries > 0 ||
+    primaryResult?.verdict === 'escalate';
+  const requiredAxes: ReviewResult['axis'][] = policy2
+    ? ['primary', ...(secondaryRequired ? (['secondary'] as const) : [])]
+    : ['standards', 'spec'];
   return (
     !task.pendingFeedback?.length &&
     !!task.head &&
     !!task.base &&
     task.tests.length > 0 &&
     task.tests.every((x) => x.exitCode === 0 && x.head === task.head) &&
-    ['standards', 'spec'].every((axis) =>
-      task.reviews.some(
-        (r) =>
-          r.axis === axis &&
-          r.head === task.head &&
-          r.base === task.base &&
-          r.approved &&
-          r.findings.length === 0,
-      ),
-    )
+    requiredAxes.every((axis) =>
+      task.reviews.some((r) => {
+        if (r.axis !== axis || r.head !== task.head || r.base !== task.base) return false;
+        if (!r.approved || r.findings.length > 0) return false;
+        if (!policy2) return true;
+        // Primary escalation is an explicit request for the required secondary pass; it is not
+        // itself a blocking finding. Secondary escalation is normalized to rework before storage.
+        return r.verdict === 'pass' || (axis === 'primary' && r.verdict === 'escalate');
+      }),
+    ) &&
+    task.reviews
+      .filter((r) => requiredAxes.includes(r.axis))
+      .every(
+        (r) => !r.tests || r.tests.every((test) => test.exitCode === 0 && test.head === task.head),
+      )
   );
 }
 export class Engine {
-  readonly active = new Map<string, { abort: AbortController; codex?: Codex }>();
+  readonly active = new Map<
+    string,
+    { abort: AbortController; agent?: AgentRuntime; codex?: Codex }
+  >();
   private timer?: NodeJS.Timeout;
   private ticking = false;
   private stopping = false;
@@ -75,51 +192,126 @@ export class Engine {
   private pmQueues = new Map<string, Promise<unknown>>();
   private mergeBusy = new Set<string>();
   private jobs = new Set<Promise<unknown>>();
+  private startup?: Promise<void>;
+  private started = false;
+  /** Explicit factories are test adapters; production chooses from Run.agentKind. */
+  private readonly injectedFactory?: AgentFactory;
   constructor(
     readonly store: Store,
     readonly github: GitHub,
     readonly workspaces: Workspaces,
     readonly dataDir: string,
-    private createCodex: () => Codex = () => new Codex(),
-  ) {}
+    createAgent?: AgentFactory,
+  ) {
+    this.injectedFactory = createAgent;
+  }
   private track<T>(job: Promise<T>): Promise<T> {
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job)).catch(() => {});
     return job;
   }
-  start() {
-    this.store.recover();
-    for (const m of this.store
-      .list('message')
-      .filter((m) => m.role === 'user' && m.status === 'queued'))
-      void this.chat(m, true).catch((e) =>
-        this.store.addMessage(m.projectId, 'system', `排队消息处理失败：${String(e)}`),
-      );
-    this.timer = setInterval(() => void this.track(this.tick()), 1500);
+  private createAgent(run: Run): AgentRuntime {
+    if (this.injectedFactory) return this.injectedFactory();
+    return run.agentKind === 'omp' ? new OmpBackend({ dataDir: this.dataDir }) : new Codex();
+  }
+  private agentProfile(run: Run): AgentProfile {
+    const profile = run.profileConfig;
+    if (!profile) throw new Fault('Run 缺少固定模型配置', 409);
+    return {
+      model: profile.model,
+      effort: profile.effort,
+      ...(run.agentKind === 'omp' ? { provider: profile.providerId } : {}),
+    };
+  }
+  start(): Promise<void> {
+    if (this.startup) return this.startup;
+    this.stopping = false;
+    this.startup = (async () => {
+      this.store.recover();
+      // Reconcile durable steer outcomes before recovery can enqueue any new PM turn.
+      await this.reconcileSteers();
+      // A recovery item is a barrier: worktree/remote reconciliation and successor creation must
+      // finish before the scheduler is allowed to claim a different Task.
+      const recoveryJobs = this.store
+        .list('recovery')
+        .filter((item) => item.status === 'pending')
+        .map((item) =>
+          this.recoverItem(item).catch((error) => {
+            this.store.event('recovery', String(error), {
+              projectId: item.projectId,
+              taskId: item.taskId,
+              runId: item.oldRunId,
+            });
+          }),
+        );
+      await Promise.all(recoveryJobs);
+      if (this.stopping) return;
+      this.started = true;
+      this.timer = setInterval(() => void this.track(this.tick()), 1500);
+      // Queue order is the persisted row order. It is intentionally scheduled only after the
+      // recovery barrier; PM queue serialization preserves FIFO per Project.
+      for (const m of this.store
+        .list('message')
+        .filter((m) => m.role === 'user' && m.status === 'queued'))
+        void this.track(this.chat(m, true)).catch(() =>
+          this.store.updateMessage(m.id, { status: 'failed', draftStatus: 'failed' }),
+        );
+    })();
+    return this.startup;
   }
   async stop() {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     for (const x of this.active.values()) x.abort.abort();
-    await Promise.allSettled([...this.active.values()].map((x) => x.codex?.stop()));
-    await Promise.allSettled([...this.jobs, ...this.pmQueues.values()]);
+    await Promise.allSettled([...this.active.values()].map((x) => x.agent?.stop()));
+    await Promise.allSettled([
+      ...this.jobs,
+      ...this.pmQueues.values(),
+      ...(this.startup ? [this.startup] : []),
+    ]);
+    this.started = false;
+    this.startup = undefined;
   }
   private async withAgent<T>(
     run: Run,
-    fn: (c: Codex, signal: AbortSignal) => Promise<T>,
+    fn: (c: AgentRuntime, signal: AbortSignal) => Promise<T>,
     hostAbort?: AbortController,
+    hooks: AgentHooks = {},
   ): Promise<T> {
-    const c = this.createCodex();
+    const c = this.createAgent(run);
     const abort = hostAbort ?? new AbortController();
-    this.active.set(run.id, { abort, codex: c });
+    this.active.set(run.id, { abort, agent: c, ...(c instanceof Codex ? { codex: c } : {}) });
     const activities = run.role === 'pm' ? new PMActivities(this.store, run) : undefined;
-    c.on('notification', (method: string, p: any) => {
+    c.on?.('notification', (method: string, p: any) => {
       const current = this.store.get('run', run.id)!;
       if (!['running', 'waiting'].includes(current.status)) return;
+      const backendVersion = p?.agentVersion ?? p?.version ?? p?.serverVersion;
+      if (typeof backendVersion === 'string') {
+        this.store.put('run', run.id, {
+          ...current,
+          agentVersion: backendVersion,
+          model: current.model ? { ...current.model, agentVersion: backendVersion } : current.model,
+          modelIdentity: current.modelIdentity
+            ? { ...current.modelIdentity, agentVersion: backendVersion }
+            : current.modelIdentity,
+        });
+      }
       if (current.threadId && p.threadId && current.threadId !== p.threadId) return;
       const notificationTurn = p.turnId ?? p.turn?.id;
       if (current.turnId && notificationTurn && current.turnId !== notificationTurn) return;
       activities?.notification(method, p);
+      const delta =
+        method === 'item/agentMessage/delta' && typeof p?.delta === 'string' ? p.delta : undefined;
+      if (delta) hooks.onDelta?.(delta);
+      const usage = p?.usage as AgentUsage | undefined;
+      if (usage) {
+        hooks.onUsage?.(usage);
+        if (this.store.get('run', run.id))
+          this.store.updateRunUsage(run.id, usage as any, 'cumulative');
+      }
+      if (method === 'turn/completed' && p?.usage)
+        if (this.store.get('run', run.id))
+          this.store.updateRunUsage(run.id, p.usage as any, 'cumulative');
       if (method === 'item/completed' && p.item?.type === 'commandExecution')
         this.store.event(
           'command',
@@ -127,19 +319,38 @@ export class Engine {
           { projectId: run.projectId, taskId: run.taskId, runId: run.id },
         );
     });
-    c.on('approval', () =>
+    c.on?.('approval', () =>
       this.store.event('approval', '需要超出沙箱权限，未自动批准', {
         projectId: run.projectId,
         taskId: run.taskId,
         runId: run.id,
       }),
     );
+    c.on?.('diagnostic', (line: unknown) => {
+      if (line !== undefined) this.store.recordRunDiagnostic(run.id, String(line));
+    });
+    c.on?.('failure', (error: unknown) => {
+      if (error !== undefined) this.store.recordRunDiagnostic(run.id, String(error));
+    });
     try {
-      const connection = await new Providers(this.store).connection(
-        run.profileConfig?.providerId ?? 'codex',
-      );
-      if (connection && run.provider?.baseUrl) connection.baseUrl = run.provider.baseUrl;
-      await c.start(connection);
+      if (run.agentKind === 'omp' && !(c instanceof Codex)) {
+        const cwd = run.taskId
+          ? this.store.task(run.taskId).worktree
+          : join(this.dataDir, 'projects', run.projectId);
+        if (!run.taskId) await mkdir(cwd!, { recursive: true });
+        await c.start({
+          cwd,
+          profile: this.agentProfile(run),
+          dataDir: this.dataDir,
+          allowedTools: ROLE_ALLOWED_TOOLS[run.role],
+        } as any);
+      } else {
+        const connection = await new Providers(this.store).connection(
+          run.profileConfig?.providerId ?? 'codex',
+        );
+        if (connection && run.provider?.baseUrl) connection.baseUrl = run.provider.baseUrl;
+        await c.start(connection);
+      }
       const result = await fn(c, abort.signal);
       if (abort.signal.aborted) throw new Fault('执行已暂停', 409);
       activities?.close();
@@ -150,8 +361,20 @@ export class Engine {
       if (!hostAbort)
         this.store.finishRun(
           run.id,
-          abort.signal.aborted ? 'paused' : e instanceof CodexTurnError ? e.status : 'failed',
+          e instanceof ClarificationPause
+            ? 'waiting'
+            : abort.signal.aborted
+              ? 'paused'
+              : e instanceof CodexTurnError
+                ? e.status
+                : 'failed',
           String(e),
+          {
+            descriptor: diagnosticDescriptor(
+              e instanceof ClarificationPause ? 'clarification_waiting' : 'run_failed',
+              String(e),
+            ),
+          },
         );
       throw e;
     } finally {
@@ -162,6 +385,8 @@ export class Engine {
   }
   private saveThread(run: Run, threadId: string) {
     this.store.bindRunThread(run, threadId);
+    const current = this.store.get('run', run.id);
+    if (current) this.store.put('run', run.id, { ...current, sessionId: threadId });
   }
   private onTurn(run: Run) {
     return (turnId: string) => {
@@ -176,23 +401,28 @@ export class Engine {
    * thread, and a second failure pauses the task with a domain reason instead of a parser error.
    */
   private async structuredTurn<T>(
-    codex: Codex,
+    codex: AgentRuntime,
     thread: string,
     prompt: string,
-    profile: Parameters<Codex['turn']>[2],
+    profile: AgentProfile,
     signal: AbortSignal,
     schema: z.ZodType<T>,
     subject: string,
     onTurn?: (id: string) => void,
+    accepted?: () => T | undefined,
   ): Promise<T> {
     const ask = (text: string) =>
       codex.turn(thread, text, profile, signal, jsonSchema(schema), onTurn);
     const reply = await ask(prompt);
+    const hostResult = accepted?.();
+    if (hostResult !== undefined) return hostResult;
     const value = parseStructuredReply(schema, reply);
     if (value !== undefined) return value;
     const retry = await ask(
       `The previous reply did not contain the required JSON. Reply with ONLY one JSON object matching this JSON Schema — no prose, no explanation and no tool use: ${JSON.stringify(jsonSchema(schema))}`,
     );
+    const retriedHostResult = accepted?.();
+    if (retriedHostResult !== undefined) return retriedHostResult;
     const retried = parseStructuredReply(schema, retry);
     if (retried !== undefined) return retried;
     // Both replies are the evidence a human needs: the one that failed first, and the one that
@@ -220,10 +450,15 @@ export class Engine {
     return next;
   }
   async chat(message: Message, recovering = false) {
+    if (!recovering && message.deliveryMode === 'steer' && (await this.trySteer(message)))
+      return '';
     return this.track(
       this.pmQueue(message.projectId, async () => {
         if (this.stopping) return '';
-        this.store.put('message', message.id, { ...message, status: 'running' });
+        this.store.updateMessage(message.id, {
+          status: 'running',
+          draftStatus: 'running',
+        });
         try {
           const retry = this.store.list('activity').some((a) => a.messageId === message.id);
           const reply = await this.pmTurn(
@@ -233,14 +468,393 @@ export class Engine {
             undefined,
             recovering ? '恢复：处理排队消息' : retry ? '恢复：重试用户消息' : '用户消息',
           );
-          this.store.put('message', message.id, { ...message, status: 'completed' });
+          this.store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
           return reply;
         } catch (e) {
-          this.store.put('message', message.id, { ...message, status: 'failed' });
+          this.store.updateMessage(message.id, { status: 'failed', draftStatus: 'failed' });
           throw e;
         }
       }),
     );
+  }
+  private steerAllowed(run: Run, message: Message) {
+    return (
+      !!run.threadId &&
+      run.role === 'pm' &&
+      ['running', 'waiting'].includes(run.status) &&
+      message.role === 'user' &&
+      message.projectId === run.projectId
+    );
+  }
+  private async trySteer(message: Message): Promise<boolean> {
+    const run = this.store
+      .activeRuns()
+      .find((candidate) => candidate.projectId === message.projectId && candidate.role === 'pm');
+    const active = run ? this.active.get(run.id) : undefined;
+    if (!run || !active?.agent?.steer || !this.steerAllowed(run, message)) return false;
+    const operation = this.store.beginSteer(run.id, message.id);
+    if (operation.status === 'done') return true;
+    // A pending/uncertain operation belongs to a previous attempt. Never resend it without a
+    // backend history result; startup reconciliation handles adapters that can prove acceptance.
+    if (operation.status !== 'pending') return true;
+    try {
+      await active.agent.steer(run.threadId!, message.content, {
+        profile: this.agentProfile(run),
+        clientUserMessageId: message.id,
+        expectedTurnId: run.turnId,
+      });
+      this.store.finishSteer(operation.id, 'done');
+    } catch (error) {
+      const text = String(error);
+      const status = (error as { status?: unknown })?.status;
+      const code = (error as { code?: unknown })?.code;
+      // A known ended-turn rejection proves the message was not accepted by this turn. Queue it
+      // atomically for a fresh PM Run; a transport/ack failure remains uncertain instead.
+      if (
+        status === 409 &&
+        (code === 'turn_not_active' ||
+          /没有可 steer|expectedTurnId|过期|turn ended|not.*active|no active/i.test(text))
+      ) {
+        this.store.finishSteer(
+          operation.id,
+          'done',
+          'Steer turn ended; queued as a new PM turn',
+          false,
+          true,
+        );
+        this.store.updateMessage(message.id, {
+          descriptor: diagnosticDescriptor('steer_queued', text),
+        });
+        return false;
+      }
+      // A steer acknowledgement can be lost. Persist uncertainty and require history
+      // reconciliation; do not turn it into an ordinary failed message that can be retried blind.
+      this.store.finishSteer(operation.id, 'uncertain', text);
+      this.store.event(
+        'steer',
+        `主动引导未确认：${redact(String(error))}`,
+        {
+          projectId: message.projectId,
+          runId: run.id,
+        },
+        diagnosticDescriptor('steer_uncertain', String(error)),
+      );
+    }
+    return true;
+  }
+  /** Reconcile only adapters that can prove a durable client id; unknown stays blocked. */
+  async reconcileSteers() {
+    const queued: Message[] = [];
+    for (const operation of this.store.unresolvedSteers()) {
+      const run = operation.runId ? this.store.get('run', operation.runId) : undefined;
+      if (!run || !operation.sessionId || !operation.clientUserMessageId) {
+        this.store.event(
+          'steer',
+          `Steer 结果未知，等待宿主核对：${operation.id}`,
+          run ? { projectId: run.projectId, runId: run.id } : undefined,
+          diagnosticDescriptor('steer_uncertain', operation.error),
+        );
+        continue;
+      }
+      let agent: AgentRuntime | undefined;
+      let result: 'accepted' | 'not_accepted' | 'unknown';
+      try {
+        agent = this.createAgent(run);
+        if (run.agentKind === 'omp' && !(agent instanceof Codex)) {
+          await agent.start({
+            cwd: run.taskId
+              ? this.store.task(run.taskId).worktree
+              : join(this.dataDir, 'projects', run.projectId),
+            profile: this.agentProfile(run),
+            dataDir: this.dataDir,
+            allowedTools: ROLE_ALLOWED_TOOLS[run.role],
+          } as any);
+        } else {
+          const connection = await new Providers(this.store).connection(
+            run.profileConfig?.providerId ?? 'codex',
+          );
+          await agent.start(connection);
+        }
+        result = agent.reconcileSteer
+          ? await agent.reconcileSteer(operation.sessionId, operation.clientUserMessageId)
+          : 'unknown';
+      } catch (error) {
+        result = 'unknown';
+        this.store.recordRunDiagnostic(run.id, String(error));
+      } finally {
+        await agent?.stop().catch(() => {});
+      }
+      if (result === 'accepted') {
+        this.store.finishSteer(operation.id, 'done', 'Backend history confirmed acceptance', true);
+      } else if (result === 'not_accepted') {
+        this.store.finishSteer(
+          operation.id,
+          'done',
+          'Backend history proved the steer was not accepted',
+          false,
+          true,
+        );
+        const message = this.store.get('message', operation.clientUserMessageId);
+        if (message) {
+          const next = this.store.updateMessage(message.id, {
+            descriptor: diagnosticDescriptor(
+              'steer_queued',
+              'Backend history proved the steer was not accepted',
+            ),
+          });
+          queued.push(next);
+        }
+      } else {
+        this.store.event(
+          'steer',
+          `Steer 结果仍未知：${operation.id}`,
+          { projectId: run.projectId, runId: run.id },
+          diagnosticDescriptor('steer_uncertain', operation.error),
+        );
+      }
+    }
+    for (const message of queued)
+      void this.track(this.chat(message, true)).catch(() =>
+        this.store.updateMessage(message.id, { status: 'failed', draftStatus: 'failed' }),
+      );
+  }
+  private acceptedDocumentChanges(projectId: string, repoId: string, ids: string[]) {
+    return ids.map((key) => {
+      const document = this.store.get('document', key);
+      if (
+        !document ||
+        document.projectId !== projectId ||
+        document.repoId !== repoId ||
+        !document.accepted
+      )
+        throw new Fault('只能发布当前仓库中 PM 已接受的设计记录', 409, {
+          code: 'document_snapshot_invalid',
+          params: { documentId: key },
+        });
+      return { path: document.path, content: document.content, version: document.version };
+    });
+  }
+  private async recoverItem(item: RecoveryItem) {
+    const current = this.store.get('recovery', item.id);
+    if (!current || !['pending', 'recoverable', 'resumed'].includes(current.status)) return current;
+    if (current.successorRunId) return current;
+    const oldRun = this.store.get('run', item.oldRunId);
+    if (!oldRun) return this.store.get('recovery', item.id);
+    const task = item.taskId ? this.store.get('task', item.taskId) : undefined;
+    if (task && ['done', 'cancelled'].includes(task.stage)) {
+      this.store.finishRecovery(item.id, 'cancelled');
+      return this.store.get('recovery', item.id);
+    }
+    if (oldRun.role === 'pm' || item.role === 'pm') {
+      const source =
+        !item.incidentId && item.sourceMessageId
+          ? this.store.get('message', item.sourceMessageId)
+          : undefined;
+      const content = item.recoveryPrompt ?? source?.content;
+      if (!content) {
+        this.store.finishRecovery(item.id, 'cancelled');
+        return this.store.get('recovery', item.id);
+      }
+      const run = this.store.ensureRecoverySuccessor(item.id, {
+        role: 'pm',
+        profile: oldRun.profile,
+        task,
+        sourceMessageId: source?.id,
+        incidentId: item.incidentId,
+        incidentPhase: oldRun.incidentPhase,
+        incidentEvidence: oldRun.incidentEvidence,
+        recoveryPrompt: content,
+      });
+      if (item.incidentId) this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
+      await this.pmQueue(item.projectId, () =>
+        this.pmTurn(
+          item.projectId,
+          content,
+          source,
+          task,
+          item.incidentId ? '恢复：继续 Incident 评估' : '恢复：继续 PM 会话',
+          item.id,
+          run,
+        ),
+      );
+      return this.store.get('recovery', item.id);
+    }
+    if (!task) return this.store.get('recovery', item.id);
+    // Re-read external state before creating a successor. This path never changes retries; an
+    // environmental failure remains paused with its durable evidence.
+    if (task.stage === 'developing' || task.stage === 'reviewing' || task.stage === 'merging') {
+      if (task.worktree) {
+        await this.workspaces.assertTask(task);
+        const base = task.base ?? (await this.workspaces.recoverBase(task));
+        const patch: Partial<Task> = task.base === undefined ? { base } : {};
+        // A crashed host may have a complete implementation even though the old Run never
+        // reached its finalization checkpoint. Detect it from the worktree and let the host
+        // finalize/validate without starting another Dev turn.
+        if (task.stage === 'developing' && !task.devPhase) {
+          const dirty = await this.workspaces.git(task.worktree, ['status', '--porcelain']);
+          const committed = await this.workspaces.git(task.worktree, [
+            'diff',
+            `${base}...HEAD`,
+            '--stat',
+          ]);
+          if (dirty || committed) patch.devPhase = 'finalize';
+        }
+        if (Object.keys(patch).length) this.store.updateTask(task.id, patch);
+      }
+      if (task.pr) {
+        const remote = await this.github.pull(task);
+        if (remote.merged) {
+          await this.completed(task);
+          this.store.finishRecovery(item.id, 'cancelled');
+          return this.store.get('recovery', item.id);
+        }
+        if (remote.head.sha !== task.head || remote.base.sha !== task.base)
+          throw new Fault('恢复核对发现远端 PR revision 已变化，等待 PM 核对', 409);
+      }
+      await this.github.authorizeTaskPRRetry(task, 'pm');
+    }
+    if (task.control !== 'active') this.store.control(task.id, 'resume');
+    if (oldRun.role === 'review' || item.role === 'review') {
+      const axis = item.reviewAxis ?? oldRun.reviewAxis ?? 'primary';
+      const run = this.store.ensureRecoverySuccessor(item.id, {
+        role: 'review',
+        profile: oldRun.profile,
+        task,
+        secondaryReview: oldRun.secondaryReview,
+        reviewAxis: axis,
+      });
+      await this.review(run, task, axis);
+      return this.store.get('recovery', item.id);
+    }
+    // Dev recovery is handed back to the normal FIFO scheduler after safe reconciliation. The
+    // scheduler atomically creates the successor Run and links it to this recovery item; running
+    // it inline here would make the same tick launch Review/PM work before the host handoff.
+    this.store.finishRecovery(item.id, 'resumed');
+    return this.store.get('recovery', item.id);
+  }
+  async answerClarification(
+    projectId: string,
+    clarificationId: string,
+    answers:
+      Record<string, string | string[]> | Array<{ questionId: string; value: string | string[] }>,
+  ) {
+    const existing = this.store.get('clarification', clarificationId);
+    if (!existing || existing.projectId !== projectId)
+      throw new Fault('Clarification 不属于当前项目', 403);
+    const value = this.store.answerClarification(projectId, clarificationId, answers);
+    if (existing.status !== 'answered' && value.status === 'answered') {
+      const source = this.store.get('message', value.sourceMessageId);
+      const task = value.taskId ? this.store.get('task', value.taskId) : undefined;
+      if (source) {
+        const answerText = `用户已回答产品澄清：${JSON.stringify(value.answers ?? [])}`;
+        if (task && !['done', 'cancelled'].includes(task.stage))
+          this.store.updateTask(task.id, {
+            control: 'active',
+            pausedByUser: false,
+            blocked: undefined,
+            blockedDescriptor: undefined,
+          });
+        void this.track(
+          this.pmQueue(projectId, () =>
+            this.pmTurn(projectId, answerText, source, task, '用户回答产品澄清'),
+          ),
+        ).catch((error) => this.store.event('pm', String(error), { projectId }));
+      }
+    }
+    return value;
+  }
+  cancelClarification(projectId: string, clarificationId: string) {
+    const value = this.store.cancelClarification(projectId, clarificationId);
+    if (value.taskId) {
+      const task = this.store.get('task', value.taskId);
+      if (task && !['done', 'cancelled'].includes(task.stage))
+        this.store.updateTask(task.id, {
+          control: 'paused',
+          pausedByUser: false,
+          blocked: '产品澄清已取消，原始需求不能继续发布或修订',
+          blockedDescriptor: diagnosticDescriptor('clarification_cancelled', value.id),
+        });
+    }
+    // Cancellation is terminal and never replays the original source intent.
+    return value;
+  }
+  async resumeRecovery(projectId: string, recoveryId?: string) {
+    const item = this.store.recoveryForProject(projectId, recoveryId);
+    const selected = Array.isArray(item)
+      ? item.filter((candidate) => ['pending', 'recoverable'].includes(candidate.status))
+      : [item];
+    if (!selected.length) throw new Fault('Recovery item 不存在', 404);
+    for (const candidate of selected) await this.recoverItem(candidate);
+    const result = selected.map((candidate) => this.store.get('recovery', candidate.id)!);
+    return recoveryId ? result[0] : result;
+  }
+  cancelRecovery(projectId: string, recoveryId: string) {
+    const selected = this.store.recoveryForProject(projectId, recoveryId);
+    if (Array.isArray(selected)) throw new Fault('Recovery item 不存在', 404);
+    return this.store.cancelRecovery(selected.id);
+  }
+  resolveIncident(
+    projectId: string,
+    incidentId: string,
+    action: 'resolved' | 'paused' | 'waiting_user',
+    guidance?: string,
+  ) {
+    const incident = this.store.get('incident', incidentId);
+    if (!incident || incident.projectId !== projectId)
+      throw new Fault('Incident 不属于当前项目', 403);
+    const next = this.store.updateIncident(incidentId, {
+      status: action === 'paused' ? 'assessing' : action,
+      ...(guidance ? { message: guidance } : {}),
+      descriptor: diagnosticDescriptor(`incident_${action}`, guidance ?? incident.message),
+    });
+    if (next.taskId) {
+      const task = this.store.task(next.taskId);
+      if (action === 'resolved') {
+        const gate = this.store.clarificationGate(task.sourceMessageId);
+        if (gate)
+          throw new Fault(
+            '产品 Clarification 尚未形成可发布决定，Incident 不能绕过它恢复 Task',
+            409,
+            {
+              code: gate.status === 'cancelled' ? 'clarification_cancelled' : 'clarification_open',
+              params: { clarificationId: gate.id, taskId: task.id },
+            },
+          );
+        if (!['done', 'cancelled'].includes(task.stage)) this.store.control(next.taskId, 'resume');
+      } else {
+        this.store.updateTask(next.taskId, {
+          control: 'paused',
+          pausedByUser: false,
+          blocked: guidance ?? next.message,
+          blockedDescriptor: diagnosticDescriptor(`incident_${action}`, guidance ?? next.message),
+        });
+      }
+    }
+    return next;
+  }
+  private requestProductClarification(
+    projectId: string,
+    run: Run,
+    fallbackSource: Message | undefined,
+    task: Task | undefined,
+    questions: Array<Record<string, unknown>>,
+  ): never {
+    const liveRun = this.store.get('run', run.id);
+    const source = liveRun?.sourceMessageId
+      ? this.store.get('message', liveRun.sourceMessageId)
+      : fallbackSource;
+    if (!source?.intent)
+      throw new Fault('产品澄清必须绑定当前用户消息权限', 409, {
+        code: 'clarification_source_missing',
+      });
+    const clarification = this.store.createClarification({
+      projectId,
+      sourceMessageId: source.id,
+      ...(task ? { taskId: task.id } : {}),
+      sourceIntent: source.intent,
+      questions,
+    });
+    throw new ClarificationPause(clarification.id);
   }
   private async pmTurn(
     projectId: string,
@@ -248,177 +862,329 @@ export class Engine {
     source?: Message,
     task?: Task,
     trigger = '宿主事件：技术协调',
+    recoveryItemId?: string,
+    existingRun?: Run,
   ): Promise<string> {
-    const run = this.store.run('pm', projectId, 'pm', task);
-    this.pmTrigger(run, trigger, source, content);
-    return this.withAgent(run, async (c, signal) => {
-      const project = this.store.project(projectId);
-      const repos = this.store.list('repo').filter((r) => r.projectId === projectId);
-      const cwd = join(this.dataDir, 'projects', projectId);
-      await mkdir(cwd, { recursive: true });
-      const tools: ToolSpec[] = [
-        {
-          name: 'set_task_priority',
-          description:
-            'Adjust only priority metadata of this project unfinished tasks within coordination authority. No preemption, resume, requirement or evidence changes. Use expectedVersion (legacy=0) and unique requestId for safe retries.',
-          inputSchema: jsonSchema(priorityUpdateInput),
-        },
-        {
-          name: 'explain_scheduling',
-          description:
-            'Read current project candidates, every eligibility gate and project rotation; no start time promise and no mutations.',
-          inputSchema: jsonSchema(z.object({}).strict()),
-        },
-        {
-          name: 'revise_task',
-          description:
-            'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. Cannot revise an active or completed task.',
-          inputSchema: jsonSchema(reviseInput),
-        },
-        {
-          name: 'record_domain_document',
-          description:
-            'Persist an agreed glossary or ADR using upstream formats. This local design record does not edit a repository. Attach accepted document IDs to a later implementation ticket to publish through normal review.',
-          inputSchema: jsonSchema(documentInput),
-        },
-        {
-          name: 'create_task',
-          description:
-            'Create a vertical slice from the current explicit implementation request. Returns task IDs for blocking edges.',
-          inputSchema: jsonSchema(taskInput),
-        },
-        {
-          name: 'configure_repository',
-          description:
-            'Set verified project commands and required checks; cannot enable or authorize a repo.',
-          inputSchema: jsonSchema(configureInput),
-        },
-        {
-          name: 'resolve_task',
-          description:
-            'Resume a blocked technical task with concrete guidance; optionally upgrade to the complex profile.',
-          inputSchema: jsonSchema(resolveInput),
-        },
-      ];
-      const handler = async (name: string, args: unknown) => {
-        if (name === 'set_task_priority')
-          return this.store.setTaskPriority(projectId, args, {
-            actor: 'pm',
-            sourceMessageId: source?.id,
-            runId: run.id,
-          });
-        if (name === 'explain_scheduling') {
-          z.object({}).strict().parse(args);
-          return this.store.explainScheduling(projectId);
-        }
-        if (name === 'revise_task') {
-          if (!source || !['implement', 'feedback'].includes(source.intent ?? ''))
-            throw new Fault('修改验收条件需要明确的用户实施或反馈消息');
-          const input = reviseInput.parse(args);
-          const old = this.store.task(input.taskId);
-          if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
-            throw new Fault('任务不在可修改范围');
-          if (this.store.activeRuns().some((r) => r.taskId === old.id))
-            throw new Fault('任务运行中，请先暂停并等待其停止');
-          let revised = this.store.updateTask(old.id, {
-            spec: input.spec,
-            acceptance: input.acceptance,
-            sourceMessageId: source.id,
-            control: 'paused',
-            stage: old.worktree ? 'developing' : 'ready',
-            devPhase: 'implement',
-            reviews: [],
-            tests: [],
-            mergeApproval: undefined,
-            retries: 0,
-            feedback: [...old.feedback, input.guidance],
-          });
-          try {
-            if (revised.issue) await this.github.reviseIssue(revised);
-            revised = this.store.updateTask(old.id, { control: 'active', blocked: undefined });
-          } catch (e) {
-            this.block(old.id, `任务修订尚未同步：${String(e)}`);
-            throw e;
-          }
-          return revised;
-        }
-        if (name === 'record_domain_document')
-          return this.store.recordDocument(projectId, documentInput.parse(args));
-        if (name === 'create_task') {
-          if (!source || !['implement', 'feedback'].includes(source.intent ?? ''))
-            throw new Fault('当前回合没有新增实施授权');
-          const input = taskInput.parse(args);
-          const { documentIds, ...taskData } = input;
-          const documentChanges = documentIds.map((key) => {
-            const d = this.store.get('document', key);
-            if (!d || d.projectId !== projectId || d.repoId !== input.repoId || !d.accepted)
-              throw new Fault('只能发布当前仓库中 PM 已接受的设计记录');
-            return { path: d.path, content: d.content, version: d.version };
-          });
-          const created = this.store.createTask(
-            {
-              ...taskData,
-              documentChanges,
-              projectId,
-              sourceMessageId: source.id,
-            },
-            { actor: 'pm', runId: run.id },
-          );
-          // Publication is durable and reconciled separately; closed work switches do not prevent planning.
-          return this.store.task(created.id);
-        }
-        if (name === 'configure_repository') {
-          const input = configureInput.parse(args);
-          if (this.store.repo(input.repoId).projectId !== projectId)
-            throw new Fault('跨项目操作被拒绝', 403);
-          return this.store.patchRepo(input.repoId, {
-            commands: input.commands,
-            requiredChecks: input.requiredChecks,
-          });
-        }
-        if (name === 'resolve_task') {
-          const input = resolveInput.parse(args);
-          const t = this.store.task(input.taskId);
-          if (t.projectId !== projectId || t.stage === 'done' || t.stage === 'cancelled')
-            throw new Fault('任务不在可恢复范围');
-          await this.resume(t.id, input);
-          return this.store.task(t.id);
-        }
-        throw new Fault('未知 PM 操作');
-      };
-      const profile = run.profileConfig!;
-      const thread = await c.thread({
-        cwd,
-        profile,
-        instructions: await instructions('pm'),
-        threadId: run.resumeThreadId,
-        writable: false,
-        tools,
-        toolHandler: handler,
+    const run =
+      existingRun ??
+      this.store.run('pm', projectId, 'pm', task, {
+        sourceMessageId: source?.id,
+        ...(recoveryItemId ? { recoveryItemId } : {}),
       });
-      this.saveThread(run, thread);
-      const contextPaths = await Promise.all(
-        repos.map((r) =>
-          this.workspaces.view(r, 'context', `refs/remotes/origin/${r.defaultBranch}`),
-        ),
-      );
-      const context = `${await domainContext(contextPaths)}\nLocal design records (not yet necessarily published): ${JSON.stringify(this.store.list('document').filter((d) => d.projectId === projectId))}`;
-      const prompt = `${this.pmContext(projectId)}\n${context}\n\nCurrent input intent: ${source?.intent ?? 'technical coordination (no new product scope)'}\n${task ? taskPrompt(task) : ''}\n\n${content}`;
-      const imagePaths = source
-        ? await new MessageImages(this.store, this.dataDir).paths(source)
-        : [];
-      const reply = await c.turn(
-        thread,
-        prompt,
-        profile,
-        signal,
-        undefined,
-        this.onTurn(run),
-        imagePaths,
-      );
-      this.store.addMessage(projectId, 'assistant', reply);
-      return reply;
+    const recoveryDraftId = recoveryItemId
+      ? this.store.get('recovery', recoveryItemId)?.draftId
+      : undefined;
+    const draft = this.store.assistantDraft(projectId, run.id, recoveryDraftId ?? run.id);
+    this.store.updateMessage(draft.id, {
+      runId: run.id,
+      status: 'running',
+      draftStatus: 'running',
+      ...(source?.id ? { sourceMessageId: source.id } : {}),
     });
+    this.pmTrigger(run, trigger, source, content);
+    let draftText = draft.content;
+    let draftTimer: NodeJS.Timeout | undefined;
+    return this.withAgent(
+      run,
+      async (c, signal) => {
+        const project = this.store.project(projectId);
+        const repos = this.store.list('repo').filter((r) => r.projectId === projectId);
+        const cwd = join(this.dataDir, 'projects', projectId);
+        await mkdir(cwd, { recursive: true });
+        const tools: ToolSpec[] = [
+          {
+            name: 'request_clarification',
+            description:
+              'Pause affected source intent for a material product decision. Keep sourceMessageId and sourceIntent exactly as supplied; do not invent an answer.',
+            inputSchema: jsonSchema(requestClarificationInput),
+          },
+          {
+            name: 'resolve_incident',
+            description:
+              'Resolve one host incident with bounded technical guidance, pause it, or wait for a user decision.',
+            inputSchema: jsonSchema(resolveIncidentInput),
+          },
+          {
+            name: 'set_task_priority',
+            description:
+              'Adjust only priority metadata of this project unfinished tasks within coordination authority. No preemption, resume, requirement or evidence changes. Use expectedVersion (legacy=0) and unique requestId for safe retries.',
+            inputSchema: jsonSchema(priorityUpdateInput),
+          },
+          {
+            name: 'explain_scheduling',
+            description:
+              'Read current project candidates, every eligibility gate and project rotation; no start time promise and no mutations.',
+            inputSchema: jsonSchema(z.object({}).strict()),
+          },
+          {
+            name: 'revise_task',
+            description:
+              'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. Cannot revise an active or completed task.',
+            inputSchema: jsonSchema(reviseInput),
+          },
+          {
+            name: 'record_domain_document',
+            description:
+              'Persist an agreed glossary or ADR using upstream formats. This local design record does not edit a repository. Attach accepted document IDs to a later implementation ticket to publish through normal review.',
+            inputSchema: jsonSchema(documentInput),
+          },
+          {
+            name: 'create_task',
+            description:
+              'Create a vertical slice from the current explicit implementation request. Returns task IDs for blocking edges.',
+            inputSchema: jsonSchema(taskInput),
+          },
+          {
+            name: 'configure_repository',
+            description:
+              'Set verified project commands and required checks; cannot enable or authorize a repo.',
+            inputSchema: jsonSchema(configureInput),
+          },
+          {
+            name: 'resolve_task',
+            description:
+              'Resume a blocked technical task with concrete guidance; optionally upgrade to the complex profile.',
+            inputSchema: jsonSchema(resolveInput),
+          },
+        ];
+        const effectiveSource = () => {
+          const live = this.store.get('run', run.id);
+          return live?.sourceMessageId ? this.store.get('message', live.sourceMessageId) : source;
+        };
+        let pendingClarification: ClarificationPause | undefined;
+        const handler = async (name: string, args: unknown) => {
+          const currentSource = effectiveSource();
+          if (name === 'set_task_priority')
+            return this.store.setTaskPriority(projectId, args, {
+              actor: 'pm',
+              sourceMessageId: currentSource?.id,
+              runId: run.id,
+            });
+          if (name === 'explain_scheduling') {
+            z.object({}).strict().parse(args);
+            return this.store.explainScheduling(projectId);
+          }
+          if (name === 'revise_task') {
+            if (!currentSource || !['implement', 'feedback'].includes(currentSource.intent ?? ''))
+              throw new Fault('修改验收条件需要明确的用户实施或反馈消息');
+            const input = reviseInput.parse(args);
+            const old = this.store.task(input.taskId);
+            if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
+              throw new Fault('任务不在可修改范围');
+            if (this.store.activeRuns().some((r) => r.taskId === old.id))
+              throw new Fault('任务运行中，请先暂停并等待其停止');
+            if (
+              this.store
+                .list('clarification')
+                .some(
+                  (clarification) =>
+                    clarification.sourceMessageId === old.sourceMessageId &&
+                    ['open', 'cancelled'].includes(clarification.status),
+                )
+            )
+              throw new Fault('源消息产品澄清未形成可发布决定，不能修订任务', 409, {
+                code: 'clarification_gate',
+                params: { sourceMessageId: old.sourceMessageId },
+              });
+            const documentChanges = this.acceptedDocumentChanges(
+              projectId,
+              old.repoId,
+              input.documentIds,
+            );
+            let revised = this.store.updateTask(old.id, {
+              spec: input.spec,
+              acceptance: input.acceptance,
+              // The original user authority is immutable across feedback revisions.
+              control: 'paused',
+              stage: old.worktree ? 'developing' : 'ready',
+              devPhase: 'implement',
+              reviews: [],
+              tests: [],
+              mergeApproval: undefined,
+              retries: 0,
+              ...(input.documentIds.length ? { documentChanges } : {}),
+              feedback: [...old.feedback, input.guidance],
+            });
+            try {
+              if (revised.issue) await this.github.reviseIssue(revised);
+              revised = this.store.updateTask(old.id, { control: 'active', blocked: undefined });
+            } catch (e) {
+              this.block(old.id, `任务修订尚未同步：${String(e)}`);
+              throw e;
+            }
+            return revised;
+          }
+          if (name === 'request_clarification') {
+            const input = requestClarificationInput.parse(args);
+            if (input.sourceMessageId !== currentSource?.id)
+              throw new Fault('产品澄清只能引用当前有效用户消息', 403);
+            try {
+              return this.requestProductClarification(
+                projectId,
+                run,
+                currentSource,
+                task,
+                input.questions,
+              );
+            } catch (error) {
+              if (error instanceof ClarificationPause) {
+                pendingClarification = error;
+                return { waitingForClarification: error.clarificationId };
+              }
+              throw error;
+            }
+          }
+          if (name === 'resolve_incident') {
+            const input = resolveIncidentInput.parse(args);
+            return this.resolveIncident(projectId, input.incidentId, input.action, input.guidance);
+          }
+          if (name === 'record_domain_document')
+            return this.store.recordDocument(projectId, documentInput.parse(args));
+          if (name === 'create_task') {
+            if (!currentSource || !['implement', 'feedback'].includes(currentSource.intent ?? ''))
+              throw new Fault('当前回合没有新增实施授权');
+            const input = taskInput.parse(args);
+            const { documentIds, ...taskData } = input;
+            const documentChanges = this.acceptedDocumentChanges(
+              projectId,
+              input.repoId,
+              documentIds,
+            );
+            const created = this.store.createTask(
+              {
+                ...taskData,
+                documentChanges,
+                projectId,
+                sourceMessageId: currentSource.id,
+              },
+              { actor: 'pm', runId: run.id },
+            );
+            // Publication is durable and reconciled separately; closed work switches do not prevent planning.
+            return this.store.task(created.id);
+          }
+          if (name === 'configure_repository') {
+            const input = configureInput.parse(args);
+            if (this.store.repo(input.repoId).projectId !== projectId)
+              throw new Fault('跨项目操作被拒绝', 403);
+            return this.store.patchRepo(input.repoId, {
+              commands: input.commands,
+              requiredChecks: input.requiredChecks,
+            });
+          }
+          if (name === 'resolve_task') {
+            const input = resolveInput.parse(args);
+            const t = this.store.task(input.taskId);
+            if (t.projectId !== projectId || t.stage === 'done' || t.stage === 'cancelled')
+              throw new Fault('任务不在可恢复范围');
+            await this.resume(t.id, input);
+            return this.store.task(t.id);
+          }
+          throw new Fault('未知 PM 操作');
+        };
+        const profile = this.agentProfile(run);
+        const thread = await c.thread({
+          cwd,
+          profile,
+          instructions: await instructions('pm'),
+          threadId: run.resumeThreadId,
+          writable: false,
+          tools,
+          toolHandler: handler,
+          onUserInput: async (request: any) => {
+            try {
+              this.requestProductClarification(projectId, run, effectiveSource(), task, [
+                {
+                  id: String(request.id ?? 'question'),
+                  question: String(request.message ?? request.title ?? '请确认产品行为'),
+                  ...(Array.isArray(request.options)
+                    ? {
+                        options: request.options.map((option: unknown) => ({
+                          value: String(option),
+                          label: String(option),
+                        })),
+                      }
+                    : {}),
+                },
+              ]);
+            } catch (error) {
+              if (error instanceof ClarificationPause) {
+                pendingClarification = error;
+                return undefined;
+              }
+              throw error;
+            }
+          },
+          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.pm } as any) : {}),
+        } as any);
+        this.saveThread(run, thread);
+        const contextPaths = await Promise.all(
+          repos.map((r) =>
+            this.workspaces.view(r, 'context', `refs/remotes/origin/${r.defaultBranch}`),
+          ),
+        );
+        const context = `${await domainContext(contextPaths)}\nLocal design records (not yet necessarily published): ${JSON.stringify(this.store.list('document').filter((d) => d.projectId === projectId))}`;
+        const prompt = `${this.pmContext(projectId)}\n${context}\n\nCurrent input intent: ${source?.intent ?? 'technical coordination (no new product scope)'}\n${task ? taskPrompt(task) : ''}\n\n${content}`;
+        const imagePaths = source
+          ? await new MessageImages(this.store, this.dataDir).paths(source)
+          : [];
+        const reply = await c.turn(
+          thread,
+          prompt,
+          profile,
+          signal,
+          undefined,
+          this.onTurn(run),
+          imagePaths,
+        );
+        if (pendingClarification) throw pendingClarification;
+        draftText = reply;
+        this.store.updateMessage(draft.id, {
+          content: reply,
+          status: 'completed',
+          draftStatus: 'completed',
+        });
+        return reply;
+      },
+      undefined,
+      {
+        onDelta: (delta) => {
+          draftText += delta;
+          if (!draftTimer)
+            draftTimer = setTimeout(() => {
+              draftTimer = undefined;
+              // A credential may span deltas. Persist complete lines, as PMActivities does,
+              // and coalesce the change events instead of refreshing the UI per character.
+              const complete = draftText.slice(0, draftText.lastIndexOf('\n') + 1);
+              if (complete)
+                this.store.updateMessage(draft.id, {
+                  content: redact(complete),
+                  status: 'running',
+                  draftStatus: 'running',
+                });
+            }, 100);
+        },
+      },
+    )
+      .catch((error) => {
+        if (error instanceof ClarificationPause) {
+          this.store.updateMessage(draft.id, {
+            content: draftText || `已暂停，等待产品澄清：${error.clarificationId}`,
+            status: 'completed',
+            draftStatus: 'completed',
+            descriptor: diagnosticDescriptor('clarification_waiting', error.message),
+          });
+          return `等待用户产品澄清：${error.clarificationId}`;
+        }
+        this.store.updateMessage(draft.id, {
+          content: draftText,
+          status: 'failed',
+          draftStatus: 'failed',
+        });
+        throw error;
+      })
+      .finally(() => {
+        if (draftTimer) clearTimeout(draftTimer);
+      });
   }
   private pmTrigger(run: Run, source: string, message?: Message, summary?: string) {
     const eventId = this.store.event('pm-trigger', source, {
@@ -464,7 +1230,7 @@ export class Engine {
     );
   }
   async tick() {
-    if (this.ticking || this.stopping) return;
+    if (this.ticking || this.stopping || !this.started) return;
     this.ticking = true;
     try {
       if (Date.now() - this.syncAt >= 30000) {
@@ -479,6 +1245,18 @@ export class Engine {
       }
       for (const task of this.store.list('task')) {
         if (task.control !== 'active' || task.blocked) continue;
+        if (
+          task.stage === 'done' &&
+          task.completionDeliveryPending === false &&
+          task.cleanup?.status !== 'completed'
+        ) {
+          const key = `cleanup:${task.id}`;
+          if (!this.mergeBusy.has(key)) {
+            this.mergeBusy.add(key);
+            void this.track(this.cleanupCompleted(task).finally(() => this.mergeBusy.delete(key)));
+          }
+          continue;
+        }
         if (
           task.pendingFeedback?.length &&
           !this.store.activeRuns().some((r) => r.taskId === task.id) &&
@@ -500,7 +1278,10 @@ export class Engine {
           this.mergeBusy.add(task.repoId);
           void this.track(
             this.finalize(task)
-              .catch((e) => this.block(task.id, this.pauseReason(e)))
+              .catch((e) => {
+                this.block(task.id, this.pauseReason(e));
+                void this.incidentForTask(task, e, 'finalize');
+              })
               .finally(() => this.mergeBusy.delete(task.repoId)),
           );
         }
@@ -514,14 +1295,135 @@ export class Engine {
   private block(taskId: string, reason: string) {
     const t = this.store.task(taskId);
     if (t.stage === 'cancelled' || t.stage === 'done') return;
-    this.store.updateTask(taskId, { blocked: redact(reason), control: 'paused' });
+    this.store.updateTask(taskId, {
+      blocked: redact(reason),
+      control: 'paused',
+      pausedByUser: false,
+      blockedDescriptor: diagnosticDescriptor('task_blocked', reason),
+    });
     this.store.event('blocked', reason, { projectId: t.projectId, taskId });
+  }
+  private async incidentForRun(run: Run, error: unknown, phase: string) {
+    if (run.role === 'pm') return;
+    const detail = redact(String(error));
+    const incident = this.store.createIncident({
+      projectId: run.projectId,
+      ...(run.taskId ? { taskId: run.taskId } : {}),
+      runId: run.id,
+      phase,
+      message: detail,
+      descriptor: diagnosticDescriptor(`incident_${phase}`, detail),
+      evidence: JSON.stringify({ runId: run.id, role: run.role, model: run.modelIdentity }),
+    });
+    if (incident.assessmentRunId) return incident;
+    let assessment: Run;
+    try {
+      assessment = this.store.run(
+        'pm',
+        run.projectId,
+        'pm',
+        run.taskId ? this.store.task(run.taskId) : undefined,
+        {
+          incidentId: incident.id,
+          incidentPhase: phase,
+          incidentEvidence: detail,
+          suppressSource: true,
+        },
+      );
+    } catch (assessmentError) {
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: `PM Run 无法启动：${redact(String(assessmentError))}`,
+      });
+      if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
+      return incident;
+    }
+    const claimed = this.store.claimIncidentAssessment(incident.id, assessment.id);
+    if (claimed.assessmentRunId !== assessment.id) return claimed;
+    const task = run.taskId ? this.store.get('task', run.taskId) : undefined;
+    void this.track(
+      this.pmQueue(run.projectId, () =>
+        this.pmTurn(
+          run.projectId,
+          `Unexpected ${run.role} Run failure. Assess Incident ${incident.id}. Preserve evidence and use resolve_incident with one bounded action.\n${detail}`,
+          undefined,
+          task,
+          '宿主事件：Incident 评估',
+          incident.id,
+          assessment,
+        ),
+      ),
+    )
+      .then(() => undefined)
+      .catch((assessmentError) => {
+        // PM assessment failure is terminal for this assessment and must not recursively create
+        // another Incident. Leave the incident actionable for the user.
+        this.store.updateIncident(incident.id, {
+          status: 'waiting_user',
+          message: `PM 评估失败：${redact(String(assessmentError))}`,
+        });
+        if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
+      });
+    return incident;
+  }
+  private async incidentForTask(task: Task, error: unknown, phase: string) {
+    const detail = redact(String(error));
+    const incident = this.store.createIncident({
+      projectId: task.projectId,
+      taskId: task.id,
+      phase,
+      message: detail,
+      descriptor: diagnosticDescriptor(`incident_${phase}`, detail),
+      evidence: JSON.stringify({ taskId: task.id, head: task.head, base: task.base }),
+    });
+    if (incident.assessmentRunId) return incident;
+    let assessment: Run;
+    try {
+      assessment = this.store.run('pm', task.projectId, 'pm', task, {
+        incidentId: incident.id,
+        incidentPhase: phase,
+        incidentEvidence: detail,
+        suppressSource: true,
+      });
+    } catch (assessmentError) {
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: `PM Run 无法启动：${redact(String(assessmentError))}`,
+      });
+      this.block(task.id, `Incident ${incident.id} 等待用户处理`);
+      return incident;
+    }
+    const claimed = this.store.claimIncidentAssessment(incident.id, assessment.id);
+    if (claimed.assessmentRunId !== assessment.id) return claimed;
+    void this.track(
+      this.pmQueue(task.projectId, () =>
+        this.pmTurn(
+          task.projectId,
+          `Host finalization failed. Assess Incident ${incident.id} and choose a bounded action.\n${detail}`,
+          undefined,
+          task,
+          phase === 'retries' ? '宿主事件：连续失败重评' : '宿主事件：完成阶段 Incident 评估',
+          incident.id,
+          assessment,
+        ),
+      ),
+    ).catch((assessmentError) => {
+      this.store.updateIncident(incident.id, {
+        status: 'waiting_user',
+        message: `PM 评估失败：${redact(String(assessmentError))}`,
+      });
+      this.block(task.id, `Incident ${incident.id} 等待用户处理`);
+    });
+    return incident;
   }
   private async evaluateFeedback(task: Task) {
     const feedback = [...(task.pendingFeedback ?? [])];
     const verdict = await this.pmQueue(task.projectId, async () => {
-      const run = this.store.run('pm', task.projectId, 'pm', task);
-      this.pmTrigger(run, '宿主事件：评估外部反馈', undefined, feedback.join('\n'));
+      const source = this.store.get('message', task.sourceMessageId);
+      const run = this.store.run('pm', task.projectId, 'pm', task, {
+        ...(source ? { sourceMessageId: source.id } : {}),
+      });
+      this.pmTrigger(run, '宿主事件：评估外部反馈', source, feedback.join('\n'));
       return this.withAgent(run, async (c, signal) => {
         const profile = run.profileConfig!;
         const thread = await c.thread({
@@ -553,6 +1455,26 @@ export class Engine {
     if (verdict.action === 'rework')
       this.rework(this.store.task(task.id), `PM 判定的范围内返工：${verdict.reason}`);
     else if (verdict.action === 'clarify') {
+      const source = this.store.get('message', task.sourceMessageId);
+      if (source?.intent) {
+        try {
+          this.store.createClarification({
+            projectId: task.projectId,
+            taskId: task.id,
+            sourceMessageId: source.id,
+            sourceIntent: source.intent,
+            questions: [
+              {
+                id: 'feedback',
+                question: `外部反馈可能改变产品要求：${verdict.reason}`,
+                recommendation: '请明确是否接受该产品变化，再继续此 Task。',
+              },
+            ],
+          });
+        } catch (error) {
+          this.block(task.id, this.pauseReason(error));
+        }
+      }
       this.block(task.id, `需要产品澄清：${verdict.reason}`);
       this.store.addMessage(
         task.projectId,
@@ -576,15 +1498,16 @@ export class Engine {
       mergeApproval: undefined,
       feedback: [...task.feedback, redact(reason)],
       control: retries >= 3 ? 'paused' : 'active',
+      pausedByUser: false,
       blocked: retries >= 3 ? '连续三轮未完成，PM 正在重评' : undefined,
+      blockedDescriptor:
+        retries >= 3
+          ? diagnosticDescriptor('retries_exhausted', '连续三轮未完成，PM 正在重评')
+          : undefined,
     });
     if (retries >= 3)
-      void this.technical(
-        this.store.task(task.id),
-        `Repeated failure. Diagnose and use resolve_task only if you have a concrete new approach. ${reason}`,
-        '宿主事件：连续失败重评',
-      ).catch((e) =>
-        this.store.event('pm', String(e), { projectId: task.projectId, taskId: task.id }),
+      void this.incidentForTask(this.store.task(task.id), reason, 'retries').catch((error) =>
+        this.store.event('incident', String(error), { projectId: task.projectId, taskId: task.id }),
       );
   }
   private async develop(run: Run) {
@@ -662,6 +1585,7 @@ export class Engine {
       const { head, changed } = finalized;
       base = this.store.task(task.id).base!;
       this.store.updateTask(task.id, { head, base });
+      this.store.pinRunRevision(run.id, { head, base });
       if (!changed) {
         if (repaired || recoveringMerge)
           throw new Fault('合并协调已完成，但相对目标基线没有可交付差异，已暂停等待 PM 核对');
@@ -703,7 +1627,11 @@ export class Engine {
       this.store.updateTask(task.id, { stage: 'reviewing', reviews: [] });
       this.store.finishRun(run.id, 'completed');
     } catch (e) {
-      this.store.finishRun(run.id, signal.aborted ? 'paused' : 'failed', String(e));
+      this.store.finishRun(run.id, signal.aborted ? 'paused' : 'failed', String(e), {
+        descriptor: diagnosticDescriptor('dev_failed', String(e)),
+      });
+      const expectedRecoveryBlock = /外部操作结果不明|核对结论与当前任务版本不一致/.test(String(e));
+      if (!signal.aborted && !expectedRecoveryBlock) await this.incidentForRun(run, e, 'dev');
       throw e;
     } finally {
       if (this.store.get('run', run.id)?.status === 'running')
@@ -723,7 +1651,7 @@ export class Engine {
   }
   private async editTask(run: Run, task: Task, abort: AbortController, conflict?: string) {
     const repo = this.store.repo(task.repoId);
-    const profile = run.profileConfig!;
+    const profile = this.agentProfile(run);
     await this.withAgent(
       run,
       async (c, signal) => {
@@ -740,12 +1668,13 @@ export class Engine {
               inputSchema: jsonSchema(z.object({ question: z.string().min(1) }).strict()),
             },
           ],
-          toolHandler: async (name, args) => {
+          toolHandler: async (name: string, args: unknown) => {
             if (name !== 'ask_pm') throw new Fault('Dev 没有此操作权限', 403);
             const { question } = z.object({ question: z.string() }).parse(args);
             return { answer: await this.technical(task, question) };
           },
-        });
+          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.dev } as any) : {}),
+        } as any);
         this.saveThread(run, thread);
         const reply = await c.turn(
           thread,
@@ -779,64 +1708,234 @@ export class Engine {
   private scheduleReview(task: Task) {
     const current = this.store.activeRuns();
     if (current.some((r) => r.taskId === task.id && r.role !== 'review')) return;
-    const axes = ['standards', 'spec'] as const;
     const matching = task.reviews.filter((r) => r.head === task.head && r.base === task.base);
-    if (
-      axes.every((a) => matching.some((r) => r.axis === a)) &&
-      !current.some((r) => r.taskId === task.id)
-    ) {
-      if (mergeReady(task)) this.store.updateTask(task.id, { stage: 'merging' });
-      else
-        this.rework(
-          task,
-          matching
-            .filter((x) => !x.approved || x.findings.length)
-            .map((x) => `${x.axis}: ${x.summary}\n${x.findings.join('\n')}`)
-            .join('\n'),
-        );
+    const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
+    const legacyAxes = ['standards', 'spec'] as const;
+    if (!policy2) {
+      if (legacyAxes.every((axis) => matching.some((review) => review.axis === axis))) {
+        if (mergeReady(task)) this.store.updateTask(task.id, { stage: 'merging' });
+        else
+          this.rework(
+            task,
+            matching
+              .filter((review) => !review.approved || review.findings.length)
+              .map((review) => `${review.axis}: ${review.summary}\n${review.findings.join('\n')}`)
+              .join('\n'),
+          );
+        return;
+      }
+      const axis = legacyAxes.find(
+        (candidate) => !matching.some((review) => review.axis === candidate),
+      );
+      if (axis) this.launchReview(task, axis, false);
       return;
     }
-    for (const axis of axes) {
-      const marker = `review:${task.id}:${axis}`;
-      if (matching.some((r) => r.axis === axis) || this.mergeBusy.has(marker)) continue;
-      if (
-        this.store.activeRuns().filter((r) => r.role === 'review').length >=
-        this.store.settings().reviewLimit
-      )
-        break;
-      this.mergeBusy.add(marker);
-      const run = this.store.run('review', task.projectId, 'review', task);
-      void this.track(
-        this.review(run, task, axis)
-          .catch((e) => this.block(task.id, this.pauseReason(e)))
-          .finally(() => this.mergeBusy.delete(marker)),
-      );
+    const primary = matching.find((review) => review.axis === 'primary');
+    if (!primary) {
+      this.launchReview(task, 'primary', false);
+      return;
     }
+    const secondaryRequired =
+      task.secondaryReviewRequired === true ||
+      task.complexity === 'complex' ||
+      task.retries > 0 ||
+      primary.verdict === 'escalate';
+    if (secondaryRequired && !task.secondaryReviewRequired)
+      this.store.updateTask(task.id, { secondaryReviewRequired: true });
+    const secondary = matching.find((review) => review.axis === 'secondary');
+    if (secondaryRequired && !secondary) {
+      this.launchReview(task, 'secondary', true);
+      return;
+    }
+    if (mergeReady(this.store.task(task.id))) this.store.updateTask(task.id, { stage: 'merging' });
+    else {
+      const failures = matching.filter((review) => !review.approved || review.findings.length);
+      if (failures.length)
+        this.rework(
+          task,
+          failures
+            .map((review) => `${review.axis}: ${review.summary}\n${review.findings.join('\n')}`)
+            .join('\n'),
+        );
+    }
+  }
+  private launchReview(task: Task, axis: ReviewResult['axis'], secondary: boolean) {
+    const marker = `review:${task.id}:${axis}`;
+    if (this.mergeBusy.has(marker)) return;
+    if (
+      this.store.activeRuns().filter((run) => run.role === 'review').length >=
+      this.store.settings().reviewLimit
+    )
+      return;
+    if (secondary) {
+      const selected = this.store.resolveEffectiveProfile(task.projectId, 'review', {
+        secondaryReview: true,
+      });
+      const revisionKey = `${task.head ?? ''}:${task.base ?? ''}`;
+      const previousModels = this.store
+        .list('run')
+        .filter(
+          (run) =>
+            run.taskId === task.id &&
+            `${run.revision?.head ?? ''}:${run.revision?.base ?? ''}` === revisionKey &&
+            run.model &&
+            ((run.role === 'dev' && !run.secondaryReview) ||
+              (run.role === 'review' && !run.secondaryReview)),
+        )
+        // Provider aliases and effort changes do not make a distinct actual model.
+        .map((run) => run.model!.model);
+      const secondaryModel = selected.profile.model;
+      if (previousModels.includes(secondaryModel)) {
+        this.block(task.id, 'Secondary Review 必须使用与 Dev 和 Primary 不同的实际模型');
+        return;
+      }
+    }
+    this.mergeBusy.add(marker);
+    let run: Run;
+    try {
+      run = this.store.run('review', task.projectId, 'review', task, {
+        ...(secondary ? { secondaryReview: true } : {}),
+        reviewAxis: axis,
+        revision: { head: task.head, base: task.base },
+      });
+    } catch (error) {
+      this.block(task.id, this.pauseReason(error));
+      void this.incidentForTask(task, error, `review:${axis}`);
+      this.mergeBusy.delete(marker);
+      return;
+    }
+    void this.track(
+      this.review(run, task, axis)
+        .catch((error) => {
+          this.block(task.id, this.pauseReason(error));
+          void this.incidentForRun(run, error, `review:${axis}`);
+        })
+        .finally(() => this.mergeBusy.delete(marker)),
+    );
   }
   private async review(run: Run, task: Task, axis: ReviewResult['axis']) {
     await this.withAgent(run, async (c, signal) => {
       const repo = this.store.repo(task.repoId);
       const path = await this.workspaces.view(repo, `review-${task.id}-${axis}`, task.head!);
-      const profile = run.profileConfig!;
+      const evidence = this.store.task(task.id).tests;
+      if (
+        !task.head ||
+        !task.base ||
+        !evidence.length ||
+        evidence.some((test) => test.exitCode !== 0 || test.head !== task.head)
+      )
+        throw new Fault('Review 需要当前 head/base 的完整通过测试证据', 409, {
+          code: 'review_evidence_invalid',
+          params: { taskId: task.id },
+        });
+      const profile = this.agentProfile(run);
+      let submitted: z.infer<typeof reviewSchema> | undefined;
       const thread = await c.thread({
         cwd: path,
         profile,
         instructions: await instructions('review'),
         writable: false,
-      });
+        tools: [
+          {
+            name: 'submit_review',
+            description:
+              'Submit one structured verdict. The host supplies identity and binds the verdict to the current head/base/tests.',
+            inputSchema: jsonSchema(submitReviewInput),
+          },
+        ],
+        toolHandler: async (name: string, args: unknown) => {
+          if (name !== 'submit_review') throw new Fault('Review 没有此操作权限', 403);
+          const input = submitReviewCallInput.parse(args);
+          const current = this.store.task(task.id);
+          if (
+            (input.head && input.head !== current.head) ||
+            (input.base && input.base !== current.base) ||
+            (input.tests && JSON.stringify(input.tests) !== JSON.stringify(current.tests)) ||
+            !current.head ||
+            !current.base ||
+            !current.tests.length ||
+            current.tests.some((test) => test.exitCode !== 0 || test.head !== current.head)
+          )
+            throw new Fault('Review 提交缺少当前 revision 的完整测试证据', 409, {
+              code: 'review_evidence_invalid',
+              params: { taskId: task.id },
+            });
+          // The model supplies only the verdict. Revision, tests and identity are host-owned
+          // evidence and are attached from the current pinned Task/Run below.
+          submitted = {
+            ...input,
+            head: current.head,
+            base: current.base,
+            tests: structuredClone(current.tests),
+          };
+          return {
+            accepted: true,
+            head: current.head,
+            base: current.base,
+            tests: current.tests,
+            modelIdentity: run.modelIdentity,
+          };
+        },
+        ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
+      } as any);
       this.saveThread(run, thread);
-      const prompt = `Axis: ${axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
-      const result = await this.structuredTurn(
-        c,
-        thread,
-        prompt,
-        profile,
-        signal,
-        reviewSchema,
-        '评审回合',
-        this.onTurn(run),
-      );
-      const review: ReviewResult = { ...result, axis, head: task.head!, base: task.base! };
+      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
+      let result: z.infer<typeof reviewSchema> | undefined = submitted;
+      if (!result)
+        result = await this.structuredTurn(
+          c,
+          thread,
+          prompt,
+          profile,
+          signal,
+          reviewSchema,
+          '评审回合',
+          this.onTurn(run),
+          () => submitted as z.infer<typeof reviewSchema> | undefined,
+        );
+      if (!result) throw new Fault('Review 未返回 verdict', 409);
+      const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
+      if (policy2) {
+        if (!result.verdict)
+          throw new Fault('Policy 2 Review 必须返回明确 verdict', 409, {
+            code: 'review_verdict_missing',
+            params: { taskId: task.id, axis },
+          });
+        const latestEvidence = this.store.task(task.id).tests;
+        if (
+          result.head !== task.head ||
+          result.base !== task.base ||
+          !result.tests ||
+          JSON.stringify(result.tests) !== JSON.stringify(latestEvidence)
+        )
+          throw new Fault('Review 必须提交当前 head/base/tests 的完整证据', 409, {
+            code: 'review_evidence_invalid',
+            params: { taskId: task.id, axis },
+          });
+      }
+      if (policy2) result = normalizeReviewVerdict(axis, result);
+      const latestEvidence = this.store.task(task.id).tests;
+      const identity = run.modelIdentity ?? {
+        agentKind: run.agentKind,
+        providerId: run.profileConfig?.providerId,
+        model: run.profileConfig?.model ?? 'unknown',
+        effort: run.profileConfig?.effort,
+        agentVersion: run.agentVersion,
+      };
+      const review: ReviewResult = {
+        approved: result.approved,
+        summary: result.summary,
+        findings: result.findings,
+        ...(result.verdict ? { verdict: result.verdict } : {}),
+        axis,
+        head: task.head!,
+        base: task.base!,
+        tests: structuredClone(latestEvidence),
+        model: structuredClone(identity),
+        modelIdentity: structuredClone(identity),
+        agentKind: run.agentKind,
+        agentVersion: run.agentVersion,
+      };
       const current = this.store.task(task.id);
       if (
         current.head !== task.head ||
@@ -857,14 +1956,20 @@ export class Engine {
         return;
       this.store.updateTask(task.id, {
         reviews: [...latest.reviews.filter((r) => r.axis !== axis), review],
+        ...(axis === 'primary' && review.verdict === 'escalate'
+          ? { secondaryReviewRequired: true }
+          : {}),
       });
+    }).catch(async (error) => {
+      await this.incidentForRun(run, error, `review:${axis}`);
+      throw error;
     });
   }
   private async finalize(task: Task) {
     await this.collectFeedback(task);
     task = this.store.task(task.id);
     if (task.pendingFeedback?.length) return;
-    if (!mergeReady(task)) throw new Fault('缺少当前版本的测试或双轴评审证据');
+    if (!mergeReady(task)) throw new Fault('缺少当前版本的测试或 Policy 2 评审证据');
     const pr = await this.github.pull(task);
     if (pr.merged) {
       await this.completed(task);
@@ -879,38 +1984,10 @@ export class Engine {
       this.store.event('checks', checks.reason!, { taskId: task.id, projectId: task.projectId });
       return;
     }
-    const decision = await this.pmQueue(task.projectId, async () => {
-      const run = this.store.run('pm', task.projectId, 'pm', task);
-      this.pmTrigger(run, '宿主事件：Review 后验收');
-      return this.withAgent(run, async (c, signal) => {
-        const profile = run.profileConfig!;
-        const cwd = task.worktree!;
-        const thread = await c.thread({
-          cwd,
-          profile,
-          threadId: run.resumeThreadId,
-          instructions: `${await instructions('pm')}\nThis turn only judges acceptance for merge. Return the requested JSON; no tool mutations.`,
-          writable: false,
-        });
-        this.saveThread(run, thread);
-        const prompt = `${this.pmContext(task.projectId)}\n${taskPrompt(task)}\nEvidence: ${JSON.stringify({ tests: task.tests, reviews: task.reviews, head: task.head, base: task.base })}\nInspect relevant files if needed. Does this exact revision satisfy the task?`;
-        return this.structuredTurn(
-          c,
-          thread,
-          prompt,
-          profile,
-          signal,
-          mergeSchema,
-          '合并验收回合',
-          this.onTurn(run),
-        );
-      });
-    });
+    // Policy 2 makes merge authorization deterministic and host-owned. Review verdicts, current
+    // revision and tests are already persisted; a PM model call here would add an unbounded,
+    // non-authoritative approval channel.
     if (this.store.task(task.id).control !== 'active') return;
-    if (!decision.approved) {
-      this.rework(task, `PM 验收：${decision.reason}`);
-      return;
-    }
     await this.collectFeedback(task);
     const accepted = this.store.task(task.id);
     if (
@@ -961,6 +2038,28 @@ export class Engine {
       completionDeliveryPending: true,
     });
     await this.deliverCompletion(this.store.task(task.id));
+    await this.cleanupCompleted(this.store.task(task.id));
+  }
+  private async cleanupCompleted(task: Task) {
+    const current = this.store.task(task.id);
+    if (current.stage !== 'done' || current.completionDeliveryPending !== false) return;
+    try {
+      const outcome = await this.workspaces.cleanup(current);
+      this.store.updateTask(current.id, {
+        cleanup: {
+          requested: true,
+          status: outcome.status === 'completed' ? 'completed' : 'failed',
+          summary:
+            outcome.reason ?? (outcome.status === 'completed' ? '任务工作区已清理' : undefined),
+          paths: outcome.path ? [outcome.path] : undefined,
+        },
+      });
+    } catch (error) {
+      this.store.updateTask(current.id, {
+        cleanup: { requested: true, status: 'failed', summary: redact(String(error)) },
+      });
+      void this.incidentForTask(current, error, 'cleanup');
+    }
   }
   private async deliverCompletion(task: Task) {
     await this.github.syncStatus(task);
@@ -1125,6 +2224,18 @@ export class Engine {
   async resume(taskId: string, guidance?: { guidance: string; upgrade: boolean }) {
     let t = this.store.task(taskId);
     if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束');
+    const gate = this.store.clarificationGate(t.sourceMessageId);
+    if (gate)
+      throw new Fault(
+        gate.status === 'cancelled'
+          ? '原始需求的产品澄清已取消，不能绕过它恢复 Task'
+          : '原始需求仍等待产品澄清，不能绕过它恢复 Task',
+        409,
+        {
+          code: gate.status === 'cancelled' ? 'clarification_cancelled' : 'clarification_open',
+          params: { clarificationId: gate.id, sourceMessageId: t.sourceMessageId },
+        },
+      );
     if (
       this.store
         .list('run')
@@ -1196,11 +2307,37 @@ export class Engine {
             if (feedback !== missing || legacyFailures >= t.retries) break;
             legacyFailures++;
           }
+        const shouldHostFinalize = t.devPhase === 'finalize' || legacyWork;
         this.store.updateTask(taskId, {
           base,
-          devPhase: t.devPhase === 'finalize' || legacyWork ? 'finalize' : 'implement',
+          devPhase: shouldHostFinalize ? 'finalize' : 'implement',
           retries: Math.max(0, t.retries - legacyFailures),
         });
+        if (shouldHostFinalize && (dirty || committed)) {
+          // A legacy finalize checkpoint may still be sitting inside an unfinished merge. Reconcile
+          // that merge before finalization so the normal Dev conflict path can edit the actual files;
+          // calling finalize directly would reject the conflict markers before a Dev turn exists.
+          const coordination = await this.workspaces.prepareBase(
+            this.store.task(taskId),
+            undefined,
+            false,
+          );
+          if (coordination.status === 'blocked')
+            throw new Fault(`基线协调阻塞：${coordination.reason}`, coordination.code);
+          if (
+            coordination.status === 'conflicted' &&
+            !coordination.merge.runId &&
+            coordination.merge.conflictPaths.length
+          ) {
+            this.store.updateTask(taskId, { devPhase: 'implement' });
+          } else {
+            await this.workspaces.finalize(this.store.task(taskId));
+            t = this.store.task(taskId);
+            const operation = this.github.unresolvedTaskPR(t);
+            if (operation?.reconciliation)
+              await this.github.authorizeTaskPRRetry(t, guidance ? 'pm' : 'user');
+          }
+        }
         if (legacyFailures)
           this.store.event(
             'task-finalization',

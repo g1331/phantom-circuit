@@ -12,6 +12,7 @@ import { GitHub } from '../src/server/github.ts';
 test('first upstream request failures retain configuration and identify the pinned Run', async () => {
   const store = new Store(':memory:');
   const project = store.createProject('Runtime failure', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   class FailingModel extends Codex {
     override async start() {}
     override async stop() {}
@@ -56,6 +57,7 @@ test('PM Provider switches start a fresh thread with durable context and keep ac
     apiKey: 'pm-fixture-key',
   });
   const project = store.createProject('Durable project', 'Retain product decisions');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const threads: (string | undefined)[] = [];
   const starts: (string | undefined)[] = [];
   const prompts: string[] = [];

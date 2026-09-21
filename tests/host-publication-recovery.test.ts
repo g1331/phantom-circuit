@@ -34,6 +34,7 @@ async function fixture() {
   await git(['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'source',
@@ -60,6 +61,7 @@ async function fixture() {
     complexity: 'normal',
     priority: 0,
   });
+  store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   const ws = new Workspaces(join(root, 'workspaces'), store);
   task = await ws.prepare(task);
   await git(['config', 'user.name', 'Phantom Test'], task.worktree);
@@ -90,6 +92,7 @@ async function fixture() {
   }
   const github = new Remote(store);
   const engine = new Engine(store, github, ws, root, () => new Agent());
+  await engine.start();
   async function cycle() {
     await engine.tick();
     for (let n = 0; n < 500 && store.activeRuns().length; n++)
@@ -231,7 +234,11 @@ test('host recovery authorizes one controlled publication and completes without 
       'the worktree is preserved',
     );
     assert.equal(await f.ws.git(f.task().worktree!, ['status', '--porcelain']), '');
-    assert.equal(await f.ws.git(f.source, ['status', '--porcelain']), '', 'origin checkout untouched');
+    assert.equal(
+      await f.ws.git(f.source, ['status', '--porcelain']),
+      '',
+      'origin checkout untouched',
+    );
 
     // A further tick adopts the completed operation instead of publishing again.
     await f.cycle();

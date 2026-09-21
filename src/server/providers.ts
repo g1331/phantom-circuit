@@ -2,12 +2,25 @@ import { mkdir, chmod, readFile, writeFile, rename, unlink } from 'node:fs/promi
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Store, Fault } from './store.ts';
+import { Store, Fault, now, redact } from './store.ts';
 import { command } from './process.ts';
-import { officialProvider, type Provider, type ModelDiscovery } from '../shared/types.ts';
+import {
+  officialProvider,
+  type AccountAllowance,
+  type AgentKind,
+  type PriceCard,
+  type Provider,
+  type ModelDiscovery,
+} from '../shared/types.ts';
 import { Codex } from './codex.ts';
 import { settingsSchema } from './schemas.ts';
 import type { Settings } from '../shared/types.ts';
+import type {
+  AgentAllowance,
+  AgentBackend,
+  AgentModelCapability,
+  AgentProbeResult,
+} from './agent-backend.ts';
 
 const fields = {
   name: z.string().trim().min(1).max(100),
@@ -19,6 +32,68 @@ const fields = {
 };
 const createSchema = z.object(fields).strict();
 const editSchema = createSchema.partial();
+
+const decimal = z.union([z.string(), z.number()]).refine((value) => {
+  const text = typeof value === 'number' ? String(value) : value.trim();
+  return text.length <= 256 && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(text);
+}, '价格必须是非负十进制数');
+const priceCardSchema = z
+  .object({
+    currency: z
+      .string()
+      .trim()
+      .regex(/^[A-Z]{3}$/, '货币必须是三位大写代码'),
+    inputPerMillion: decimal.optional(),
+    outputPerMillion: decimal.optional(),
+    cachedInputPerMillion: decimal.optional(),
+    cacheWritePerMillion: decimal.optional(),
+    reasoningOutputPerMillion: decimal.optional(),
+    inputPerToken: decimal.optional(),
+    outputPerToken: decimal.optional(),
+    cachedInputPerToken: decimal.optional(),
+    cacheWritePerToken: decimal.optional(),
+    reasoningOutputPerToken: decimal.optional(),
+    version: z.string().max(256).optional(),
+    source: z.string().max(1000).optional(),
+  })
+  .strict();
+const pricesSchema = z
+  .object({
+    prices: z.record(z.string().trim().min(1).max(256), priceCardSchema),
+  })
+  .strict();
+
+export type ProviderPrices = Record<string, PriceCard>;
+
+export interface AgentRuntimeFactories {
+  codex: () => AgentBackend;
+  omp: () => AgentBackend;
+}
+
+export interface PublicAgentModel {
+  id: string;
+  provider?: string;
+  displayName?: string;
+  reasoning?: boolean;
+  reasoningEfforts: string[];
+  contextWindow?: number | null;
+}
+
+export interface AgentProbeResponse {
+  backend: string;
+  protocol?: string;
+  protocolVersion?: number;
+  version?: string;
+  models: PublicAgentModel[];
+  capabilities: AgentProbeResult['capabilities'];
+  allowance?: AgentAllowance;
+}
+
+type NormalizedAllowance = AccountAllowance & {
+  status: AccountAllowance['state'] | 'unknown';
+  stale?: boolean;
+  error?: string;
+};
 
 function baseUrl(value: string) {
   let url: URL;
@@ -126,6 +201,10 @@ export class Providers {
           baseUrl: provider.baseUrl!,
           apiKey: await this.reveal(id),
         };
+  }
+  modelPrice(id: string, model: string): PriceCard | undefined {
+    const provider = this.get(id) as Provider & { prices?: ProviderPrices };
+    return structuredClone(provider.prices?.[model] ?? provider.price);
   }
   saveAssignments(input: unknown, projectId?: string) {
     return this.serial(async () => {
@@ -298,11 +377,32 @@ export class Providers {
         name,
         baseUrl: url,
         hasKey: true,
+        ...((old as (Provider & { prices?: ProviderPrices }) | undefined)?.prices
+          ? {
+              prices: structuredClone(
+                (old as Provider & { prices?: ProviderPrices }).prices,
+              ) as ProviderPrices,
+            }
+          : {}),
       };
       if (data.apiKey) await this.write(provider.id, data.apiKey);
       this.store.put('provider', provider.id, provider);
       this.store.changes.emit('change');
       return provider;
+    });
+  }
+  savePrices(id: string, input: unknown): Promise<Provider> {
+    return this.serial(async () => {
+      const provider = this.custom(id);
+      const parsed = pricesSchema.safeParse(input);
+      if (!parsed.success) throw new Fault('Provider 模型价格无效');
+      const next = {
+        ...provider,
+        prices: structuredClone(parsed.data.prices) as ProviderPrices,
+      };
+      this.store.put('provider', id, next);
+      this.store.changes.emit('change');
+      return next;
     });
   }
   remove(id: string) {
@@ -318,5 +418,163 @@ export class Providers {
       this.store.deleteProvider(id);
       return { ok: true };
     });
+  }
+}
+
+function publicModel(model: AgentModelCapability): PublicAgentModel {
+  const id = model.id || model.model;
+  return {
+    id,
+    ...(model.provider ? { provider: model.provider } : {}),
+    ...(model.displayName ? { displayName: model.displayName } : {}),
+    ...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+    reasoningEfforts: [...new Set(model.reasoningEfforts)],
+    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+  };
+}
+
+function safeAgentAllowance(value: AgentAllowance): AgentAllowance {
+  return {
+    status: value.status,
+    ...(value.account
+      ? {
+          account: {
+            type: value.account.type,
+            ...(value.account.planType ? { planType: value.account.planType } : {}),
+          },
+        }
+      : {}),
+    ...(value.rateLimits ? { rateLimits: structuredClone(value.rateLimits) } : {}),
+    ...(value.usage ? { usage: structuredClone(value.usage) } : {}),
+    ...(value.error ? { error: redact(value.error) } : {}),
+    ...(value.code ? { code: value.code } : {}),
+  };
+}
+
+function normalizedAllowance(
+  agentKind: AgentKind,
+  providerId: string,
+  value: AgentAllowance,
+): NormalizedAllowance {
+  const safe = safeAgentAllowance(value);
+  const exhausted = safe.status === 'available' && safe.rateLimits?.ordinaryUsageAllowed === false;
+  const state: AccountAllowance['state'] =
+    safe.status !== 'available' ? 'unavailable' : exhausted ? 'exhausted' : 'available';
+  const resetAt = safe.rateLimits?.primary?.resetsAt ?? safe.rateLimits?.secondary?.resetsAt;
+  return {
+    providerId,
+    agentKind,
+    state,
+    status: state,
+    capturedAt: now(),
+    ...(resetAt ? { resetAt } : {}),
+    ...(safe.status !== 'available' && safe.error ? { error: safe.error } : {}),
+  };
+}
+
+/** HTTP-facing adapter coordinator. It owns lifecycle, redaction and allowance throttling. */
+export class AgentRuntime {
+  private readonly allowanceRuns = new Map<string, Promise<unknown>>();
+  private readonly allowanceAt = new Map<string, number>();
+  private readonly allowanceCache = new Map<string, NormalizedAllowance>();
+  private readonly throttleMs: number;
+
+  constructor(
+    private readonly store: Store,
+    private readonly providers: Providers,
+    private readonly factories: AgentRuntimeFactories,
+    options: { allowanceThrottleMs?: number } = {},
+  ) {
+    this.throttleMs = options.allowanceThrottleMs ?? 10_000;
+  }
+
+  private make(agent: AgentKind): AgentBackend {
+    return agent === 'codex' ? this.factories.codex() : this.factories.omp();
+  }
+
+  private async withBackend<T>(
+    agent: AgentKind,
+    providerId: string | undefined,
+    work: (backend: AgentBackend) => Promise<T>,
+  ): Promise<T> {
+    const backend = this.make(agent);
+    try {
+      const connection =
+        agent === 'codex' ? await this.providers.connection(providerId ?? 'codex') : undefined;
+      await backend.start(connection);
+      return await work(backend);
+    } finally {
+      await backend.stop().catch(() => {});
+    }
+  }
+
+  async models(agent: AgentKind, providerId?: string) {
+    const models = await this.withBackend(agent, providerId, (backend) =>
+      backend.modelCapabilities(),
+    );
+    return models.map(publicModel);
+  }
+
+  async probe(agent: AgentKind, providerId?: string): Promise<AgentProbeResponse> {
+    const result = await this.withBackend(agent, providerId, (backend) => backend.probe());
+    return {
+      backend: result.backend,
+      ...(result.protocol ? { protocol: result.protocol } : {}),
+      ...(result.protocolVersion !== undefined ? { protocolVersion: result.protocolVersion } : {}),
+      ...(result.version ? { version: result.version } : {}),
+      models: result.models.map(publicModel),
+      capabilities: result.capabilities,
+      ...(result.allowance ? { allowance: safeAgentAllowance(result.allowance) } : {}),
+    };
+  }
+
+  async allowance(
+    agent: AgentKind,
+    providerId = agent === 'codex' ? 'codex' : 'omp',
+    force = false,
+  ): Promise<NormalizedAllowance> {
+    const key = `${agent}:${providerId}`;
+    const previous = this.store.accountAllowance(agent, providerId) ?? this.allowanceCache.get(key);
+    const last = this.allowanceAt.get(key) ?? 0;
+    if (!force && previous && Date.now() - last < this.throttleMs)
+      return { ...structuredClone(previous), status: previous.state, stale: true };
+    const running = this.allowanceRuns.get(key);
+    if (running && !force) return (await running) as NormalizedAllowance;
+    const refresh = (async () => {
+      try {
+        const value = await this.withBackend(
+          agent,
+          agent === 'codex' ? providerId : undefined,
+          (backend) => backend.accountAllowance(),
+        );
+        const normalized = normalizedAllowance(agent, providerId, value);
+        this.store.saveAccountAllowance(normalized);
+        this.allowanceCache.set(key, normalized);
+        this.allowanceAt.set(key, Date.now());
+        return normalized;
+      } catch (error) {
+        this.allowanceAt.set(key, Date.now());
+        const message = redact(error instanceof Error ? error.message : String(error));
+        const stale = previous
+          ? { ...structuredClone(previous), status: previous.state, stale: true, error: message }
+          : {
+              agentKind: agent,
+              providerId,
+              state: 'unknown' as const,
+              status: 'unknown' as const,
+              capturedAt: now(),
+              stale: true,
+              error: message,
+            };
+        this.allowanceCache.set(key, stale);
+        return stale;
+      }
+    })();
+    this.allowanceRuns.set(key, refresh);
+    try {
+      return (await refresh) as NormalizedAllowance;
+    } finally {
+      if (this.allowanceRuns.get(key) === refresh) this.allowanceRuns.delete(key);
+    }
   }
 }

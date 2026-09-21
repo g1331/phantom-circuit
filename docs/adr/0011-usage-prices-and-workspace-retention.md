@@ -1,0 +1,3 @@
+# Separate resource evidence from billing and workspace retention
+
+Run usage, account allowance and monetary estimates remain distinct: missing upstream usage stays unknown, custom model prices are frozen per Run, and official account access is not assigned public API prices. After confirmed merge and external completion handoff, the host may remove only the exact clean, unreferenced managed Task worktree using Git, preserving branch and delivery evidence. Cleanup is maintenance with its own outcome; an ambiguous or failed removal cannot erase evidence, consume product retries or undo engineering completion.
