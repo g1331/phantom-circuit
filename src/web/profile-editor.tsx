@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ModelDiscovery, Profile, ProfileName, Provider, Settings } from '../shared/types.ts';
+import type {
+  ModelDiscovery,
+  Profile,
+  ProfileName,
+  Project,
+  Provider,
+  Settings,
+} from '../shared/types.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
+import { RolePicker } from './runtime-settings.tsx';
 
 const labels = {
   pm: 'ui.projectPm',
@@ -15,13 +23,18 @@ const labels = {
 export function ProfileEditor({
   profiles,
   providers,
+  modes,
+  required = true,
   change,
 }: {
   profiles: Settings['profiles'];
   providers: Provider[];
+  modes?: Project['profileModes'];
+  required?: boolean;
   change: (profiles: Settings['profiles']) => void;
 }) {
   const cache = useRef(new Map<string, Promise<ModelDiscovery>>());
+  const [selectedRole, setSelectedRole] = useState<ProfileName>('pm');
   const { t } = useLocale();
   const discover = useCallback((id: string, refresh = false) => {
     if (refresh || !cache.current.has(id))
@@ -37,16 +50,23 @@ export function ProfileEditor({
   }, []);
   return (
     <div className="assignment-editor">
-      {(Object.keys(labels) as ProfileName[]).map((role) => (
+      <RolePicker
+        selected={selectedRole}
+        select={setSelectedRole}
+        profiles={profiles}
+        modes={modes}
+      />
+      <div className="role-panel">
         <Assignment
-          key={role}
-          label={t(labels[role])}
-          profile={profiles[role]}
+          key={selectedRole}
+          label={t(labels[selectedRole])}
+          profile={profiles[selectedRole]}
           providers={providers}
+          required={required}
           discover={discover}
-          change={(profile) => change({ ...profiles, [role]: profile })}
+          change={(profile) => change({ ...profiles, [selectedRole]: profile })}
         />
-      ))}
+      </div>
     </div>
   );
 }
@@ -55,12 +75,14 @@ function Assignment({
   label,
   profile,
   providers,
+  required,
   change,
   discover,
 }: {
   label: string;
   profile: Profile;
   providers: Provider[];
+  required: boolean;
   change: (profile: Profile) => void;
   discover: (id: string, refresh?: boolean) => Promise<ModelDiscovery>;
 }) {
@@ -96,7 +118,7 @@ function Assignment({
           <select
             aria-label={`${label} Provider`}
             value={profile.providerId}
-            required
+            required={required}
             onChange={(e) => change({ providerId: e.target.value, model: '', effort: '' })}
           >
             {!provider && (
@@ -117,7 +139,7 @@ function Assignment({
           {profile.customModel && custom ? (
             <input
               aria-label={t('profile.customLabel', { profile: label })}
-              required
+              required={required}
               maxLength={256}
               value={profile.model}
               onChange={(e) => change({ ...profile, model: e.target.value })}
@@ -126,7 +148,7 @@ function Assignment({
             <select
               aria-label={t('settings.modelLabel', { profile: label })}
               value={profile.model}
-              required
+              required={required}
               disabled={loading}
               onChange={(e) => {
                 const selected = models.find((m) => m.id === e.target.value);
@@ -159,7 +181,7 @@ function Assignment({
             <select
               aria-label={t('settings.effortLabel', { profile: label })}
               value={profile.effort}
-              required
+              required={required}
               disabled={loading}
               onChange={(e) => change({ ...profile, effort: e.target.value })}
             >
@@ -177,7 +199,7 @@ function Assignment({
           ) : (
             <input
               aria-label={t('settings.effortLabel', { profile: label })}
-              required
+              required={required}
               value={profile.effort}
               onChange={(e) => change({ ...profile, effort: e.target.value })}
               placeholder={t('ui.forExampleLowMediumHigh')}

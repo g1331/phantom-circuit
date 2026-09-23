@@ -5,6 +5,11 @@ import { resolve } from 'node:path';
 import { createServer } from 'node:http';
 
 export async function checkProfiles(page: Page, store: Store, artifacts: string) {
+  async function openProjectSettings() {
+    await page.locator('.context-trigger').click();
+    await page.locator('#project-context').getByRole('button', { name: '项目模型设置' }).click();
+    await page.locator('#project-context').waitFor({ state: 'hidden' });
+  }
   const project = store.list('project')[0];
   // This suite verifies explicitly pinned Codex profiles; runtime-browser-check covers inheritance.
   store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
@@ -18,16 +23,26 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   });
   const original = project.profiles.pm.effort;
   await page.getByRole('button', { name: '运行设置', exact: true }).click();
+  const codexGroup = page.locator('details.settings-group').filter({
+    has: page.locator('summary').filter({ hasText: 'Codex 角色模型' }),
+  });
+  if (!(await codexGroup.evaluate((element: HTMLDetailsElement) => element.open)))
+    await codexGroup.locator('summary').click();
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(store.settings().profiles.pm.effort, 'low');
   assert.equal(store.project(project.id).profiles.pm.effort, original);
-  await page.getByRole('button', { name: '项目模型设置', exact: true }).click();
+  await openProjectSettings();
   await page
     .getByLabel('项目 PM模型', { exact: true })
     .locator('option[value="gpt-5.6-luna"]')
     .waitFor({ state: 'attached' });
+  const roles = page.getByRole('group', { name: '选择要配置的角色' });
+  assert.equal(await roles.getByRole('button').count(), 6);
+  await roles.getByRole('button').filter({ hasText: '前端' }).click();
+  await page.getByLabel('前端模型', { exact: true }).waitFor();
+  await roles.getByRole('button').filter({ hasText: '项目 PM' }).click();
   assert.equal(await page.getByLabel('项目 PM推理等级', { exact: true }).inputValue(), original);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 950 });
@@ -53,6 +68,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   try {
     // Exercise creation through the same authenticated browser interface as Provider management.
     await page.getByRole('button', { name: '运行设置', exact: true }).click();
+    await page.locator('.provider-group > summary').click();
     const region = page.getByRole('region', { name: 'Provider 管理' });
     await region.getByRole('button', { name: '新增 Provider' }).click();
     await region.getByLabel('Provider 名称', { exact: true }).fill('Profile browser upstream');
@@ -64,7 +80,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await region.getByText('API key：已保存').waitFor();
     const providerId = await region.getByLabel('选择 Provider').inputValue();
     await page.getByRole('button', { name: '关闭窗口' }).click();
-    await page.getByRole('button', { name: '项目模型设置', exact: true }).click();
+    await openProjectSettings();
     await page.getByLabel('项目 PM Provider', { exact: true }).selectOption(providerId);
     await page.getByLabel('项目 PM模型', { exact: true }).selectOption('listed-model');
     await page.getByLabel('项目 PM推理等级', { exact: true }).fill('low');

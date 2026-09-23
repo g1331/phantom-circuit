@@ -316,6 +316,7 @@ export async function checkRuntimeUI() {
     await incidents.getByRole('button', { name: 'Wait for user' }).click();
     await incidents.getByText('Waiting for user', { exact: true }).waitFor();
     await incidents.getByRole('button', { name: 'Mark resolved' }).click();
+    await page.locator('.context-trigger').click();
     const allowance = page.getByRole('region', { name: 'Account allowance' });
     await allowance.getByText(/12.345678901234/).waitFor();
     allowanceFails = true;
@@ -325,16 +326,23 @@ export async function checkRuntimeUI() {
       .getByText(/Last successful result/)
       .waitFor();
     assert.match(await allowance.innerText(), /12.345678901234/);
+    await page.keyboard.press('Escape');
+    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+    await page.locator('.context-trigger').click();
     await page
       .getByRole('alert')
       .getByText('服务暂时不可用，请稍后重试', { exact: false })
       .waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await page.locator('.sidebar .language-control select').selectOption('en');
     allowanceFails = false;
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('Software default agent').selectOption('codex');
+    await dialog.getByText('Effective agent: Codex', { exact: true }).waitFor();
+    await dialog.locator('summary').filter({ hasText: 'OMP role models' }).click();
     await dialog
       .getByLabel('Project PM OMP model', { exact: true })
       .selectOption(JSON.stringify(['fixture', 'omp-fixture']));
@@ -345,10 +353,17 @@ export async function checkRuntimeUI() {
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(snapshot.settings.defaultAgent, 'codex');
     assert.equal(snapshot.settings.ompProfiles?.pm.model, 'omp-fixture');
-    await page.getByRole('button', { name: 'Project model settings' }).click();
+    await page.locator('.context-trigger').click();
+    await page
+      .locator('#project-context')
+      .getByRole('button', { name: 'Project model settings' })
+      .click();
+    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await dialog.getByLabel('Project agent', { exact: true }).selectOption('omp');
+    await dialog.locator('.role-modes-group > summary').click();
     await dialog.getByLabel('Project PM assignment mode').selectOption('pinned');
     await dialog.getByLabel('Interruption recovery policy').selectOption('manual');
+    await dialog.locator('summary').filter({ hasText: 'Secondary review model' }).click();
     await dialog.getByLabel('Set OMP secondary review model').check();
     await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
@@ -362,6 +377,7 @@ export async function checkRuntimeUI() {
       'runtime edits cannot alter historical run evidence',
     );
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+    await dialog.locator('.provider-group > summary').click();
     await dialog.getByLabel('Select provider', { exact: true }).selectOption(provider.id);
     const prices = dialog.getByRole('region', { name: 'Custom model prices' });
     await prices.getByLabel('Priced model ID').fill('existing-token-rate');
@@ -433,12 +449,15 @@ export async function checkRuntimeUI() {
             .click();
         for (const width of [1366, 390]) {
           await page.setViewportSize({ width, height: width === 390 ? 500 : 768 });
+          await page.locator('.context-trigger').click();
           await page
+            .locator('#project-context')
             .getByRole('button', {
               name: locale === 'en' ? 'Project model settings' : '项目模型设置',
               exact: true,
             })
             .click();
+          await page.locator('#project-context').waitFor({ state: 'hidden' });
           await page.screenshot({
             path: resolve('test-results', `runtime-settings-${locale}-${width}-${theme}.png`),
           });

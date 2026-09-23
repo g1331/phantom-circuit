@@ -19,6 +19,7 @@ export async function checkProviders(page: Page, artifacts: string) {
       const replacement = `browser-fixture-replacement-${width}`;
       await page.setViewportSize({ width, height: 900 });
       await page.getByRole('button', { name: '运行设置' }).click();
+      await page.locator('.provider-group > summary').click();
       const region = page.getByRole('region', { name: 'Provider 管理' });
       await region.getByText('使用现有 Codex 官方登录，无需复制凭据。').waitFor();
       assert.equal(await region.getByRole('button', { name: '删除 Provider' }).count(), 0);
@@ -98,12 +99,14 @@ export async function checkProviders(page: Page, artifacts: string) {
       assert.ok(!persisted.includes(key) && !persisted.includes(replacement));
       await page.getByRole('button', { name: '关闭窗口' }).click();
       await page.getByRole('button', { name: '运行设置' }).click();
+      await page.locator('.provider-group > summary').click();
       await region.getByLabel('选择 Provider').selectOption(id);
       assert.equal(await region.getByLabel('已显示的 API key').count(), 0);
       await region.getByRole('button', { name: '显示密钥', exact: true }).click();
       await region.getByLabel('已显示的 API key').waitFor();
       await page.reload();
       await page.getByRole('button', { name: '运行设置' }).click();
+      await page.locator('.provider-group > summary').click();
       await region.getByLabel('选择 Provider').selectOption(id);
       assert.equal(await region.getByLabel('已显示的 API key').count(), 0);
       await region.scrollIntoViewIfNeeded();

@@ -2442,3 +2442,339 @@ time {
     margin: 0 18px 14px;
   }
 }
+
+/* The project conversation owns the workspace; operational context opens on demand. */
+.project-header {
+  min-height: 72px;
+  padding: 13px 32px;
+  flex-wrap: nowrap;
+}
+.project-header h1 {
+  font-size: 21px;
+  line-height: 1.3;
+}
+.project-header > div {
+  flex: 1 1 auto;
+}
+.context-trigger {
+  flex-shrink: 0;
+}
+.workspace-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.tabs {
+  padding-left: max(24px, calc((100% - 960px) / 2));
+}
+.tabs > button {
+  font-size: 13px;
+}
+.conversation {
+  padding: 24px max(24px, calc((100% - 960px) / 2));
+}
+.message-content {
+  font-size: 14px;
+  line-height: 1.75;
+}
+.composer {
+  width: min(960px, calc(100% - 48px));
+  margin: 0 auto 18px;
+}
+.composer textarea {
+  height: 68px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.context-panel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  box-sizing: border-box;
+  width: min(430px, 100vw);
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 24px;
+  overflow: auto;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: -20px 0 60px #0004;
+}
+.context-panel::backdrop {
+  background: #050a08aa;
+}
+.context-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.context-heading h2 {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.context-heading p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.context-actions .secondary-button {
+  font-size: 11px;
+}
+.context-panel > .quiet-link {
+  margin-bottom: 18px;
+}
+.context-panel .metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: none;
+  padding: 10px 0 23px;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+}
+.context-panel .metric-value {
+  font-size: 23px;
+}
+.context-panel .domain-documents {
+  max-height: none;
+  overflow: visible;
+  margin-top: 22px;
+}
+@media (max-width: 660px) {
+  .shell {
+    height: 100dvh;
+    min-height: 0;
+  }
+  .main {
+    height: 100dvh;
+    min-height: 0;
+  }
+  .project-header {
+    min-height: 62px;
+    padding: 10px 16px;
+  }
+  .project-header > div {
+    flex-basis: auto;
+  }
+  .project-header h1 {
+    font-size: 18px;
+  }
+  .context-trigger {
+    padding: 8px;
+    font-size: 10px;
+  }
+  .workspace-grid {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .primary-workspace {
+    flex: 1;
+    min-height: 0;
+  }
+  .chat-workspace {
+    min-height: 0;
+  }
+  .conversation,
+  .task-workspace,
+  .run-workspace {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  .tabs {
+    padding-left: 16px;
+  }
+  .conversation {
+    padding: 18px 16px;
+  }
+  .message-content {
+    font-size: 13px;
+  }
+  .composer {
+    width: calc(100% - 20px);
+    margin: 0 auto 10px;
+  }
+  .composer textarea {
+    height: 62px;
+  }
+  .image-drafts {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 8px 12px;
+    scrollbar-width: thin;
+  }
+  .image-draft {
+    flex: 0 0 190px;
+    width: 190px;
+    padding: 6px;
+    border-radius: 6px;
+    background: var(--raised);
+  }
+  .image-draft img {
+    width: 40px;
+    height: 40px;
+  }
+  .context-panel {
+    width: min(430px, 100vw);
+    padding: 20px;
+  }
+}
+
+.project-header {
+  padding-inline: max(24px, calc((100% - 960px) / 2));
+}
+.modal header {
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.modal-heading {
+  flex: 1;
+  min-width: 0;
+}
+.modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.modal-toolbar .language-control {
+  margin: 0;
+}
+.modal-toolbar .language-control span {
+  display: none;
+}
+.modal-toolbar .language-control select {
+  width: 114px;
+  padding: 7px 8px;
+}
+.runtime-primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.runtime-settings {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.runtime-primary label {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.runtime-primary select {
+  width: 100%;
+}
+.runtime-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 16px;
+}
+.runtime-summary p {
+  margin: 0;
+}
+.runtime-summary .muted {
+  grid-column: 1;
+  grid-row: 2;
+}
+.runtime-summary button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: auto;
+}
+.settings-group {
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+  min-width: 0;
+}
+.settings-group > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-group[open] > summary {
+  margin-bottom: 16px;
+}
+.role-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.role-picker button {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+.role-picker button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--text);
+}
+.role-picker strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.role-picker span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.role-picker small {
+  font-size: 10px;
+  color: var(--muted);
+}
+.role-panel .assignment {
+  margin-top: 14px;
+}
+@media (max-width: 660px) {
+  .project-header {
+    padding-inline: 16px;
+  }
+  .tabs {
+    gap: 0;
+    justify-content: space-between;
+  }
+  .tabs > button {
+    padding-inline: 3px;
+    white-space: nowrap;
+  }
+  .tabs > button svg {
+    display: none;
+  }
+  .runtime-primary,
+  .runtime-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .runtime-summary .muted,
+  .runtime-summary button {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .runtime-summary button {
+    width: 100%;
+  }
+  .role-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

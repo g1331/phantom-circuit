@@ -311,6 +311,8 @@ try {
   });
   makeTask('支持体验反馈与持续迭代');
   store.event('fixture', '浏览器验证场景已准备', { projectId: project.id });
+  const contextPanel = page.locator('#project-context');
+  await page.locator('.context-trigger').click();
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).waitFor();
   const documents = page.getByRole('region', { name: '领域文档', exact: true });
   await documents.getByText(/orbit-web.*CONTEXT.md/).click({ timeout: 5000 });
@@ -331,7 +333,14 @@ try {
     fullPage: true,
   });
   await documents.getByText(/orbit-web.*CONTEXT.md/).click();
+  await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
   await page.screenshot({ path: resolve(artifacts, '02-workspace-dark.png'), fullPage: true });
+  await page.setViewportSize({ width: 1366, height: 768 });
+  const conversationSize = await page.locator('.conversation').boundingBox();
+  assert.ok(conversationSize && conversationSize.width >= 850 && conversationSize.height >= 380);
+  await page.screenshot({ path: resolve(artifacts, 'pm-desktop-1366.png') });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('.context-trigger').click();
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).click();
   await page.waitForFunction(
     () =>
@@ -346,6 +355,7 @@ try {
   );
   assert.equal(store.repo(repo.id).enabled, false);
   assert.equal(store.activeRuns().filter((r) => r.role === 'dev').length, 1);
+  await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
   await page.getByRole('tab', { name: '任务', exact: false }).click();
   await page.getByRole('button', { name: /简化仓库接入与授权提示/ }).click();
   await page.getByRole('heading', { name: '验收条件' }).waitFor();
@@ -683,6 +693,7 @@ try {
       });
       await page.getByRole('button', { name: '关闭窗口' }).click();
       await page.getByRole('tab', { name: '与 PM 讨论' }).click();
+      await page.locator('.context-trigger').click();
       await documents.getByText(/orbit-web.*CONTEXT.md/).click();
       const documentBlock = documents.getByRole('region', {
         name: '领域文档 CONTEXT.md',
@@ -722,6 +733,7 @@ try {
       }
 
       await documents.getByText(/orbit-web.*CONTEXT.md/).click();
+      await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
     }
   }
   assert.equal(store.task(task.id).spec, longMarkdown);
@@ -758,6 +770,12 @@ try {
   await page.getByRole('button', { name: '发送消息' }).click();
   await page.getByText('窄屏图片反馈', { exact: true }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '05-mobile-light.png'), fullPage: true });
+  const mobileComposer = await page.locator('.composer').boundingBox();
+  assert.ok(
+    mobileComposer &&
+      mobileComposer.height <= 300 &&
+      mobileComposer.y + mobileComposer.height <= 844,
+  );
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,

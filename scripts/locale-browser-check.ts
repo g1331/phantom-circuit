@@ -3,6 +3,13 @@ import type { Page } from 'playwright';
 import { resolve } from 'node:path';
 
 export async function checkLocale(page: Page, artifacts: string) {
+  async function expandCodex() {
+    const group = page.locator('details.settings-group').filter({
+      has: page.locator('summary').filter({ hasText: 'Codex role models' }),
+    });
+    if (!(await group.evaluate((element: HTMLDetailsElement) => element.open)))
+      await group.locator('summary').click();
+  }
   await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.locator('.sidebar .language-control select').selectOption('zh-CN');
@@ -27,7 +34,8 @@ export async function checkLocale(page: Page, artifacts: string) {
   );
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
-  await dialog.getByRole('heading', { name: 'Codex role models', exact: true }).waitFor();
+  await expandCodex();
+  await dialog.locator('.provider-group > summary').click();
   await dialog.getByLabel('Project PM model', { exact: true }).waitFor();
   await dialog.getByRole('region', { name: 'Provider management' }).waitFor();
   const text = (await dialog.innerText()).replaceAll('简体中文', '');
@@ -43,6 +51,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   await dialog.getByLabel('Language').selectOption('zh-CN');
   await dialog.getByLabel('项目 PM模型', { exact: true }).waitFor();
   await page.keyboard.press('Escape');
+  await page.locator('.context-trigger').click();
   await page.getByRole('button', { name: '接入仓库', exact: true }).click();
   await dialog.getByLabel('语言').selectOption('en');
   await dialog.getByLabel('Local repository path', { exact: true }).waitFor();
@@ -56,6 +65,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   assert.equal(await page.locator('.sidebar .language-control select').inputValue(), 'en');
   await page.setViewportSize({ width: 390, height: 500 });
   await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+  await expandCodex();
   await dialog.getByLabel('Language').selectOption('zh-CN');
   await dialog.getByLabel('项目 PM模型', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

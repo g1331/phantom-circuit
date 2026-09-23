@@ -61,6 +61,8 @@ function App() {
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
   const [view, setView] = useState<'chat' | 'tasks' | 'runs'>('chat');
+  const [contextOpen, setContextOpen] = useState(false);
+  const contextRef = useRef<HTMLDialogElement>(null);
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
     null,
   );
@@ -144,6 +146,7 @@ function App() {
   useEffect(() => {
     localStorage.setItem('phantom.project', selected);
     setTaskDetail(undefined);
+    setContextOpen(false);
     setDraft('');
     setDeliveryMode('queue');
     updateImages([]);
@@ -164,6 +167,12 @@ function App() {
     }
   }
   const project = state?.projects.find((p) => p.id === selected) ?? state?.projects[0];
+  useEffect(() => {
+    const dialog = contextRef.current;
+    if (!dialog) return;
+    if (contextOpen && !dialog.open) dialog.showModal();
+    if (!contextOpen && dialog.open) dialog.close();
+  }, [contextOpen, project?.id]);
   const projectAgent =
     project?.agentSelection?.mode === 'override'
       ? project.agentSelection.agent
@@ -329,27 +338,19 @@ function App() {
         </div>
       </aside>
       <main className="main">
-        <header className="topbar">
-          <div className="breadcrumb">
-            {t('app.workspace')} <span>/</span>
-            <strong>{project?.name ?? t('app.start')}</strong>
-          </div>
-          <div className="topbar-actions">
-            <span className="local-badge">
-              <ShieldCheck size={13} /> {t('app.local')}
-            </span>
-            {project?.githubProjectUrl && (
-              <a
-                className="quiet-link"
-                href={project.githubProjectUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                GitHub Project <ArrowUpRight size={14} />
-              </a>
-            )}
-          </div>
-        </header>
+        {!project && (
+          <header className="topbar">
+            <div className="breadcrumb">
+              {t('app.workspace')} <span>/</span>
+              <strong>{t('app.start')}</strong>
+            </div>
+            <div className="topbar-actions">
+              <span className="local-badge">
+                <ShieldCheck size={13} /> {t('app.local')}
+              </span>
+            </div>
+          </header>
+        )}
         {error && (
           <div className="error-banner" role="alert">
             <span>
@@ -419,36 +420,16 @@ function App() {
           <>
             <section className="project-header">
               <div>
-                <div className="eyebrow">{t('app.projectWorkspace')}</div>
                 <h1>{project.name}</h1>
-                <p>{project.description || t('project.description')}</p>
               </div>
-              <button className="secondary-button" onClick={() => setModal('project-settings')}>
-                {t('ui.projectModelSettings')}{' '}
+              <button
+                className="secondary-button context-trigger"
+                aria-controls="project-context"
+                aria-expanded={contextOpen}
+                onClick={() => setContextOpen(true)}
+              >
+                <Settings2 size={15} /> {t('project.overview')}
               </button>
-              <button className="secondary-button" onClick={() => setModal('repo')}>
-                <Plus size={16} /> {t('repo.connect')}
-              </button>
-            </section>
-            <section className="metrics" aria-label={t('project.overview')}>
-              <Metric
-                value={active.filter((r) => r.role === 'dev').length}
-                label={t('metric.dev')}
-                suffix={`/ ${project.devLimit}`}
-                live
-              />
-              <Metric
-                value={active.filter((r) => r.role === 'review').length}
-                label={t('metric.review')}
-              />
-              <Metric
-                value={tasks.filter((t) => t.stage === 'ready').length}
-                label={t('metric.ready')}
-              />
-              <Metric
-                value={tasks.filter((t) => t.stage === 'done').length}
-                label={t('metric.done')}
-              />
             </section>
             <div className="workspace-grid">
               <section className="primary-workspace">
@@ -976,7 +957,76 @@ function App() {
                   </div>
                 )}
               </section>
-              <aside className="context-panel">
+              <dialog
+                id="project-context"
+                className="context-panel"
+                ref={contextRef}
+                onClose={() => setContextOpen(false)}
+                aria-label={t('project.overview')}
+              >
+                <div className="context-heading">
+                  <div>
+                    <h2>{project.name}</h2>
+                    <p>{project.description || t('project.description')}</p>
+                  </div>
+                  <button
+                    className="icon-button"
+                    aria-label={t('common.close')}
+                    onClick={() => setContextOpen(false)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="context-actions">
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setContextOpen(false);
+                      setModal('project-settings');
+                    }}
+                  >
+                    {t('ui.projectModelSettings')}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setContextOpen(false);
+                      setModal('repo');
+                    }}
+                  >
+                    <Plus size={15} /> {t('repo.connect')}
+                  </button>
+                </div>
+                {project.githubProjectUrl && (
+                  <a
+                    className="quiet-link"
+                    href={project.githubProjectUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    GitHub Project <ArrowUpRight size={14} />
+                  </a>
+                )}
+                <section className="metrics" aria-label={t('project.overview')}>
+                  <Metric
+                    value={active.filter((r) => r.role === 'dev').length}
+                    label={t('metric.dev')}
+                    suffix={`/ ${project.devLimit}`}
+                    live
+                  />
+                  <Metric
+                    value={active.filter((r) => r.role === 'review').length}
+                    label={t('metric.review')}
+                  />
+                  <Metric
+                    value={tasks.filter((t) => t.stage === 'ready').length}
+                    label={t('metric.ready')}
+                  />
+                  <Metric
+                    value={tasks.filter((t) => t.stage === 'done').length}
+                    label={t('metric.done')}
+                  />
+                </section>
                 <AllowancePanel
                   key={`${project.id}-${projectAgent}-${pmProfile?.providerId}`}
                   agent={projectAgent}
@@ -1173,25 +1223,25 @@ function App() {
                     <p className="muted">{t('activity.empty')}</p>
                   )}
                 </div>
-              </aside>
+                {documents.length > 0 && (
+                  <section className="domain-documents" aria-label={t('ui.domainDocuments')}>
+                    <h2> {t('ui.domainDocuments')} </h2>
+                    {documents.map((doc) => (
+                      <details key={doc.id}>
+                        <summary>
+                          {repos.find((repo) => repo.id === doc.repoId)?.name} · {doc.path} · v
+                          {doc.version} · {doc.accepted ? t('ui.accepted') : t('ui.draft')}
+                        </summary>
+                        <MarkdownContent
+                          content={doc.content}
+                          label={t('docs.label', { path: doc.path })}
+                        />
+                      </details>
+                    ))}
+                  </section>
+                )}
+              </dialog>
             </div>
-            {documents.length > 0 && (
-              <section className="domain-documents" aria-label={t('ui.domainDocuments')}>
-                <h2> {t('ui.domainDocuments')} </h2>
-                {documents.map((doc) => (
-                  <details key={doc.id}>
-                    <summary>
-                      {repos.find((repo) => repo.id === doc.repoId)?.name} · {doc.path} · v
-                      {doc.version} · {doc.accepted ? t('ui.accepted') : t('ui.draft')}
-                    </summary>
-                    <MarkdownContent
-                      content={doc.content}
-                      label={t('docs.label', { path: doc.path })}
-                    />
-                  </details>
-                ))}
-              </section>
-            )}
           </>
         )}
       </main>
@@ -1241,7 +1291,12 @@ function App() {
           wide
           onClose={() => setModal(null)}
         >
-          {modal === 'settings' && <ProviderSettings />}
+          {modal === 'settings' && (
+            <details className="settings-group provider-group">
+              <summary>{t('ui.providerManagement')}</summary>
+              <ProviderSettings />
+            </details>
+          )}
           <SettingsForm
             key={`${modal}-${project?.id}`}
             initial={
@@ -1534,14 +1589,16 @@ function Modal({
     >
       <div className="modal-content">
         <header>
-          <div>
+          <div className="modal-heading">
             <h2>{title}</h2>
             <p>{subtitle}</p>
-            <LanguageControl />
           </div>
-          <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
-            <X size={19} />
-          </button>
+          <div className="modal-toolbar">
+            <LanguageControl />
+            <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
+              <X size={19} />
+            </button>
+          </div>
         </header>
         {children}
       </div>
@@ -1777,6 +1834,14 @@ function SettingsForm({
   const [saved, setSaved] = useState<string[]>();
   const [health, setHealth] = useState<any>();
   const [checking, setChecking] = useState(false);
+  const effectiveAgent =
+    runtime.agentSelection?.mode === 'override'
+      ? runtime.agentSelection.agent
+      : (settings.defaultAgent ?? 'omp');
+  const codexDetails = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (codexDetails.current) codexDetails.current.open = effectiveAgent === 'codex';
+  }, [effectiveAgent]);
   return (
     <form
       className="form"
@@ -1856,28 +1921,32 @@ function SettingsForm({
             }));
         }}
       />
-      <h3>{t('runtime.codexProfiles')}</h3>
-      <fieldset className="assignment-form" disabled={saving || busy}>
-        <ProfileEditor
-          profiles={effectiveProfiles}
-          providers={providers}
-          change={(profiles) => {
-            setSettings({ ...settings, profiles });
-            if (project)
-              setRuntime((current) => ({
-                ...current,
-                profileModes: Object.fromEntries(
-                  profileNames.map((role) => [
-                    role,
-                    profiles[role] !== effectiveProfiles[role]
-                      ? 'pinned'
-                      : (current.profileModes?.[role] ?? 'pinned'),
-                  ]),
-                ) as NonNullable<Project['profileModes']>,
-              }));
-          }}
-        />
-      </fieldset>
+      <details className="settings-group" ref={codexDetails}>
+        <summary>{t('runtime.codexProfiles')}</summary>
+        <fieldset className="assignment-form" disabled={saving || busy}>
+          <ProfileEditor
+            profiles={effectiveProfiles}
+            providers={providers}
+            modes={project ? runtime.profileModes : undefined}
+            required={effectiveAgent === 'codex'}
+            change={(profiles) => {
+              setSettings({ ...settings, profiles });
+              if (project)
+                setRuntime((current) => ({
+                  ...current,
+                  profileModes: Object.fromEntries(
+                    profileNames.map((role) => [
+                      role,
+                      profiles[role] !== effectiveProfiles[role]
+                        ? 'pinned'
+                        : (current.profileModes?.[role] ?? 'pinned'),
+                    ]),
+                  ) as NonNullable<Project['profileModes']>,
+                }));
+            }}
+          />
+        </fieldset>
+      </details>
       {saveError && (
         <p role="alert">
           <ErrorText error={saveError} />

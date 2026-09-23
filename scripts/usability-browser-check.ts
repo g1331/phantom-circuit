@@ -72,7 +72,7 @@ export async function checkUsability() {
   const errors: string[] = [];
   page.setDefaultTimeout(8000);
   // Cold Vite module loading is separate from the UI behavior assertion budget.
-  page.setDefaultNavigationTimeout(30_000);
+  page.setDefaultNavigationTimeout(60_000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(`(() => {
     class FixtureEvents extends EventTarget {
@@ -152,7 +152,7 @@ export async function checkUsability() {
     );
   });
   try {
-    await page.goto('http://127.0.0.1:4329');
+    await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
     await page.getByRole('tab', { name: '任务' }).click();
     await page.locator('.claim-order time').waitFor();
     assert.equal(

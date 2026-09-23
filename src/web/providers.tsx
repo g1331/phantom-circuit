@@ -18,7 +18,6 @@ export function ProviderSettings() {
   const provider = providers.find((p) => p.id === selected);
   return (
     <section className="form provider-settings" aria-label={t('ui.providerManagement')}>
-      <h3>Provider</h3>
       <p className="muted"> {t('ui.saveUpstreamConnectionsAndFetchModelsRole')} </p>
       <div className="provider-toolbar">
         <label>
