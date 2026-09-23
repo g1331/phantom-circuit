@@ -124,7 +124,11 @@ try {
         'Authorization: Bearer browser-secret\npsql postgresql://alice:browser-db-secret@localhost/app',
     },
   });
-  const activity = page.locator('.pm-activity').filter({ hasText: '执行命令' });
+  const process = page.locator('.pm-process').first();
+  await process.locator(':scope > summary').waitFor({ timeout: 5000 });
+  assert.equal(await process.evaluate((el: HTMLDetailsElement) => el.open), false);
+  await process.locator(':scope > summary').click();
+  const activity = process.locator('.pm-activity').filter({ hasText: '执行命令' });
   await activity.locator('summary').waitFor({ timeout: 5000 });
   await activity.locator('summary').click();
   assert.ok((await activity.textContent())?.includes(diagnosticPath));
@@ -146,16 +150,147 @@ try {
   });
   store.finishRun(activityRun.id, 'failed', '找不到文件');
   await activity.locator('summary').getByText('失败', { exact: true }).waitFor();
+  assert.equal(await process.locator(':scope > summary .process-failure').count(), 1);
   await page.reload();
+  await process.locator(':scope > summary').click();
   await activity.locator('summary').click();
   assert.ok((await activity.textContent())?.includes(diagnosticPath));
   await page.setViewportSize({ width: 390, height: 844 });
-  await activity.getByText('找不到文件', { exact: true }).scrollIntoViewIfNeeded();
+  await activity.locator('pre').filter({ hasText: '找不到文件' }).first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(artifacts, 'activity-mobile.png'), fullPage: true });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
+  const groupedRun = store.run('pm', project.id, 'pm');
+  store.addMessage(project.id, 'assistant', '按 Run 分组的回复草稿', undefined, undefined, {
+    runId: groupedRun.id,
+  });
+  store.activity(groupedRun, 'trigger', {
+    kind: 'trigger',
+    title: '用户消息',
+    status: 'completed',
+    details: { source: '用户消息' },
+  });
+  store.activity(groupedRun, 'command', {
+    kind: 'command',
+    title: '执行命令',
+    status: 'completed',
+    details: { command: 'npm run check' },
+  });
+  const groupedProcess = page.locator(`.pm-process[data-run-id="${groupedRun.id}"]`);
+  await groupedProcess.locator(':scope > summary').waitFor({ timeout: 5000 });
+  assert.equal(await groupedProcess.locator('.pm-activity').count(), 2);
+  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+  assert.equal(
+    await groupedProcess.evaluate((el) => el.nextElementSibling?.classList.contains('message')),
+    true,
+  );
+  await groupedProcess.locator(':scope > summary').click();
+  store.activity(groupedRun, 'search', {
+    kind: 'search',
+    title: '搜索资料',
+    status: 'completed',
+    details: { summary: '核心约束' },
+  });
+  await groupedProcess.locator('.pm-activity').nth(2).waitFor({ timeout: 5000 });
+  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
+  const toolInput = JSON.stringify({
+    description: '查看恢复后的工具摘要',
+    command: 'npm run check',
+    path: diagnosticPath,
+    query: '按 Run 恢复',
+  });
+  const toolOutput = Array.from(
+    { length: 24 },
+    (_, index) => `result ${index + 1}: ${'detail '.repeat(12)}`,
+  ).join('\n');
+  store.activity(groupedRun, 'tool-inspect', {
+    kind: 'tool',
+    title: '检查工具结果',
+    status: 'completed',
+    messageId: 'fixture-message-4207',
+    eventId: 4207,
+    details: {
+      source: '用户消息',
+      cwd: String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha`,
+      paths: diagnosticPath,
+      input: toolInput,
+      output: toolOutput,
+    },
+  });
+  const toolOperation = groupedProcess.locator('.pm-activity[data-kind="tool"]').first();
+  const toolSummary = toolOperation.locator(':scope > summary');
+  await toolSummary.waitFor({ timeout: 5000 });
+  assert.equal(
+    await toolOperation.locator('.activity-preview').textContent(),
+    '查看恢复后的工具摘要',
+  );
+  assert.equal(await toolOperation.evaluate((el: HTMLDetailsElement) => el.open), false);
+  assert.ok((await groupedProcess.locator('.process-categories .process-category').count()) <= 2);
+  await toolSummary.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await toolOperation.evaluate((el: HTMLDetailsElement) => el.open), true);
+  await page.keyboard.press('Enter');
+  await toolSummary.click();
+  const inputPanel = toolOperation.locator('.activity-panel').filter({
+    hasText: '查看恢复后的工具摘要',
+  });
+  const outputPanel = toolOperation.locator('.activity-panel').filter({ hasText: 'result 1:' });
+  assert.equal(await inputPanel.locator('pre').textContent(), toolInput);
+  assert.equal(await outputPanel.locator('pre').textContent(), toolOutput);
+  const outputScroll = await outputPanel.locator('pre').evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    return { overflows: el.scrollHeight > el.clientHeight, scrollTop: el.scrollTop };
+  });
+  assert.ok(outputScroll.overflows && outputScroll.scrollTop > 0);
+  const toolMetadata = await toolOperation.locator('.activity-meta').textContent();
+  assert.ok(toolMetadata?.includes(groupedRun.id));
+  assert.ok(toolMetadata?.includes('fixture-message-4207'));
+  assert.ok(toolMetadata?.includes('4207'));
+  assert.ok(toolMetadata?.includes(diagnosticPath));
+  assert.ok(
+    toolMetadata?.includes(String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha`),
+  );
+  const fallbackInput = JSON.stringify({ rawArgument: 'x'.repeat(240) });
+  store.activity(groupedRun, 'tool-fallback', {
+    kind: 'tool',
+    title: '未知参数工具',
+    status: 'completed',
+    details: { input: fallbackInput },
+  });
+  const fallbackOperation = groupedProcess.locator('.pm-activity[data-kind="tool"]').nth(1);
+  await fallbackOperation.locator(':scope > summary').waitFor({ timeout: 5000 });
+  const fallbackPreview = await fallbackOperation.locator('.activity-preview').textContent();
+  assert.ok(fallbackPreview && fallbackPreview.length <= 160 && fallbackPreview.endsWith('…'));
+
+  store.finishRun(groupedRun.id, 'interrupted', '等待恢复确认');
+  await groupedProcess.locator('.pm-activity[data-kind="phase"]').last().waitFor({ timeout: 5000 });
+  assert.equal(await groupedProcess.getAttribute('data-status'), 'interrupted');
+  assert.equal(await groupedProcess.locator(':scope > summary .process-failure').count(), 0);
+  store.addMessage(project.id, 'system', '旧 PM 运行已中断，等待恢复确认。');
+  const successorRun = store.run('pm', project.id, 'pm');
+  store.activity(successorRun, 'trigger', {
+    kind: 'trigger',
+    title: '恢复后继续',
+    status: 'running',
+    details: { source: '恢复' },
+  });
+  const successorProcess = page.locator(`.pm-process[data-run-id="${successorRun.id}"]`);
+  await successorProcess.locator(':scope > summary').waitFor({ timeout: 5000 });
+  assert.equal(await page.locator('.pm-process').count(), 3);
+  assert.equal(await successorProcess.getAttribute('data-status'), 'running');
+  assert.equal(
+    await page
+      .locator('.message.system')
+      .filter({ hasText: '旧 PM 运行已中断' })
+      .evaluate((el) => el.nextElementSibling?.getAttribute('data-run-id')),
+    successorRun.id,
+  );
+  store.finishRun(successorRun.id, 'completed');
+  await successorProcess.locator(':scope > summary').getByText('已完成', { exact: true }).waitFor({
+    timeout: 5000,
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
   const imageFile = {
     name: 'screenshot.png',
@@ -220,6 +355,90 @@ try {
     .getByText('图片说明', { exact: true })
     .waitFor();
   await page.screenshot({ path: resolve(artifacts, '07-images-desktop.png'), fullPage: true });
+  const originalChat = engine.chat.bind(engine);
+  engine.chat = async () => 'fixture intercepted';
+  try {
+    for (const run of store.activeRuns()) {
+      if (run.projectId === project.id && run.role === 'pm') store.finishRun(run.id, 'completed');
+    }
+    const deliveryRun = store.run('pm', project.id, 'pm');
+    await page.reload();
+    const deliverySelect = page.getByLabel('PM 忙碌时的投递方式');
+    await deliverySelect.waitFor();
+    assert.equal(await deliverySelect.inputValue(), 'queue');
+    await page.screenshot({
+      path: resolve(artifacts, 'delivery-busy-desktop.png'),
+      fullPage: true,
+    });
+    await page.getByLabel('给 PM 的消息').fill('真实服务排队文本');
+    await page.getByRole('button', { name: '排队发送', exact: true }).click();
+    await page.locator('.message.user').filter({ hasText: '真实服务排队文本' }).waitFor();
+    const queuedText = store
+      .list('message')
+      .find((message) => message.content === '真实服务排队文本');
+    assert.ok(queuedText);
+    assert.equal(queuedText.deliveryMode, 'queue');
+    assert.equal(queuedText.status, 'queued');
+    await page
+      .locator('.message.user')
+      .filter({ hasText: '真实服务排队文本' })
+      .locator('.runtime-badge')
+      .getByText('已排队', { exact: true })
+      .waitFor();
+
+    await deliverySelect.selectOption('steer');
+    await page.screenshot({
+      path: resolve(artifacts, 'delivery-steer-desktop.png'),
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await page.screenshot({
+      path: resolve(artifacts, 'delivery-steer-mobile.png'),
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByLabel('给 PM 的消息').fill('运行结束时的引导图片');
+    await page.getByLabel('选择图片').setInputFiles(imageFile);
+    await page.locator('.image-drafts img').waitFor();
+    let endedBeforeSteer = false;
+    await page.route('**/api/projects/*/messages', async (route) => {
+      store.finishRun(deliveryRun.id, 'completed');
+      endedBeforeSteer = true;
+      await route.continue();
+    });
+    await page.getByRole('button', { name: '引导当前 PM', exact: true }).click();
+    await page.locator('.message.user').filter({ hasText: '运行结束时的引导图片' }).waitFor();
+    await page.unroute('**/api/projects/*/messages');
+    assert.equal(endedBeforeSteer, true);
+    const steeredImage = store
+      .list('message')
+      .find((message) => message.content === '运行结束时的引导图片');
+    assert.ok(steeredImage);
+    assert.equal(steeredImage.deliveryMode, 'steer');
+    assert.equal(steeredImage.status, 'queued');
+    await page
+      .locator('.message.user')
+      .filter({ hasText: '运行结束时的引导图片' })
+      .locator('.runtime-badge')
+      .getByText('已排队', { exact: true })
+      .waitFor();
+    await page.locator('.delivery-select').waitFor({ state: 'hidden' });
+    await page.getByLabel('给 PM 的消息').fill('空闲时继续排队');
+    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await page.locator('.message.user').filter({ hasText: '空闲时继续排队' }).waitFor();
+    const idleText = store.list('message').find((message) => message.content === '空闲时继续排队');
+    assert.ok(idleText);
+    assert.equal(idleText.deliveryMode, 'queue');
+    assert.equal(idleText.status, 'queued');
+  } finally {
+    await page.unroute('**/api/projects/*/messages');
+    engine.chat = originalChat;
+  }
+  await page.screenshot({ path: resolve(artifacts, 'delivery-queue-idle.png'), fullPage: true });
   const repo = store.createRepo({
     projectId: project.id,
     name: 'orbit-web',
@@ -339,6 +558,118 @@ try {
   const conversationSize = await page.locator('.conversation').boundingBox();
   assert.ok(conversationSize && conversationSize.width >= 850 && conversationSize.height >= 380);
   await page.screenshot({ path: resolve(artifacts, 'pm-desktop-1366.png') });
+  for (let index = 0; index < 8; index++)
+    store.addMessage(
+      project.id,
+      index % 2 ? 'assistant' : 'user',
+      `滚动阅读历史 ${index + 1}：${'保持当前位置，不干扰长对话阅读。'.repeat(12)}`,
+    );
+  await page.getByText(/滚动阅读历史 8：/).waitFor();
+  const conversation = page.locator('.conversation');
+  await conversation.focus();
+  await conversation.press('Home');
+  await page.waitForFunction(() => (document.querySelector('.conversation')?.scrollTop ?? 1) <= 1);
+  await page.getByRole('button', { name: '回到最新消息', exact: true }).waitFor();
+  const readingRun = store.run('pm', project.id, 'pm');
+  store.activity(readingRun, 'reader-command', {
+    kind: 'command',
+    title: '阅读期间新增活动',
+    status: 'running',
+    details: { command: 'npm run check' },
+  });
+  const readingProcess = page.locator(`.pm-process[data-run-id="${readingRun.id}"]`);
+  await readingProcess.locator(':scope > summary').waitFor();
+  store.addMessage(project.id, 'assistant', '阅读期间出现的新消息');
+  await page.getByText('阅读期间出现的新消息', { exact: true }).waitFor();
+  assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
+  assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
+  await page.screenshot({ path: resolve(artifacts, 'chat-reading-unread.png') });
+  store.finishRun(readingRun.id, 'completed');
+  await page.waitForFunction(
+    (runId) =>
+      document
+        .querySelector<HTMLElement>(`.pm-process[data-run-id="${runId}"]`)
+        ?.getAttribute('data-status') === 'completed',
+    readingRun.id,
+  );
+  assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
+  assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
+  await page.getByRole('button', { name: '回到最新消息', exact: true }).click();
+  await page.waitForFunction(() => {
+    const element = document.querySelector('.conversation');
+    return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+  });
+  assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
+
+  const followRun = store.run('pm', project.id, 'pm');
+  store.activity(followRun, 'follow-command', {
+    kind: 'command',
+    title: '底部跟随活动',
+    status: 'running',
+    details: { command: 'npm run check' },
+  });
+  const followProcess = page.locator(`.pm-process[data-run-id="${followRun.id}"]`);
+  await followProcess.locator(':scope > summary').waitFor();
+  await followProcess.locator(':scope > summary').click();
+  store.activity(followRun, 'follow-command-update', {
+    kind: 'command',
+    title: '底部继续跟随活动',
+    status: 'completed',
+    details: { command: 'npm run test:browser' },
+  });
+  await followProcess.locator('.pm-activity').nth(1).waitFor();
+  await page.waitForFunction(() => {
+    const element = document.querySelector('.conversation');
+    return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+  });
+  store.addMessage(project.id, 'assistant', '底部更新后继续跟随');
+  await page.getByText('底部更新后继续跟随', { exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const element = document.querySelector('.conversation');
+    return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+  });
+  assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
+  await page.screenshot({ path: resolve(artifacts, 'chat-reading-latest.png') });
+
+  const originalReadingChat = engine.chat.bind(engine);
+  engine.chat = async () => 'fixture intercepted';
+  try {
+    await conversation.focus();
+    await conversation.press('Home');
+    await page.waitForFunction(
+      () => (document.querySelector('.conversation')?.scrollTop ?? 1) <= 1,
+    );
+    await page.getByRole('button', { name: '回到最新消息', exact: true }).waitFor();
+    await page.route('**/api/projects/*/messages', (route) =>
+      route.fulfill({ status: 503, json: { error: 'Browser fixture: send failure' } }),
+    );
+    await page.getByLabel('给 PM 的消息').fill('失败发送保留阅读位置');
+    await page.getByRole('button', { name: '排队发送', exact: true }).click();
+    await page.getByRole('alert').waitFor();
+    assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
+    assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
+    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '失败发送保留阅读位置');
+    await page.unroute('**/api/projects/*/messages');
+    await page.getByLabel('给 PM 的消息').fill('成功发送恢复跟随');
+    await page.getByRole('button', { name: '排队发送', exact: true }).click();
+    await page.locator('.message.user').filter({ hasText: '成功发送恢复跟随' }).waitFor();
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.conversation');
+      return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+    });
+    assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
+    await page.getByRole('tab', { name: '任务', exact: false }).click();
+    await page.getByRole('tab', { name: '与 PM 讨论', exact: false }).click();
+    await page.getByLabel('给 PM 的消息').waitFor();
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.conversation');
+      return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+    });
+  } finally {
+    await page.unroute('**/api/projects/*/messages');
+    engine.chat = originalReadingChat;
+    store.finishRun(followRun.id, 'completed');
+  }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('.context-trigger').click();
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).click();

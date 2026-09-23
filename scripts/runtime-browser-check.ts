@@ -126,11 +126,28 @@ export async function checkRuntimeUI() {
   page.on('pageerror', (error) => errors.push(error.message));
   let allowanceFails = false;
   const deliveries: string[] = [];
+  const imageDeliveries: boolean[] = [];
   const models = [{ id: 'omp-fixture', provider: 'fixture', reasoningEfforts: ['low', 'high'] }];
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace('/api', '');
-    const body = request.method() === 'GET' ? undefined : request.postDataJSON();
+    const contentType = request.headers()['content-type'] ?? '';
+    const multipart = contentType.startsWith('multipart/form-data;');
+    const rawBody = multipart ? (request.postDataBuffer()?.toString('utf8') ?? '') : '';
+    const formField = (name: string) =>
+      new RegExp(`Content-Disposition: form-data; name="${name}"\\r\\n\\r\\n([^\\r]*)`).exec(
+        rawBody,
+      )?.[1];
+    const body =
+      request.method() === 'GET'
+        ? undefined
+        : multipart
+          ? {
+              content: formField('content'),
+              intent: formField('intent'),
+              deliveryMode: formField('deliveryMode'),
+            }
+          : request.postDataJSON();
     let result: unknown = {};
     if (path === '/session') result = { csrf: 'fixture' };
     else if (path === '/state') result = snapshot;
@@ -243,6 +260,10 @@ export async function checkRuntimeUI() {
       result = provider;
     } else if (path.endsWith('/messages')) {
       deliveries.push(body.deliveryMode);
+      imageDeliveries.push(
+        multipart &&
+          /Content-Disposition: form-data; name="images"; filename="delivery\.png"/.test(rawBody),
+      );
       snapshot.messages.push({
         ...message,
         id: `delivery-${deliveries.length}`,
@@ -419,16 +440,98 @@ export async function checkRuntimeUI() {
     });
     await page.reload();
     assert.equal(await page.getByLabel('Delivery while PM is active').inputValue(), 'queue');
+    await page
+      .getByText(
+        'If steering is unavailable, the message will queue; unconfirmed delivery remains pending review.',
+        {
+          exact: true,
+        },
+      )
+      .waitFor();
     await page.getByLabel('Message to PM').fill('Queued input');
-    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await page.getByRole('button', { name: 'Queue message', exact: true }).click();
     await page.getByLabel('Delivery while PM is active').selectOption('steer');
+    assert.deepEqual(deliveries, ['queue'], 'changing mode must not send immediately');
     await page.getByLabel('Message to PM').fill('Steered input');
-    await page.getByRole('button', { name: 'Send message', exact: true }).click();
-    assert.deepEqual(deliveries, ['queue', 'steer']);
+    await page.keyboard.press('Control+Enter');
+    const deliveryImage = await page.screenshot();
+    await page.getByLabel('Choose images').setInputFiles({
+      name: 'delivery.png',
+      mimeType: 'image/png',
+      buffer: deliveryImage,
+    });
+    await page.locator('.image-drafts img').waitFor();
+    await page.getByLabel('Message to PM').fill('Steered image input');
+    await page.getByRole('button', { name: 'Steer current PM', exact: true }).click();
+    assert.deepEqual(deliveries, ['queue', 'steer', 'steer']);
+    assert.deepEqual(imageDeliveries, [false, false, true]);
+    assert.deepEqual(
+      snapshot.messages.slice(-3).map((entry) => entry.deliveryMode),
+      ['queue', 'steer', 'steer'],
+    );
+    assert.deepEqual(
+      snapshot.messages.slice(-3).map((entry) => [entry.deliveryMode, entry.status]),
+      [
+        ['queue', 'queued'],
+        ['steer', 'queued'],
+        ['steer', 'queued'],
+      ],
+    );
+    for (const content of ['Queued input', 'Steered input', 'Steered image input']) {
+      await page
+        .locator('.message.user')
+        .filter({ hasText: content })
+        .locator('.runtime-badge')
+        .getByText('Queued', { exact: true })
+        .waitFor();
+    }
     assert.equal(
       await page.locator('.message.assistant').count(),
       1,
       'durable assistant drafts must not duplicate streaming placeholders',
+    );
+    await page.setViewportSize({ width: 390, height: 500 });
+    const deliveryLayout = await page.evaluate(() => {
+      const controls = document.querySelector('.send-controls')!;
+      const select = controls.querySelector('select')!.getBoundingClientRect();
+      const button = controls.querySelector('button')!.getBoundingClientRect();
+      return {
+        sameRow: select.top < button.bottom && button.top < select.bottom,
+        controlsRight: controls.getBoundingClientRect().right,
+        composerRight: document.querySelector('.composer')!.getBoundingClientRect().right,
+      };
+    });
+    assert.equal(deliveryLayout.sameRow, true, JSON.stringify(deliveryLayout));
+    assert.ok(deliveryLayout.controlsRight <= deliveryLayout.composerRight);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await page.screenshot({ path: resolve('test-results', 'runtime-delivery-mobile.png') });
+    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+    await page.getByRole('button', { name: '引导当前 PM', exact: true }).waitFor();
+    await page
+      .getByText('当前 Run 不可引导时将排队；未确认的投递仍待核对。', { exact: true })
+      .waitFor();
+    await page.locator('.sidebar .language-control select').selectOption('en');
+    snapshot.runs = snapshot.runs.filter((run) => run.id !== 'active-pm');
+    await page.reload();
+    await page.getByLabel('Message to PM').waitFor();
+    assert.equal(await page.locator('.delivery-select').count(), 0);
+    const idleSendButton = page.locator('.send-button');
+    assert.equal(await idleSendButton.count(), 1, await page.locator('body').innerText());
+    assert.equal((await idleSendButton.innerText()).trim(), 'Send message');
+    assert.equal(
+      await page.getByRole('button', { name: 'Send message', exact: true }).count(),
+      1,
+      `Idle send button: ${await idleSendButton.innerText()}`,
+    );
+    await page.getByLabel('Message to PM').fill('Idle input');
+    await idleSendButton.click();
+    assert.deepEqual(deliveries, ['queue', 'steer', 'steer', 'queue']);
+    assert.deepEqual(
+      snapshot.messages.slice(-4).map((entry) => entry.deliveryMode),
+      ['queue', 'steer', 'steer', 'queue'],
     );
     for (const locale of ['en', 'zh-CN']) {
       await page.locator('.sidebar .language-control select').selectOption(locale);

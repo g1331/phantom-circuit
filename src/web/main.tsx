@@ -29,12 +29,22 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
-import type { Snapshot, Project, Repo, Task, Settings, Message, Stage } from '../shared/types.ts';
+import type {
+  Snapshot,
+  Project,
+  Repo,
+  Task,
+  Settings,
+  Message,
+  PMActivity,
+  RunStatus,
+  Stage,
+} from '../shared/types.ts';
 import { stageLabels } from '../shared/types.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
 import { ErrorText } from './error-text.tsx';
 import { MarkdownContent } from './markdown-content.tsx';
-import { ActivityRow, PMProgress } from './pm-activity.tsx';
+import { ActivityGroup, PMProgress } from './pm-activity.tsx';
 import { ProfileEditor } from './profile-editor.tsx';
 import { ProviderSettings } from './providers.tsx';
 import { RuntimeFields, profileNames, type RuntimeConfig } from './runtime-settings.tsx';
@@ -52,6 +62,66 @@ const profileKeys = {
   review: 'profile.review',
 } as const;
 const isRunning = (status: string) => status === 'running' || status === 'waiting';
+type ConversationTimelineEntry =
+  | { at: string; order: number; message: Message }
+  | { at: string; order: number; activity: PMActivity };
+type ConversationItem =
+  | { kind: 'message'; message: Message }
+  | { kind: 'activities'; runId: string; activities: PMActivity[] };
+
+function groupConversationTimeline(entries: ConversationTimelineEntry[]): ConversationItem[] {
+  const items: ConversationItem[] = [];
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index]!;
+    if ('message' in entry) {
+      const message = entry.message;
+      let next = index + 1;
+      const following = entries[next];
+      if (
+        message.role === 'assistant' &&
+        message.runId &&
+        following &&
+        'activity' in following &&
+        following.activity.runId === message.runId
+      ) {
+        const activities: PMActivity[] = [];
+        while (next < entries.length) {
+          const candidate = entries[next];
+          if (
+            !candidate ||
+            !('activity' in candidate) ||
+            candidate.activity.runId !== message.runId
+          )
+            break;
+          activities.push(candidate.activity);
+          next++;
+        }
+        items.push({ kind: 'activities', runId: message.runId, activities });
+      }
+      items.push({ kind: 'message', message });
+      index = next;
+      continue;
+    }
+
+    const activities = [entry.activity];
+    let next = index + 1;
+    while (next < entries.length) {
+      const candidate = entries[next];
+      if (
+        !candidate ||
+        !('activity' in candidate) ||
+        candidate.activity.runId !== entry.activity.runId
+      )
+        break;
+      activities.push(candidate.activity);
+      next++;
+    }
+    items.push({ kind: 'activities', runId: entry.activity.runId, activities });
+    index = next;
+  }
+  return items;
+}
+
 function App() {
   const { t, time, number, host, locale: priorityLocale } = useLocale();
   const [schedule, setSchedule] = useState<SchedulingExplanation>();
@@ -99,6 +169,33 @@ function App() {
   );
   const [query, setQuery] = useState('');
   const scroll = useRef<HTMLDivElement>(null);
+  const conversationContent = useRef<HTMLDivElement>(null);
+  const followingLatest = useRef(true);
+  const [atLatest, setAtLatest] = useState(true);
+  const userScrollIntent = useRef(false);
+  const userScrollTimer = useRef<number | undefined>(undefined);
+  const markUserScroll = useCallback(() => {
+    userScrollIntent.current = true;
+    if (userScrollTimer.current !== undefined) window.clearTimeout(userScrollTimer.current);
+    userScrollTimer.current = window.setTimeout(() => {
+      userScrollIntent.current = false;
+      userScrollTimer.current = undefined;
+    }, 250);
+  }, []);
+  const scrollToLatest = useCallback(() => {
+    const element = scroll.current;
+    if (!element) return;
+    followingLatest.current = true;
+    setAtLatest(true);
+    element.scrollTop = element.scrollHeight;
+  }, []);
+  const trackConversationScroll = useCallback(() => {
+    const element = scroll.current;
+    if (!element || !userScrollIntent.current) return;
+    const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
+    followingLatest.current = atBottom;
+    setAtLatest(atBottom);
+  }, []);
   const stateRequest = useRef(0);
   const reload = useCallback(async () => {
     const request = ++stateRequest.current;
@@ -151,9 +248,6 @@ function App() {
     setDeliveryMode('queue');
     updateImages([]);
   }, [selected]);
-  useEffect(() => {
-    scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' });
-  }, [state?.messages.length, stream]);
   async function act(fn: () => Promise<unknown>) {
     setError('');
     setBusy(true);
@@ -167,6 +261,32 @@ function App() {
     }
   }
   const project = state?.projects.find((p) => p.id === selected) ?? state?.projects[0];
+  useEffect(() => {
+    if (view !== 'chat') return;
+    const element = scroll.current;
+    if (!element) return;
+    followingLatest.current = true;
+    setAtLatest(true);
+    const frame = requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
+    const observer = new ResizeObserver(() => {
+      if (followingLatest.current) element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(element);
+    if (conversationContent.current) observer.observe(conversationContent.current);
+    return () => {
+      if (userScrollTimer.current !== undefined) window.clearTimeout(userScrollTimer.current);
+      userScrollTimer.current = undefined;
+      userScrollIntent.current = false;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [project?.id, view]);
+  useEffect(() => {
+    const element = scroll.current;
+    if (followingLatest.current && element) element.scrollTop = element.scrollHeight;
+  }, [state?.messages.length, stream]);
   useEffect(() => {
     const dialog = contextRef.current;
     if (!dialog) return;
@@ -191,20 +311,20 @@ function App() {
   const active = runs.filter((r) => isRunning(r.status));
   const messages = state?.messages.filter((m) => m.projectId === project?.id) ?? [];
   const activities = state?.activities?.filter((a) => a.projectId === project?.id) ?? [];
-  const timeline = [
+  const timeline: ConversationTimelineEntry[] = [
     ...messages.map((message) => ({
       at: message.createdAt,
       order: message.timelineOrder ?? 0,
       message,
-      activity: undefined,
     })),
     ...activities.map((activity) => ({
       at: activity.startedAt,
       order: activity.timelineOrder ?? 0,
       activity,
-      message: undefined,
     })),
   ].sort((a, b) => a.at.localeCompare(b.at) || a.order - b.order);
+  const conversation = groupConversationTimeline(timeline);
+  const runsById = new Map(runs.map((run) => [run.id, run]));
   const documents = state?.documents.filter((d) => d.projectId === project?.id) ?? [];
   const shown = tasks.filter(
     (t) =>
@@ -243,6 +363,7 @@ function App() {
     if ((!draft.trim() && !images.length) || !project || busy || sending.current) return;
     sending.current = true;
     const content = draft;
+    let submitted = false;
     try {
       await act(async () => {
         let body: unknown = { content, intent, deliveryMode: pmBusy ? deliveryMode : 'queue' };
@@ -255,9 +376,15 @@ function App() {
           body = form;
         }
         await api(`/projects/${project.id}/messages`, body);
+        submitted = true;
         setDraft('');
         updateImages([]);
       });
+      if (submitted) {
+        followingLatest.current = true;
+        setAtLatest(true);
+        requestAnimationFrame(scrollToLatest);
+      }
     } finally {
       sending.current = false;
     }
@@ -458,180 +585,209 @@ function App() {
                 </div>
                 {view === 'chat' ? (
                   <div className="chat-workspace">
-                    <div className="conversation" ref={scroll} aria-live="polite">
-                      <ProjectActions
-                        key={project.id}
-                        state={state}
-                        project={project}
-                        reload={reload}
-                      />
-                      {!timeline.length && (
-                        <div className="chat-empty">
-                          <div className="pm-avatar">
-                            <Layers3 size={22} />
-                          </div>
-                          <h2>{t('chat.emptyTitle')}</h2>
-                          <p>
-                            {t('chat.emptyDescription')}
-                            <br />
-                            {t('chat.emptyHint')}
-                          </p>
-                          <div className="suggestions">
-                            <button onClick={() => setDraft(t('chat.requirementsDraft'))}>
-                              {t('chat.requirements')} <ArrowUpRight size={13} />
-                            </button>
-                            <button onClick={() => setDraft(t('chat.exploreDraft'))}>
-                              {t('chat.explore')} <ArrowUpRight size={13} />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {timeline.map((entry) => {
-                        if (entry.activity)
-                          return (
-                            <ActivityRow
-                              key={entry.activity.id}
-                              activity={entry.activity}
-                              roots={repos.map((r) => r.path)}
-                            />
-                          );
-                        const m = entry.message!;
-                        const messageRun =
-                          m.role === 'assistant'
-                            ? active.find((run) => run.id === m.runId)
-                            : undefined;
-                        return (
-                          <article
-                            key={`${m.role}:${m.draftId ?? m.id}`}
-                            className={`message ${m.role}`}
-                          >
-                            <div className="message-heading">
-                              <span
-                                className={m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'}
-                              >
-                                {m.role === 'assistant' ? (
-                                  <Layers3 size={13} />
-                                ) : m.role === 'user' ? (
-                                  t('chat.you')
-                                ) : (
-                                  '!'
-                                )}
-                              </span>
-                              <strong>
-                                {m.role === 'assistant'
-                                  ? t('profile.pm')
-                                  : m.role === 'user'
-                                    ? t('ui.you')
-                                    : t('ui.runNotice')}
-                              </strong>
-                              {m.intent && (
-                                <span className="message-intent">
-                                  {
-                                    {
-                                      discuss: t('ui.discussion'),
-                                      implement: t('ui.implementationRequest'),
-                                      feedback: t('ui.experienceFeedback'),
-                                    }[m.intent]
-                                  }
-                                </span>
-                              )}
-                              <time>{time(m.createdAt)}</time>
-                              {(m.draftStatus ?? m.status) && (
-                                <span className="runtime-badge">
-                                  {t(`delivery.${m.draftStatus ?? m.status!}`)}
-                                </span>
-                              )}
+                    <div className="conversation-shell">
+                      <div
+                        className="conversation"
+                        ref={scroll}
+                        role="region"
+                        aria-label={t('tabs.chat')}
+                        aria-live="polite"
+                        tabIndex={0}
+                        onScroll={trackConversationScroll}
+                        onWheel={markUserScroll}
+                        onTouchMove={markUserScroll}
+                        onPointerDown={(event) => {
+                          if (event.target === event.currentTarget) markUserScroll();
+                        }}
+                        onPointerMove={(event) => {
+                          if (event.buttons && event.target === event.currentTarget)
+                            markUserScroll();
+                        }}
+                        onKeyDown={(event) => {
+                          if (
+                            ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp'].includes(
+                              event.key,
+                            )
+                          )
+                            markUserScroll();
+                        }}
+                      >
+                        <div className="conversation-content" ref={conversationContent}>
+                          <ProjectActions
+                            key={project.id}
+                            state={state}
+                            project={project}
+                            reload={reload}
+                          />
+                          {!timeline.length && (
+                            <div className="chat-empty">
+                              <div className="pm-avatar">
+                                <Layers3 size={22} />
+                              </div>
+                              <h2>{t('chat.emptyTitle')}</h2>
+                              <p>
+                                {t('chat.emptyDescription')}
+                                <br />
+                                {t('chat.emptyHint')}
+                              </p>
+                              <div className="suggestions">
+                                <button onClick={() => setDraft(t('chat.requirementsDraft'))}>
+                                  {t('chat.requirements')} <ArrowUpRight size={13} />
+                                </button>
+                                <button onClick={() => setDraft(t('chat.exploreDraft'))}>
+                                  {t('chat.explore')} <ArrowUpRight size={13} />
+                                </button>
+                              </div>
                             </div>
-                            {messageRun && <PMProgress run={messageRun} activities={activities} />}
-                            <div className="message-content">
-                              {m.role === 'system' ? (
-                                host(m.content, m.descriptor)
-                              ) : (
-                                <MarkdownContent
-                                  content={
-                                    m.runId &&
-                                    isRunning(m.draftStatus ?? m.status ?? '') &&
-                                    stream[m.runId]
-                                      ? stream[m.runId]
-                                      : m.content
-                                  }
+                          )}
+                          {conversation.map((entry) => {
+                            if (entry.kind === 'activities')
+                              return (
+                                <ActivityGroup
+                                  key={`${entry.runId}:${entry.activities[0]!.id}`}
+                                  activities={entry.activities}
+                                  runStatus={runsById.get(entry.runId)?.status}
+                                  roots={repos.map((r) => r.path)}
                                 />
-                              )}
-                            </div>
-                            {!!m.attachments?.length && (
-                              <div className="message-images">
-                                {m.attachments.map((attachment) => {
-                                  const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
-                                  return (
-                                    <a
-                                      key={attachment.id}
-                                      href={url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
-                                      <img src={url} alt={attachment.name} />
-                                      <span>{attachment.name}</span>
-                                    </a>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {m.role === 'user' && (
-                              <button
-                                className="retry-message"
-                                disabled={busy || pmBusy}
-                                onClick={() => void act(() => api(`/messages/${m.id}/retry`, {}))}
+                              );
+                            const m = entry.message;
+                            const messageRun =
+                              m.role === 'assistant'
+                                ? active.find((run) => run.id === m.runId)
+                                : undefined;
+                            return (
+                              <article
+                                key={`${m.role}:${m.draftId ?? m.id}`}
+                                className={`message ${m.role}`}
                               >
-                                {t('common.retry')}
-                              </button>
-                            )}
-                          </article>
-                        );
-                      })}
-                      {active
-                        .filter(
-                          (r) =>
-                            r.role === 'pm' &&
-                            !messages.some(
-                              (message) => message.role === 'assistant' && message.runId === r.id,
-                            ),
-                        )
-                        .map((r) => (
-                          <article className="message assistant" key={r.id}>
-                            <div className="message-heading">
-                              <span className="mini-avatar">
-                                <Layers3 size={13} />
-                              </span>
-                              <strong>{t('profile.pm')}</strong>
-                              <span className="thinking">
-                                {t('chat.thinking')}
-                                <span>…</span>
-                              </span>
-                            </div>
-                            <PMProgress run={r} activities={activities} />
-                            {stream[r.id] ? (
-                              <div className="message-content">
-                                <MarkdownContent content={stream[r.id]} />
-                              </div>
-                            ) : null}
-                          </article>
-                        ))}
+                                <div className="message-heading">
+                                  <span
+                                    className={
+                                      m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'
+                                    }
+                                  >
+                                    {m.role === 'assistant' ? (
+                                      <Layers3 size={13} />
+                                    ) : m.role === 'user' ? (
+                                      t('chat.you')
+                                    ) : (
+                                      '!'
+                                    )}
+                                  </span>
+                                  <strong>
+                                    {m.role === 'assistant'
+                                      ? t('profile.pm')
+                                      : m.role === 'user'
+                                        ? t('ui.you')
+                                        : t('ui.runNotice')}
+                                  </strong>
+                                  {m.intent && (
+                                    <span className="message-intent">
+                                      {
+                                        {
+                                          discuss: t('ui.discussion'),
+                                          implement: t('ui.implementationRequest'),
+                                          feedback: t('ui.experienceFeedback'),
+                                        }[m.intent]
+                                      }
+                                    </span>
+                                  )}
+                                  <time>{time(m.createdAt)}</time>
+                                  {(m.draftStatus ?? m.status) && (
+                                    <span className="runtime-badge">
+                                      {t(`delivery.${m.draftStatus ?? m.status!}`)}
+                                    </span>
+                                  )}
+                                </div>
+                                {messageRun && (
+                                  <PMProgress run={messageRun} activities={activities} />
+                                )}
+                                <div className="message-content">
+                                  {m.role === 'system' ? (
+                                    host(m.content, m.descriptor)
+                                  ) : (
+                                    <MarkdownContent
+                                      content={
+                                        m.runId &&
+                                        isRunning(m.draftStatus ?? m.status ?? '') &&
+                                        stream[m.runId]
+                                          ? stream[m.runId]
+                                          : m.content
+                                      }
+                                    />
+                                  )}
+                                </div>
+                                {!!m.attachments?.length && (
+                                  <div className="message-images">
+                                    {m.attachments.map((attachment) => {
+                                      const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
+                                      return (
+                                        <a
+                                          key={attachment.id}
+                                          href={url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          <img src={url} alt={attachment.name} />
+                                          <span>{attachment.name}</span>
+                                        </a>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {m.role === 'user' && (
+                                  <button
+                                    className="retry-message"
+                                    disabled={busy || pmBusy}
+                                    onClick={() =>
+                                      void act(() => api(`/messages/${m.id}/retry`, {}))
+                                    }
+                                  >
+                                    {t('common.retry')}
+                                  </button>
+                                )}
+                              </article>
+                            );
+                          })}
+                          {active
+                            .filter(
+                              (r) =>
+                                r.role === 'pm' &&
+                                !messages.some(
+                                  (message) =>
+                                    message.role === 'assistant' && message.runId === r.id,
+                                ),
+                            )
+                            .map((r) => (
+                              <article className="message assistant" key={r.id}>
+                                <div className="message-heading">
+                                  <span className="mini-avatar">
+                                    <Layers3 size={13} />
+                                  </span>
+                                  <strong>{t('profile.pm')}</strong>
+                                  <span className="thinking">
+                                    {t('chat.thinking')}
+                                    <span>…</span>
+                                  </span>
+                                </div>
+                                <PMProgress run={r} activities={activities} />
+                                {stream[r.id] ? (
+                                  <div className="message-content">
+                                    <MarkdownContent content={stream[r.id]} />
+                                  </div>
+                                ) : null}
+                              </article>
+                            ))}
+                        </div>
+                      </div>
+                      {!atLatest && (
+                        <button className="latest-message" onClick={scrollToLatest}>
+                          <ChevronDown size={15} />
+                          {t('chat.backToLatest')}
+                        </button>
+                      )}
                     </div>
                     <div className="composer">
-                      {pmBusy && (
-                        <label className="delivery-mode">
-                          {t('delivery.mode')}
-                          <select
-                            value={deliveryMode}
-                            onChange={(event) =>
-                              setDeliveryMode(event.target.value as 'queue' | 'steer')
-                            }
-                          >
-                            <option value="queue">{t('delivery.queue')}</option>
-                            <option value="steer">{t('delivery.steer')}</option>
-                          </select>
-                        </label>
-                      )}
                       <div className="intent-row">
                         {(['discuss', 'implement', 'feedback'] as const).map((i) => (
                           <button
@@ -737,14 +893,42 @@ function App() {
                           {intent === 'discuss' ? t('chat.discussNote') : t('chat.implementNote')}
                           <small>{t('chat.shortcut')}</small>
                         </span>
-                        <button
-                          className="send-button"
-                          disabled={(!draft.trim() && !images.length) || busy}
-                          onClick={() => void send()}
-                          aria-label={t('common.send')}
-                        >
-                          <Send size={17} />
-                        </button>
+                        <div className="send-actions">
+                          <div className="send-controls">
+                            {pmBusy && (
+                              <select
+                                className="delivery-select"
+                                aria-label={t('delivery.mode')}
+                                value={deliveryMode}
+                                onChange={(event) =>
+                                  setDeliveryMode(event.target.value as 'queue' | 'steer')
+                                }
+                              >
+                                <option value="queue">{t('delivery.queue')}</option>
+                                <option value="steer">{t('delivery.steer')}</option>
+                              </select>
+                            )}
+                            <button
+                              className="send-button"
+                              disabled={(!draft.trim() && !images.length) || busy}
+                              onClick={() => void send()}
+                            >
+                              <span>
+                                {pmBusy
+                                  ? t(
+                                      deliveryMode === 'steer'
+                                        ? 'delivery.sendSteer'
+                                        : 'delivery.sendQueue',
+                                    )
+                                  : t('common.send')}
+                              </span>
+                              <Send size={17} />
+                            </button>
+                          </div>
+                          {pmBusy && (
+                            <small className="delivery-note">{t('delivery.steerFallback')}</small>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
