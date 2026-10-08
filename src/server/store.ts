@@ -1003,6 +1003,7 @@ export class Store {
       }
     }
     this.changes.emit('change');
+    this.changes.emit('activity', value);
     return value;
   }
   createProject(name: string, description: string) {
@@ -1666,6 +1667,7 @@ export class Store {
         : {}),
     };
     this.put('run', r.id, r);
+    this.changes.emit('run-start', r);
     return r;
   }
   updateRunUsage(key: string, usage: RunUsage, mode: UsageMode = 'cumulative') {

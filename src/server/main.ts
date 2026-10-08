@@ -9,14 +9,20 @@ import { Previews } from './preview.ts';
 import { createApp } from './app.ts';
 import { resolveDataDirectory } from './data-directory.ts';
 import { bootstrapAgentSettings } from './agent-settings.ts';
+import { startupOptions } from './logging.ts';
+import { bounded } from './redaction.ts';
 
-const ownership = await resolveDataDirectory();
-const dataDir = ownership.dataDir;
+const options = startupOptions();
+let ownership: Awaited<ReturnType<typeof resolveDataDirectory>> | undefined;
 let store: Store | undefined;
 let engine: Engine | undefined;
 let previews: Previews | undefined;
 let app: ReturnType<typeof createApp> | undefined;
 try {
+  ownership = await resolveDataDirectory(
+    options.dataDir ? { dataDir: options.dataDir, legacyDir: options.dataDir } : {},
+  );
+  const dataDir = ownership.dataDir;
   await mkdir(dataDir, { recursive: true });
   const configPath = join(dataDir, 'config.json');
   let config: { port: number };
@@ -38,7 +44,10 @@ try {
   });
   engine = new Engine(store, github, workspaces, dataDir);
   previews = new Previews(store, workspaces);
-  app = createApp(store, engine, previews, config.port);
+  app = createApp(store, engine, previews, config.port, undefined, undefined, {
+    logger: options.logger,
+  });
+  app.log.info({ dataDir, port: config.port }, 'starting Phantom Circuit');
   // Bind before recovering or scheduling: a second instance must not touch running task state.
   await app.listen({ host: '127.0.0.1', port: config.port });
   await engine.start();
@@ -50,28 +59,37 @@ try {
           store!.event('preview', String(e), { projectId: store!.repo(repoId).projectId }),
         );
   });
-  console.log(`Phantom Circuit · http://127.0.0.1:${config.port}`);
+  app.log.info({ url: `http://127.0.0.1:${config.port}` }, 'Phantom Circuit ready');
   let stopping = false;
   async function shutdown() {
     if (stopping) return;
     stopping = true;
+    app!.log.info('stopping Phantom Circuit');
     try {
       await engine!.stop();
       await previews!.close();
       await app!.close();
       store!.close();
+      app!.log.info('Phantom Circuit stopped');
+    } catch (error) {
+      app!.log.error({ err: error }, 'shutdown failed');
+      process.exitCode = 1;
     } finally {
-      await ownership.release();
-      process.exit(0);
+      await ownership!.release();
     }
   }
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 } catch (error) {
+  if (app) app.log.fatal({ err: error }, 'startup failed');
+  else
+    console.error(
+      bounded(error instanceof Error ? (error.stack ?? error.message) : String(error), 6000),
+    );
   await engine?.stop().catch(() => {});
   await previews?.close().catch(() => {});
   await app?.close().catch(() => {});
   store?.close();
-  await ownership.release();
-  throw error;
+  await ownership?.release();
+  process.exitCode = 1;
 }

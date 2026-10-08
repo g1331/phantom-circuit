@@ -14,7 +14,29 @@ npm start
 
 Open **http://127.0.0.1:4317**. Create a project, connect a repository and explicitly grant its engineering permissions. Repositories start with new task claims disabled. Ask the PM to inspect project scripts and configure install/build/test/start commands before opening work. `聊一聊` never authorizes tasks; `交给 PM 做` and `体验反馈` do. No sample data is inserted into the real workspace.
 
-Use `npm run dev:web` in a second terminal for frontend development. The Vite development server proxies API requests to port 4317.
+### Develop and debug
+
+After `npm ci`, start the backend in one terminal:
+
+```powershell
+npm run dev
+```
+
+This runs the backend on **http://127.0.0.1:4317**, prints readable timestamped logs and restarts when backend source files change. Start the frontend in a second terminal:
+
+```powershell
+npm run dev:web
+```
+
+Open **http://127.0.0.1:5173** for frontend hot updates. Vite proxies API requests to backend port 4317. Browser developer tools (F12) show frontend console messages and network requests. `npm run build` is needed to update the frontend served directly by the backend; Vite development uses source files.
+
+For backend breakpoints, use `npm run debug` in place of `npm run dev`. It also watches source files, enables debug-level logs and exposes the Node inspector on **127.0.0.1:9229**. Open `chrome://inspect` or `edge://inspect`, add `localhost:9229` under Configure if necessary, then inspect the Node target. The Sources panel provides TypeScript source maps and breakpoints. Reattach after a backend restart. Use Ctrl+C in each terminal to stop development servers. Restarting interrupts active Runs; the usual recovery rules apply.
+
+`npm start` prints structured JSON logs at `info` level. Development commands use `pino-pretty` for readable output. Logs include startup/shutdown, request IDs, route patterns, HTTP status and duration, Run start/end and operational errors; debug logging also includes request starts and Run phase updates. Request bodies, headers, query values, model replies and task specifications are omitted. Errors use the existing credential redaction rules. Detailed model/tool output remains in the conversation and activity UI.
+
+Override the log level with `npm run dev -- --log-level=debug` or set `$env:PHANTOM_LOG_LEVEL = 'debug'` before `npm start`. Accepted levels are `trace`, `debug`, `info`, `warn`, `error`, `fatal` and `silent`; command-line options take precedence over the environment. `npm start -- --help` lists startup options without opening the database.
+
+To develop against separate, initially empty data, use `npm run dev -- --data-dir=.phantom/dev` (or the same option with `debug`/`start`). This selects a separate database and managed workspaces without adopting existing checkout-local data. The normal default remains `%USERPROFILE%\.phantom`. Development and debug modes run the real Engine, so permissions granted in the selected data directory still govern repository actions.
 
 During discussion, the PM can persist glossary/ADR drafts locally using the upstream document formats. Accepted documents accompany the corresponding implementation as immutable snapshots; `revise_task` can explicitly replace accepted snapshots before delivery. A requirement normally produces one Task, including its documentation. Discussion alone never authorizes implementation. PM contexts refresh from managed default-branch views.
 

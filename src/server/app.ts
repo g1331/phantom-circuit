@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import multipart from '@fastify/multipart';
+import { safeLoggerOptions, bindRuntimeLogging, requestRoute } from './logging.ts';
 import { readFile } from 'node:fs/promises';
 import { MessageImages, imageLimits } from './images.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -122,6 +123,7 @@ export function createApp(
   port = 4317,
   createCodex: () => Codex = () => new Codex(),
   createOmp: () => AgentBackend = () => new OmpBackend(),
+  options: { logger?: import('fastify').FastifyServerOptions['logger'] } = {},
 ) {
   const providers = new Providers(store, createCodex);
   const agents = new AgentRuntime(store, providers, {
@@ -131,7 +133,28 @@ export function createApp(
   // The hook is process-scoped and only replaces the untouched software seed. It never reads or
   // persists OMP credentials; API handlers below await it where settings need to be deterministic.
   const agentSettingsReady = bootstrapAgentSettings(store).catch(() => undefined);
-  const app = Fastify({ logger: false, bodyLimit: 256 * 1024, forceCloseConnections: true });
+  const app = Fastify({
+    logger: safeLoggerOptions(options.logger ?? false),
+    logController: new Fastify.LogController({ disableRequestLogging: true }),
+    bodyLimit: 256 * 1024,
+    forceCloseConnections: true,
+  });
+  const unbindLogs = options.logger ? bindRuntimeLogging(store, app.log) : () => {};
+  app.addHook('onClose', async () => unbindLogs());
+  app.addHook('onRequest', async (request) => {
+    request.log.debug({ method: request.method, route: requestRoute(request) }, 'request started');
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    request.log.info(
+      {
+        method: request.method,
+        route: requestRoute(request),
+        statusCode: reply.statusCode,
+        elapsedMs: reply.elapsedTime,
+      },
+      'request completed',
+    );
+  });
   const images = new MessageImages(store, engine.dataDir);
   void app.register(multipart, { limits: imageLimits });
   const token = randomBytes(32).toString('hex');
@@ -162,6 +185,8 @@ export function createApp(
             (providerRequest && (error as { statusCode?: number }).statusCode === 400)
           ? 400
           : 500;
+    if (status >= 500) req.log.error({ err: error, statusCode: status }, 'request failed');
+    else req.log.warn({ errorCode: code || 'bad_request', statusCode: status }, 'request rejected');
     const legacy = uploadStorageFailure
       ? '图片保存失败，请检查本地磁盘空间和权限后重试'
       : uploadLimit
