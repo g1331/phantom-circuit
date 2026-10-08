@@ -1,3 +1,4 @@
+import { choosePreference } from './browser-preferences.ts';
 import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
 import type { Task } from '../src/shared/types.ts';
@@ -110,7 +111,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
     .getByText('高候选 / High candidate', { exact: false })
     .waitFor();
   for (const locale of ['zh-CN', 'en']) {
-    await page.locator('.sidebar .language-control select').selectOption(locale);
+    await choosePreference(page, 'language', locale);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       for (const theme of ['light', 'dark']) {
@@ -160,6 +161,6 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
   }
   await page.reload();
   await page.getByRole('tab', { name: 'Tasks', exact: false }).click();
-  assert.equal(await page.locator('.sidebar .language-control select').inputValue(), 'en');
-  await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+  assert.equal(await page.locator('.sidebar .language-control').getAttribute('data-value'), 'en');
+  await choosePreference(page, 'language', 'zh-CN');
 }

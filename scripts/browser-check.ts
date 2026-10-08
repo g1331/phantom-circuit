@@ -1,3 +1,4 @@
+import { choosePreference } from './browser-preferences.ts';
 import { chromium, type Page } from 'playwright';
 import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
@@ -942,7 +943,7 @@ try {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     for (const theme of ['dark', 'light']) {
       if ((await page.locator('html').getAttribute('data-theme')) !== theme) {
-        await page.locator('.theme-control select').selectOption(theme);
+        await choosePreference(page, 'theme', theme);
       }
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -1079,8 +1080,8 @@ try {
     longMarkdown,
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByLabel('外观', { exact: true }).selectOption('dark');
-  await page.getByLabel('外观', { exact: true }).selectOption('light');
+  await choosePreference(page, 'theme', 'dark');
+  await choosePreference(page, 'theme', 'light');
   await page.screenshot({ path: resolve(artifacts, '04-workspace-light.png'), fullPage: true });
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.getByLabel('全局 Dev 上限').fill('3');
@@ -1118,7 +1119,7 @@ try {
     true,
     'mobile must not overflow horizontally',
   );
-  await page.getByLabel('外观', { exact: true }).selectOption('dark');
+  await choosePreference(page, 'theme', 'dark');
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.screenshot({
     path: resolve(artifacts, '06-mobile-settings.png'),

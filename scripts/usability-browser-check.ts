@@ -1,3 +1,4 @@
+import { choosePreference } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { checkTyping } from './composer-browser-check.ts';
 import { chromium } from 'playwright';
@@ -231,7 +232,7 @@ export async function checkUsability() {
       await page.setViewportSize({ width: 1366, height: 768 });
       if (collapsed) await page.locator('.sidebar-toggle').click();
       for (const locale of ['zh-CN', 'en']) {
-        await page.locator('.sidebar .language-control select').selectOption(locale);
+        await choosePreference(page, 'language', locale);
         for (const width of [1366, 1100, 851, 850, 768, 660, 390]) {
           await page.setViewportSize({ width, height: 768 });
           const controls = await page
@@ -240,9 +241,9 @@ export async function checkUsability() {
               rows.map((row) => {
                 const box = row.getBoundingClientRect();
                 const icon = row.querySelector('svg')!.getBoundingClientRect();
-                const label = row.querySelector('span')!;
+                const label = row.querySelector('.control-label')!;
                 const labelBox = label.getBoundingClientRect();
-                const select = row.querySelector('select')?.getBoundingClientRect();
+                const select = row.querySelector('.choice-value')?.getBoundingClientRect();
                 return {
                   x: box.x,
                   y: box.y,
@@ -307,16 +308,113 @@ export async function checkUsability() {
     }
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.locator('.sidebar-toggle').click();
-    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
-    await page.getByLabel('外观', { exact: true }).selectOption('system');
+    await choosePreference(page, 'language', 'zh-CN');
+    for (const theme of ['dark', 'light']) {
+      await choosePreference(page, 'theme', theme);
+      for (const width of [1366, 390]) {
+        await page.setViewportSize({ width, height: 768 });
+        for (const preference of ['language', 'theme']) {
+          const trigger = page.locator(`.sidebar .${preference}-control`);
+          await trigger.click();
+          const menu = page.locator('.preference-menu:popover-open');
+          await menu.waitFor();
+          assert.equal(await trigger.getAttribute('aria-expanded'), 'true');
+          assert.equal(
+            await trigger.evaluate((element) => getComputedStyle(element).outlineStyle),
+            'none',
+            'pointer clicks do not add a focus outline',
+          );
+          const bounds = await menu.boundingBox();
+          assert.ok(
+            bounds &&
+              bounds.x >= 0 &&
+              bounds.y >= 0 &&
+              bounds.x + bounds.width <= width &&
+              bounds.y + bounds.height <= 768,
+            'preference menu fits the viewport',
+          );
+          const colors = await menu.evaluate((element) => {
+            const item = element.querySelector('button')!;
+            return {
+              foreground: getComputedStyle(item).color,
+              background: getComputedStyle(element).backgroundColor,
+            };
+          });
+          function luminance(color: string) {
+            const rgb = color
+              .match(/\d+/g)!
+              .slice(0, 3)
+              .map(Number)
+              .map((value) => value / 255)
+              .map((value) =>
+                value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+              );
+            return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+          }
+          const light = luminance(colors.foreground),
+            dark = luminance(colors.background);
+          assert.ok(
+            (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05) >= 4.5,
+            'menu text has readable contrast',
+          );
+          assert.equal(
+            await menu.locator('[aria-checked="true"]').count(),
+            1,
+            'one selected option',
+          );
+          await menu.locator('button').last().hover();
+          await page.screenshot({
+            path: resolve('test-results', `preference-menu-${preference}-${width}-${theme}.png`),
+          });
+          await page.mouse.click(3, 3);
+          await menu.waitFor({ state: 'hidden' });
+          await page.locator(`.sidebar .${preference}-control[aria-expanded="false"]`).waitFor();
+          assert.equal(
+            await trigger.getAttribute('aria-expanded'),
+            'false',
+            'outside click dismisses the menu',
+          );
+        }
+      }
+    }
+    await page.setViewportSize({ width: 1366, height: 768 });
+    const languageTrigger = page.locator('.sidebar .language-control');
+    await page.locator('.sidebar-action').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(
+      await languageTrigger.evaluate((element) => element.matches(':focus-visible')),
+      true,
+      'keyboard focus remains visible',
+    );
+    await page.keyboard.press('ArrowDown');
+    const languageMenu = page.locator('.preference-menu:popover-open');
+    await languageMenu.waitFor();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    assert.equal(
+      await page.locator('html').getAttribute('lang'),
+      'en',
+      'keyboard selection switches locale',
+    );
+    await page.keyboard.press('ArrowDown');
+    await languageMenu.waitFor();
+    await page.keyboard.press('Escape');
+    await languageMenu.waitFor({ state: 'hidden' });
+    assert.equal(
+      await languageTrigger.evaluate((element) => document.activeElement === element),
+      true,
+      'Escape returns focus to the trigger',
+    );
+    await choosePreference(page, 'language', 'zh-CN');
+    await choosePreference(page, 'theme', 'system');
     await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
     await page.emulateMedia({ colorScheme: 'dark' });
     await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
-    await page.getByLabel('外观', { exact: true }).selectOption('light');
+    await choosePreference(page, 'theme', 'light');
     await page.reload();
     await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
     assert.equal(
-      await page.getByLabel('外观', { exact: true }).inputValue(),
+      await page.getByRole('button', { name: '外观', exact: true }).getAttribute('data-value'),
       'light',
       'explicit theme survives reload',
     );
@@ -372,7 +470,7 @@ export async function checkUsability() {
       animations: 'disabled',
       path: resolve('test-results', 'conversation-navigation-light.png'),
     });
-    await page.getByLabel('外观', { exact: true }).selectOption('dark');
+    await choosePreference(page, 'theme', 'dark');
     await page.screenshot({
       animations: 'disabled',
       path: resolve('test-results', 'conversation-navigation-dark.png'),
@@ -661,7 +759,7 @@ export async function checkUsability() {
       1,
       'late state responses must not overwrite newer state',
     );
-    await page.locator('.sidebar .language-control select').selectOption('en');
+    await choosePreference(page, 'language', 'en');
     assert.equal(await page.locator('html').getAttribute('lang'), 'en');
     assert.equal(await page.title(), 'Phantom Circuit · Local workspace');
     await page.getByRole('button', { name: 'Board', exact: true }).waitFor();
@@ -684,7 +782,7 @@ export async function checkUsability() {
       await page.setViewportSize(viewport);
       for (const theme of ['dark', 'light']) {
         if ((await page.locator('html').getAttribute('data-theme')) !== theme)
-          await page.locator('.theme-control select').selectOption(theme);
+          await choosePreference(page, 'theme', theme);
         for (const view of ['Discuss with PM', 'Tasks', 'Runs']) {
           await page.getByRole('tab', { name: view, exact: view !== 'Tasks' }).click();
           assert.equal(
@@ -751,6 +849,15 @@ export async function checkUsability() {
     async function captureModal(name: string, width: number, theme: string) {
       const modal = page.locator('.modal');
       await modal.waitFor();
+      await modal.locator('.language-control').click();
+      const languageMenu = modal.locator('.preference-menu:popover-open');
+      await languageMenu.waitFor();
+      await languageMenu.locator('[aria-checked="true"]').click();
+      await modal.locator('.language-control').click();
+      await languageMenu.waitFor();
+      await page.keyboard.press('Escape');
+      await languageMenu.waitFor({ state: 'hidden' });
+      assert.equal(await modal.isVisible(), true, 'closing the language menu preserves its dialog');
       const header = await modal.locator('header').boundingBox();
       const firstField = modal.locator('.modal-body .form label').first();
       if (await firstField.count()) {
@@ -785,7 +892,7 @@ export async function checkUsability() {
     for (const width of [1366, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       for (const theme of ['light', 'dark']) {
-        await page.locator('.theme-control select').selectOption(theme);
+        await choosePreference(page, 'theme', theme);
         await page.getByRole('button', { name: 'New project', exact: true }).click();
         await captureModal('new-project', width, theme);
         await page.locator('.context-trigger').click();

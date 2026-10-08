@@ -1,3 +1,4 @@
+import { choosePreference } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
@@ -287,11 +288,11 @@ export async function checkRuntimeUI() {
       .getByText('The service is temporarily unavailable; try again later', { exact: true })
       .waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
-    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+    await choosePreference(page, 'language', 'zh-CN');
     await page.getByText('服务暂时不可用，请稍后重试', { exact: true }).waitFor();
     await page.getByText('当前资源状态不允许此操作', { exact: true }).waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
-    await page.locator('.sidebar .language-control select').selectOption('en');
+    await choosePreference(page, 'language', 'en');
     const clarification = page.locator('.clarification-card');
     await clarification.waitFor();
     await page.setViewportSize({ width: 390, height: 500 });
@@ -352,7 +353,7 @@ export async function checkRuntimeUI() {
     assert.match(await allowance.innerText(), /12.345678901234/);
     await page.keyboard.press('Escape');
     await page.locator('#project-context').waitFor({ state: 'hidden' });
-    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+    await choosePreference(page, 'language', 'zh-CN');
     await page.locator('.context-trigger').click();
     await page
       .getByRole('alert')
@@ -360,7 +361,7 @@ export async function checkRuntimeUI() {
       .waitFor();
     await page.keyboard.press('Escape');
     await page.locator('#project-context').waitFor({ state: 'hidden' });
-    await page.locator('.sidebar .language-control select').selectOption('en');
+    await choosePreference(page, 'language', 'en');
     allowanceFails = false;
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
     const dialog = page.getByRole('dialog');
@@ -535,12 +536,12 @@ export async function checkRuntimeUI() {
       true,
     );
     await page.screenshot({ path: resolve('test-results', 'runtime-delivery-mobile.png') });
-    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
+    await choosePreference(page, 'language', 'zh-CN');
     await page.getByRole('button', { name: '引导当前 PM', exact: true }).waitFor();
     await page
       .getByText('当前 Run 不可引导时将排队；未确认的投递仍待核对。', { exact: true })
       .waitFor();
-    await page.locator('.sidebar .language-control select').selectOption('en');
+    await choosePreference(page, 'language', 'en');
     snapshot.runs = snapshot.runs.filter((run) => run.id !== 'active-pm');
     await page.reload();
     await page.getByLabel('Message to PM').waitFor();
@@ -561,12 +562,10 @@ export async function checkRuntimeUI() {
       ['queue', 'steer', 'steer', 'queue'],
     );
     for (const locale of ['en', 'zh-CN']) {
-      await page.locator('.sidebar .language-control select').selectOption(locale);
+      await choosePreference(page, 'language', locale);
       for (const theme of ['dark', 'light']) {
         if ((await page.locator('html').getAttribute('data-theme')) !== theme)
-          await page
-            .getByLabel(locale === 'en' ? 'Appearance' : '外观', { exact: true })
-            .selectOption(theme);
+          await choosePreference(page, 'theme', theme);
         for (const width of [1366, 390]) {
           await page.setViewportSize({ width, height: width === 390 ? 500 : 768 });
           await page.locator('.context-trigger').click();

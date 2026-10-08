@@ -57,6 +57,7 @@ import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversatio
 import { useTheme } from './theme.ts';
 import './style.css';
 import { LocaleProvider, useLocale, LanguageControl } from './locale/provider.tsx';
+import { PreferenceControl } from './preference-control.tsx';
 
 const profileKeys = {
   backend: 'profile.backend',
@@ -361,22 +362,19 @@ function App() {
             onClick={() => setModal('settings')}
           >
             <Settings2 size={17} />
-            <span>{t('settings.title')}</span>
+            <span className="control-label">{t('settings.title')}</span>
           </button>
-          <label className="theme-control">
-            {theme === 'dark' ? <Moon size={17} /> : <Sun size={17} />}
-            <span>{t('theme.preference')}</span>
-            <select
-              aria-label={t('theme.preference')}
-              title={t('theme.preference')}
-              value={themePreference}
-              onChange={(event) => setTheme(event.target.value)}
-            >
-              <option value="system">{t('theme.system')}</option>
-              <option value="light">{t('theme.light')}</option>
-              <option value="dark">{t('theme.dark')}</option>
-            </select>
-          </label>
+          <PreferenceControl
+            className="theme-control"
+            label={t('theme.preference')}
+            icon={theme === 'dark' ? <Moon size={17} /> : <Sun size={17} />}
+            value={themePreference}
+            onChange={setTheme}
+            options={['system', 'light', 'dark'].map((value) => ({
+              value,
+              label: t(`theme.${value}` as 'theme.system' | 'theme.light' | 'theme.dark'),
+            }))}
+          />
           <div className="connection">
             <span className={`status-dot ${connected ? 'live' : ''}`} />
             <span>{connected ? t('connection.ready') : t('connection.waiting')}</span>

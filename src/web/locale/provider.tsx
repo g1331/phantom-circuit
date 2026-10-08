@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createLocale, resolveLocale, type Locale } from './core.ts';
+import { PreferenceControl } from '../preference-control.tsx';
 
 export const localeStorageKey = 'phantom.locale';
 const LocaleContext = createContext<
@@ -47,18 +48,16 @@ export function useLocale() {
 export function LanguageControl({ icon }: { icon?: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   return (
-    <label className="language-control">
-      {icon}
-      <span>{t('controls.language')}</span>
-      <select
-        value={locale}
-        aria-label={t('controls.language')}
-        title={t('controls.language')}
-        onChange={(event) => setLocale(event.target.value as Locale)}
-      >
-        <option value="zh-CN">简体中文</option>
-        <option value="en">English</option>
-      </select>
-    </label>
+    <PreferenceControl
+      className="language-control"
+      icon={icon}
+      label={t('controls.language')}
+      value={locale}
+      onChange={(value) => setLocale(value as Locale)}
+      options={[
+        { value: 'zh-CN', label: '简体中文' },
+        { value: 'en', label: 'English' },
+      ]}
+    />
   );
 }
