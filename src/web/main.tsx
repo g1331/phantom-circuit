@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitPullRequest,
   Layers3,
+  Languages,
   MessageSquare,
   Moon,
   Pause,
@@ -352,10 +353,11 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <LanguageControl />
+          <LanguageControl icon={<Languages size={17} />} />
           <button
             className="sidebar-action"
             aria-label={t('settings.title')}
+            title={t('settings.title')}
             onClick={() => setModal('settings')}
           >
             <Settings2 size={17} />
@@ -366,6 +368,7 @@ function App() {
             <span>{t('theme.preference')}</span>
             <select
               aria-label={t('theme.preference')}
+              title={t('theme.preference')}
               value={themePreference}
               onChange={(event) => setTheme(event.target.value)}
             >

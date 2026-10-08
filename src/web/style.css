@@ -145,6 +145,7 @@ time {
   min-height: 100vh;
 }
 .sidebar {
+  container-type: inline-size;
   position: fixed;
   inset: 0 auto 0 0;
   width: 224px;
@@ -226,10 +227,11 @@ time {
 }
 .project-link {
   width: 100%;
+  height: 40px;
   display: flex;
-  gap: 10px;
+  gap: 6px;
   align-items: center;
-  padding: 12px 11px;
+  padding: 0 8px;
   border: 0;
   background: none;
   text-align: left;
@@ -266,19 +268,45 @@ time {
 .sidebar-bottom {
   margin-top: auto;
   padding-top: 24px;
-}
-.sidebar-action {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) 72px;
+  gap: 6px;
   align-items: center;
   width: 100%;
+  min-height: 40px;
+  margin: 0;
   background: none;
   border: 0;
-  padding: 11px;
+  padding: 4px 8px;
   color: var(--muted);
   font-size: 12px;
   text-align: left;
   border-radius: 8px;
+}
+.sidebar-bottom > .sidebar-action > span {
+  grid-column: 2 / -1;
+}
+.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-bottom > :is(.language-control, .theme-control) select {
+  width: 100%;
+  height: 30px;
+  padding: 4px 2px;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+}
+.sidebar-bottom > :is(.language-control, .theme-control):focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .sidebar-action:hover {
   background: var(--raised);
@@ -1817,7 +1845,7 @@ time {
     padding: 13px;
   }
   .project-link {
-    min-height: 44px;
+    min-height: 40px;
   }
   .connection {
     justify-content: center;
@@ -2610,20 +2638,6 @@ time {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 850px) {
-  .sidebar .language-control {
-    flex-direction: column;
-    gap: 4px;
-  }
-  .sidebar .language-control span {
-    display: none;
-  }
-  .sidebar .language-control select {
-    width: 100%;
-    font-size: 9px;
-    padding-inline: 0;
-  }
-}
 @media (max-width: 660px) {
   .board-column {
     flex-basis: min(235px, calc(100vw - 116px));
@@ -3084,23 +3098,6 @@ time {
 .project-title {
   flex: 0 1 auto;
 }
-.theme-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  margin: 4px 8px 12px;
-}
-.theme-control svg {
-  flex-shrink: 0;
-}
-.theme-control select {
-  flex: 1;
-  min-width: 0;
-  padding: 6px;
-  background: transparent;
-  border: 0;
-}
 .sidebar-toggle {
   align-self: flex-end;
   margin: -16px 0 12px;
@@ -3124,9 +3121,7 @@ time {
     .sidebar-heading > span,
     .project-link > span,
     .sidebar-hint,
-    .language-control,
     .sidebar-action > span,
-    .theme-control,
     .connection
   ) {
   display: none;
@@ -3138,6 +3133,38 @@ time {
 .sidebar-collapsed :is(.project-link, .sidebar-action) {
   justify-content: center;
   padding-inline: 8px;
+}
+/* Both automatic narrow mode and manual collapse use the actual sidebar width. */
+@container (min-width: 81px) and (max-width: 180px) {
+  .sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) {
+    grid-template-columns: 17px minmax(0, 1fr) 62px;
+    font-size: 11px;
+  }
+  .sidebar-bottom > :is(.language-control, .theme-control) select {
+    padding-inline: 1px;
+    font-size: 10px;
+  }
+}
+@container (max-width: 80px) {
+  .sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    align-self: center;
+  }
+  .sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) > span {
+    display: none;
+  }
+  .sidebar-bottom > :is(.language-control, .theme-control) select {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+  }
 }
 .composer-tools {
   display: flex;
@@ -3456,18 +3483,8 @@ time {
   }
 }
 @media (max-width: 660px) {
-  .sidebar-toggle,
-  .theme-control > span {
+  .sidebar-toggle {
     display: none;
-  }
-  .theme-control {
-    margin: 2px;
-  }
-  .theme-control svg {
-    display: none;
-  }
-  .theme-control select {
-    font-size: 11px;
   }
   :root {
     --page-gutter: 16px;

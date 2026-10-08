@@ -44,10 +44,11 @@ export function useLocale() {
   return value;
 }
 
-export function LanguageControl() {
+export function LanguageControl({ icon }: { icon?: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   return (
     <label className="language-control">
+      {icon}
       <span>{t('controls.language')}</span>
       <select
         value={locale}

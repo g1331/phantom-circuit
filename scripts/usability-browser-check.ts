@@ -227,6 +227,87 @@ export async function checkUsability() {
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'Conversation fixture', exact: true }).click();
+    for (const collapsed of [false, true]) {
+      await page.setViewportSize({ width: 1366, height: 768 });
+      if (collapsed) await page.locator('.sidebar-toggle').click();
+      for (const locale of ['zh-CN', 'en']) {
+        await page.locator('.sidebar .language-control select').selectOption(locale);
+        for (const width of [1366, 1100, 851, 850, 768, 660, 390]) {
+          await page.setViewportSize({ width, height: 768 });
+          const controls = await page
+            .locator('.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control)')
+            .evaluateAll((rows) =>
+              rows.map((row) => {
+                const box = row.getBoundingClientRect();
+                const icon = row.querySelector('svg')!.getBoundingClientRect();
+                const label = row.querySelector('span')!;
+                const labelBox = label.getBoundingClientRect();
+                const select = row.querySelector('select')?.getBoundingClientRect();
+                return {
+                  x: box.x,
+                  y: box.y,
+                  width: box.width,
+                  height: box.height,
+                  iconX: icon.x,
+                  iconCenterY: icon.y + icon.height / 2,
+                  labelX: labelBox.x,
+                  labelVisible: labelBox.width > 0,
+                  labelFits: label.scrollWidth <= label.clientWidth,
+                  selectRight: select ? select.right : undefined,
+                };
+              }),
+            );
+          const context = `${width}px ${locale} ${collapsed ? 'collapsed' : 'expanded'} sidebar`;
+          assert.equal(controls.length, 3, context);
+          const projectIcon = await page.locator('.project-link svg').first().boundingBox();
+          assert.ok(
+            projectIcon && Math.abs(projectIcon.x - controls[0].iconX) < 1,
+            `${context}: project and control icon columns`,
+          );
+          if (controls[0].labelVisible) {
+            const projectLabel = await page.locator('.project-link > span').first().boundingBox();
+            assert.ok(
+              projectLabel && Math.abs(projectLabel.x - controls[0].labelX) < 1,
+              `${context}: project and control text columns`,
+            );
+          }
+          for (const control of controls) {
+            assert.ok(Math.abs(control.iconX - controls[0].iconX) < 1, `${context}: icon column`);
+            assert.equal(control.height, 40, `${context}: row height`);
+            assert.equal(control.width, controls[0].width, `${context}: row width`);
+            assert.ok(
+              Math.abs(control.iconCenterY - (control.y + control.height / 2)) < 1,
+              `${context}: vertical centering`,
+            );
+            if (control.labelVisible) {
+              assert.ok(
+                Math.abs(control.labelX - controls[0].labelX) < 1,
+                `${context}: text column`,
+              );
+              assert.ok(control.labelFits, `${context}: readable labels`);
+            }
+          }
+          assert.ok(
+            Math.abs(controls[1].y - controls[0].y - 44) < 1 &&
+              Math.abs(controls[2].y - controls[1].y - 44) < 1,
+            `${context}: row gaps`,
+          );
+          assert.ok(
+            Math.abs(controls[0].selectRight! - controls[2].selectRight!) < 1,
+            `${context}: selector column`,
+          );
+          await page.locator('.sidebar').screenshot({
+            path: resolve(
+              'test-results',
+              `sidebar-${width}-${locale}-${collapsed ? 'collapsed' : 'expanded'}.png`,
+            ),
+          });
+        }
+      }
+    }
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await page.locator('.sidebar-toggle').click();
+    await page.locator('.sidebar .language-control select').selectOption('zh-CN');
     await page.getByLabel('外观', { exact: true }).selectOption('system');
     await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
     await page.emulateMedia({ colorScheme: 'dark' });
