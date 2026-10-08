@@ -121,9 +121,12 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
           name: locale === 'en' ? 'Current project claim order' : '当前项目认领顺序',
           exact: true,
         });
+        const rules = region.locator('.schedule-rules');
+        await rules.locator('summary').click();
         await region
           .getByText(locale === 'en' ? /not a promised start time/ : /不承诺开工时间/)
           .waitFor();
+        await rules.locator('summary').click();
         assert.equal(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,

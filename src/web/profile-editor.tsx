@@ -113,11 +113,11 @@ export function ProfileEditor({
           className="secondary-button"
           disabled={!!checking}
           onClick={() => void checkProfiles()}
+          title={t('ui.profileSaveNote')}
         >
           {t('ui.checkProfiles')}
         </button>
       </div>
-      <p className="field-note">{t('ui.profileSaveNote')}</p>
       {checking && <p role="status">{checking}</p>}
       {!checking && checkResult?.signature === signature && (
         <p role={checkResult.error ? 'alert' : 'status'}>
@@ -296,11 +296,8 @@ function Assignment({
             : t('ui.officialModelsMustBeSelectedFromA')}
         </p>
       )}
-      {custom && (
-        <p className="muted">
-          {!efforts && t('ui.theUpstreamDidNotProvideKnownReasoning')}{' '}
-          {t('ui.upstreamCompatibilityIsVerifiedOnTheFirst')}{' '}
-        </p>
+      {custom && !efforts && (
+        <p className="muted">{t('ui.theUpstreamDidNotProvideKnownReasoning')}</p>
       )}
     </fieldset>
   );

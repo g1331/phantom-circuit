@@ -140,7 +140,6 @@ export function RuntimeFields({
       </div>
       <div className="runtime-summary">
         <p role="status">{t('runtime.effective', { agent: agent === 'omp' ? 'OMP' : 'Codex' })}</p>
-        <p className="muted">{t('runtime.future')}</p>
         <button
           className="secondary-button"
           type="button"
@@ -172,8 +171,7 @@ export function RuntimeFields({
       )}
       {project && (
         <details className="settings-group role-modes-group">
-          <summary>{t('runtime.assignmentModes')}</summary>
-          <p className="muted">{t('runtime.assignmentModesHint')}</p>
+          <summary title={t('runtime.assignmentModesHint')}>{t('runtime.assignmentModes')}</summary>
           <div className="role-modes">
             {profileNames.map((role) => (
               <label key={role}>

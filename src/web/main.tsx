@@ -69,7 +69,7 @@ const isRunning = (status: string) => status === 'running' || status === 'waitin
 function App() {
   const { t, time, number, host, locale: priorityLocale } = useLocale();
   const [schedule, setSchedule] = useState<SchedulingExplanation>();
-  const [scheduleError, setScheduleError] = useState('');
+  const [scheduleError, setScheduleError] = useState<{ projectId: string; message: string }>();
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleRefresh, setScheduleRefresh] = useState(0);
   const [state, setState] = useState<Snapshot>();
@@ -256,14 +256,16 @@ function App() {
   useEffect(() => {
     let current = true;
     setScheduleLoading(!!project);
-    setScheduleError('');
     if (project)
       void api<SchedulingExplanation>(`/projects/${project.id}/scheduling`)
         .then((result) => {
-          if (current) setSchedule(result);
+          if (current) {
+            setSchedule(result);
+            setScheduleError(undefined);
+          }
         })
         .catch((error) => {
-          if (current) setScheduleError(String(error));
+          if (current) setScheduleError({ projectId: project.id, message: String(error) });
         })
         .finally(() => {
           if (current) setScheduleLoading(false);
@@ -349,13 +351,6 @@ function App() {
             </button>
           ))}
         </nav>
-        {!state?.projects.length && (
-          <p className="sidebar-hint">
-            {t('app.firstProject')}
-            <br />
-            {t('app.firstProjectHint')}
-          </p>
-        )}
         <div className="sidebar-bottom">
           <LanguageControl />
           <button
@@ -451,17 +446,14 @@ function App() {
               <div>
                 <span>01</span>
                 <strong>{t('onboarding.discuss')}</strong>
-                <small>{t('onboarding.align')}</small>
               </div>
               <div>
                 <span>02</span>
                 <strong>{t('onboarding.switch')}</strong>
-                <small>{t('onboarding.pace')}</small>
               </div>
               <div>
                 <span>03</span>
                 <strong>{t('onboarding.feedback')}</strong>
-                <small>{t('onboarding.delivery')}</small>
               </div>
             </div>
           </div>
@@ -546,11 +538,7 @@ function App() {
                               <Layers3 size={22} />
                             </div>
                             <h2>{t('chat.emptyTitle')}</h2>
-                            <p>
-                              {t('chat.emptyDescription')}
-                              <br />
-                              {t('chat.emptyHint')}
-                            </p>
+                            <p>{t('chat.emptyDescription')}</p>
                             <div className="suggestions">
                               <button
                                 onClick={() =>
@@ -750,7 +738,7 @@ function App() {
                       projects={state?.projects ?? []}
                       locale={priorityLocale}
                       refresh={() => setScheduleRefresh((n) => n + 1)}
-                      error={scheduleError}
+                      error={scheduleError?.projectId === project.id ? scheduleError.message : ''}
                       refreshing={scheduleLoading}
                     />
                     <div className="list-toolbar">
@@ -825,9 +813,13 @@ function App() {
                                     </span>
                                     <PriorityBadge value={task.priority} locale={priorityLocale} />
                                     <TaskRuntimeBadges state={state} taskId={task.id} />
-                                    <span>
-                                      {t('tasks.dependencies', { count: task.dependencies.length })}
-                                    </span>
+                                    {!!task.dependencies.length && (
+                                      <span>
+                                        {t('tasks.dependencies', {
+                                          count: task.dependencies.length,
+                                        })}
+                                      </span>
+                                    )}
                                     {task.control === 'paused' && (
                                       <em>{t('tasks.pausedControl')}</em>
                                     )}
@@ -908,7 +900,7 @@ function App() {
                                     : r.provider?.kind === 'custom'
                                       ? r.provider.name
                                       : t('ui.officialCodexLogin')}{' '}
-                                  ({r.profileConfig?.providerId ?? 'codex'}) ·{' '}
+                                  ·{' '}
                                   {r.modelIdentity?.model ??
                                     r.model?.model ??
                                     r.profileConfig?.model ??
@@ -962,7 +954,7 @@ function App() {
                 <div className="context-heading">
                   <div>
                     <h2>{project.name}</h2>
-                    <p>{project.description || t('project.description')}</p>
+                    {project.description && <p>{project.description}</p>}
                   </div>
                   <button
                     className="icon-button"
@@ -1077,13 +1069,9 @@ function App() {
                                 ? t('ui.newTaskClaimsEnabled')
                                 : t('ui.newTaskClaimsStopped')}
                             </strong>
-                            <small>
-                              {!r.enabled && count
-                                ? t('repos.running', { count })
-                                : r.enabled
-                                  ? t('ui.respectsDependenciesAndConcurrencyLimits')
-                                  : t('ui.pmDiscussionAndTaskPreparationRemainAvailable')}
-                            </small>
+                            {!r.enabled && count > 0 && (
+                              <small>{t('repos.running', { count })}</small>
+                            )}
                           </div>
                           <button
                             className={`switch ${r.enabled ? 'on' : ''}`}
@@ -1241,11 +1229,7 @@ function App() {
         )}
       </main>
       {modal === 'project' && (
-        <Modal
-          title={t('project.create')}
-          subtitle={t('project.subtitle')}
-          onClose={() => setModal(null)}
-        >
+        <Modal title={t('project.create')} onClose={() => setModal(null)}>
           <ProjectForm
             busy={busy}
             submit={async (name) =>
@@ -1343,7 +1327,6 @@ function App() {
       {repoConfig && (
         <Modal
           title={t('repos.configure', { name: repoConfig.name })}
-          subtitle={t('ui.thePmCanInferTheseCommandsFrom')}
           onClose={() => setRepoConfig(undefined)}
         >
           <CommandsForm
@@ -1560,7 +1543,7 @@ function Modal({
   wide,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
@@ -1586,7 +1569,7 @@ function Modal({
         <header>
           <div className="modal-heading">
             <h2>{title}</h2>
-            <p>{subtitle}</p>
+            {subtitle && <p>{subtitle}</p>}
           </div>
           <div className="modal-toolbar">
             <LanguageControl />
@@ -1595,7 +1578,7 @@ function Modal({
             </button>
           </div>
         </header>
-        {children}
+        <div className="modal-body">{children}</div>
       </div>
     </dialog>
   );
@@ -1758,7 +1741,14 @@ function CommandsForm({
           <input
             name={k}
             defaultValue={repo.commands[k]}
-            placeholder={k === 'start' ? 'npm run dev -- --port {port}' : t('ui.forExampleNpmTest')}
+            placeholder={
+              {
+                install: t('ui.installExample'),
+                build: t('ui.buildExample'),
+                test: t('ui.forExampleNpmTest'),
+                start: 'npm run dev -- --port {port}',
+              }[k]
+            }
           />
         </label>
       ))}

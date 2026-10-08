@@ -18,7 +18,6 @@ export function ProviderSettings() {
   const provider = providers.find((p) => p.id === selected);
   return (
     <section className="form provider-settings" aria-label={t('ui.providerManagement')}>
-      <p className="muted"> {t('ui.saveUpstreamConnectionsAndFetchModelsRole')} </p>
       <div className="provider-toolbar">
         <label>
           {t('ui.selectProvider')}{' '}
@@ -280,7 +279,6 @@ function ProviderDetail({
               placeholder={t('ui.enterManuallyIfTheUpstreamDoesNot')}
             />
           </label>
-          <small> {t('ui.useThisToCheckModelIdsSaving')} </small>
         </>
       )}
       {provider?.kind === 'custom' && <ModelPrices provider={provider} />}

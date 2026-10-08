@@ -112,7 +112,11 @@ export async function checkUsability() {
     headless: true,
     channel: process.platform === 'win32' ? 'msedge' : undefined,
   });
-  const page = await browser.newPage({ viewport: { width: 1366, height: 768 }, locale: 'zh-CN' });
+  const page = await browser.newPage({
+    viewport: { width: 1366, height: 768 },
+    locale: 'zh-CN',
+    reducedMotion: 'reduce',
+  });
   const errors: string[] = [];
   page.setDefaultTimeout(8000);
   // Cold Vite module loading is separate from the UI behavior assertion budget.
@@ -127,6 +131,29 @@ export async function checkUsability() {
     }
     Object.defineProperty(window, 'EventSource', { value: FixtureEvents });
   })()`);
+  const auditModels = [
+    { id: 'config-required', provider: 'fixture', reasoningEfforts: ['low', 'high'] },
+  ];
+  await page.route('**/api/agents/*/models', (route) =>
+    route.fulfill({ json: { models: auditModels, available: true } }),
+  );
+  await page.route('**/api/providers/*/models', (route) =>
+    route.fulfill({ json: { models: auditModels, ok: true } }),
+  );
+  await page.route('**/api/providers', (route) =>
+    route.fulfill({
+      json: [
+        ...store.snapshot().providers,
+        {
+          id: 'ui-provider',
+          kind: 'custom',
+          name: 'UI provider',
+          baseUrl: 'https://example.invalid/v1',
+          hasKey: false,
+        },
+      ],
+    }),
+  );
   await page.route('**/api/session', (route) => route.fulfill({ json: { csrf: 'fixture' } }));
   await page.route('**/api/agents/*/allowance?*', (route) => {
     const url = new URL(route.request().url());
@@ -427,6 +454,11 @@ export async function checkUsability() {
     ]);
     assert.equal(await page.locator('.claim-order time').count(), 1);
     assert.equal(
+      await page.getByText('正在更新，显示上次成功结果', { exact: true }).count(),
+      0,
+      'background refresh must not flash transient text in the task workspace',
+    );
+    assert.equal(
       (await page.locator('.list-toolbar').boundingBox())?.y,
       stableToolbar?.y,
       'refresh must not collapse the schedule or move filters',
@@ -475,7 +507,26 @@ export async function checkUsability() {
     assert.equal(await page.locator('.claim-order time').count(), 1);
     await page.getByText('更新失败，显示上次成功结果', { exact: true }).waitFor();
     fail = false;
+    hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const recoveringSchedule = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     await page.locator('.claim-order button').click();
+    await Promise.race([
+      recoveringSchedule,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Recovery refresh request missing')), 8000),
+      ),
+    ]);
+    assert.equal(
+      await page.getByText('更新失败，显示上次成功结果', { exact: true }).isVisible(),
+      true,
+      'a refresh error stays visible until a successful response replaces it',
+    );
+    release();
+    hold = undefined;
     await page.locator('.claim-order [role="alert"]').waitFor({ state: 'hidden' });
     hold = new Promise<void>((resolve) => {
       release = resolve;
@@ -589,6 +640,20 @@ export async function checkUsability() {
               el.scrollLeft = 0;
             });
             await page.locator('.board-column h3').first().scrollIntoViewIfNeeded();
+            await page.locator('.task-workspace').evaluate((element) => {
+              element.scrollTop = 0;
+            });
+            const claimBox = await page.locator('.claim-order').boundingBox();
+            const searchBox = await page.getByLabel('Search tasks').boundingBox();
+            const cardBox = await page.locator('.task-card').first().boundingBox();
+            assert.ok(
+              claimBox &&
+                searchBox &&
+                cardBox &&
+                Math.abs(claimBox.x - searchBox.x) < 1 &&
+                Math.abs(cardBox.x - searchBox.x) < 1,
+              'claim order, filters and first board card share the same page gutter after scrolling',
+            );
           } else if (view === 'Discuss with PM') {
             await page.getByLabel('Message to PM').focus();
             await page.locator('.composer').scrollIntoViewIfNeeded();
@@ -600,6 +665,86 @@ export async function checkUsability() {
             ),
           });
         }
+      }
+    }
+    async function captureModal(name: string, width: number, theme: string) {
+      const modal = page.locator('.modal');
+      await modal.waitFor();
+      const header = await modal.locator('header').boundingBox();
+      const firstField = modal.locator('.modal-body .form label').first();
+      if (await firstField.count()) {
+        const label = await firstField.boundingBox();
+        const title = await modal.locator('header h2').boundingBox();
+        assert.ok(
+          label && title && Math.abs(label.x - title.x) < 1,
+          'modal fields align with the header',
+        );
+      }
+      await modal.locator('.modal-body').evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      const scrolledHeader = await modal.locator('header').boundingBox();
+      assert.ok(
+        header && scrolledHeader && Math.abs(header.y - scrolledHeader.y) < 1,
+        'modal header and close control stay visible while its body scrolls',
+      );
+      assert.equal(
+        await modal.evaluate((element) => element.scrollWidth <= element.clientWidth),
+        true,
+      );
+      await modal.locator('.modal-body').evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await page.screenshot({
+        path: resolve('test-results', `audit-${name}-${width}-${theme}.png`),
+      });
+      await modal.getByRole('button', { name: 'Close dialog', exact: true }).click();
+      await modal.waitFor({ state: 'detached' });
+    }
+    for (const width of [1366, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+      for (const theme of ['light', 'dark']) {
+        await page.locator('.theme-control select').selectOption(theme);
+        await page.getByRole('button', { name: 'New project', exact: true }).click();
+        await captureModal('new-project', width, theme);
+        await page.locator('.context-trigger').click();
+        await page.locator('#project-context').waitFor();
+        const contextHeader = await page.locator('.context-heading').boundingBox();
+        await page.locator('#project-context').evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+        });
+        const scrolledContextHeader = await page.locator('.context-heading').boundingBox();
+        assert.ok(
+          contextHeader &&
+            scrolledContextHeader &&
+            Math.abs(contextHeader.y - scrolledContextHeader.y) < 1,
+          'project overview keeps its title and close control visible while scrolling',
+        );
+        await page.locator('#project-context').evaluate((element) => {
+          element.scrollTop = 0;
+        });
+        await page.screenshot({
+          path: resolve('test-results', `audit-project-overview-${width}-${theme}.png`),
+        });
+        await page.getByRole('button', { name: 'Configure fixture-repo', exact: true }).click();
+        await captureModal('repository-commands', width, theme);
+        await page
+          .locator('#project-context')
+          .getByRole('button', { name: 'Connect repository', exact: true })
+          .click();
+        await captureModal('connect-repository', width, theme);
+        await page.locator('.context-trigger').click();
+        await page
+          .locator('#project-context')
+          .getByRole('button', { name: 'Project model settings', exact: true })
+          .click();
+        await captureModal('project-settings', width, theme);
+        await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+        await captureModal('global-settings', width, theme);
+        await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+        await page.locator('.provider-group > summary').click();
+        await page.getByLabel('Select provider', { exact: true }).selectOption('ui-provider');
+        await captureModal('provider-settings', width, theme);
       }
     }
     assert.deepEqual(errors, []);

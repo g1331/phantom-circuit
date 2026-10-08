@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { RotateCw } from 'lucide-react';
 import {
   priorityLabel,
   priorityLevels,
@@ -74,52 +75,71 @@ export function ClaimOrder({
   const text = priorityText[locale];
   return (
     <section className="claim-order" aria-label={text.schedule}>
-      <h3>{text.schedule}</h3>
-      <p>{text.scope}</p>
-      <button className="secondary-button" onClick={refresh}>
-        {text.refresh}
-      </button>
-      {error && <p role="alert">{text.scheduleFailed}</p>}
-      <p className="schedule-status" role="status">
-        {error && schedule
-          ? t('schedule.stale')
-          : refreshing
-            ? t(schedule ? 'schedule.refreshing' : 'schedule.loading')
-            : '\u00a0'}
-      </p>
+      <div className="claim-order-heading">
+        <h3>{text.schedule}</h3>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={refresh}
+          aria-label={text.refresh}
+          title={text.refresh}
+        >
+          <RotateCw size={15} />
+        </button>
+      </div>
+      {error && (
+        <p className="schedule-error" role="alert">
+          {schedule ? t('schedule.stale') : text.scheduleFailed}
+        </p>
+      )}
+      {!schedule && refreshing && <p role="status">{t('schedule.loading')}</p>}
       {schedule && (
         <>
-          <p>
-            {text.updated}:{' '}
-            <time dateTime={schedule.at}>{new Date(schedule.at).toLocaleString(locale)}</time> ·{' '}
-            {projects.find((p) => p.id === schedule.projectId)?.name}
-          </p>
-          <p>
-            {text.rotation}:{' '}
-            {schedule.projectOrder
-              .map((id) => projects.find((p) => p.id === id)?.name ?? id)
-              .join(' → ')}
-          </p>
           {schedule.candidates.length ? (
-            <ol>
+            <ol className="claim-candidates">
               {schedule.candidates.map((id) => {
-                const task = schedule.tasks.find((t) => t.taskId === id);
+                const task = schedule.tasks.find((task) => task.taskId === id);
                 return (
                   <li key={id}>
-                    {task?.title ?? id}{' '}
+                    <span>{task?.title ?? id}</span>
                     {task && <PriorityBadge value={task.priority} locale={locale} />}
                   </li>
                 );
               })}
             </ol>
           ) : (
-            <p>{text.empty}</p>
+            <p className="claim-empty">{text.empty}</p>
           )}
+          <div className="claim-order-meta">
+            <time
+              dateTime={schedule.at}
+              title={`${text.updated}: ${new Date(schedule.at).toLocaleString(locale)}`}
+            >
+              {text.updated}:{' '}
+              {new Date(schedule.at).toLocaleTimeString(locale, {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </time>
+            <details className="schedule-rules">
+              <summary>{t('schedule.rules')}</summary>
+              <p>{text.scope}</p>
+              {schedule.projectOrder.length > 1 && (
+                <p>
+                  {text.rotation}:{' '}
+                  {schedule.projectOrder
+                    .map((id) => projects.find((project) => project.id === id)?.name ?? id)
+                    .join(' → ')}
+                </p>
+              )}
+            </details>
+          </div>
         </>
       )}
     </section>
   );
 }
+
 export function PriorityEditor({
   task,
   locale,

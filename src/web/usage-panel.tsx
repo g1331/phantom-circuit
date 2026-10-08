@@ -128,11 +128,16 @@ export function RunRecord({ run, cost }: { run: Run; cost?: CostEstimate }) {
   const identity = run.modelIdentity ?? run.model;
   return (
     <details className="run-record">
-      <summary>
-        {t('usage.run')} · {run.agentKind ?? identity?.agentKind ?? t('usage.unknown')} ·{' '}
-        {identity?.model ?? run.profileConfig?.model ?? t('usage.unknown')}
-      </summary>
+      <summary>{t('usage.run')}</summary>
       <dl className="usage-grid">
+        <div>
+          <dt>{t('runtime.agent')}</dt>
+          <dd>{run.agentKind ?? identity?.agentKind ?? t('usage.unknown')}</dd>
+        </div>
+        <div>
+          <dt>{t('ui.model')}</dt>
+          <dd>{identity?.model ?? run.profileConfig?.model ?? t('usage.unknown')}</dd>
+        </div>
         <div>
           <dt>{t('runtime.provider')}</dt>
           <dd>{identity?.providerId ?? run.provider?.id ?? t('usage.unknown')}</dd>

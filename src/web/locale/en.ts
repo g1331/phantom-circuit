@@ -86,6 +86,7 @@ export const en = {
   'docs.change': 'Document change {path}',
   'profile.customLabel': '{profile} custom model ID',
   'provider.connected': 'Connected · {count} models',
+  'schedule.rules': 'Claim rules',
   'schedule.refreshing': 'Updating; showing the last successful result',
   'schedule.stale': 'Update failed; showing the last successful result',
   'ui.projectModelSettings': 'Project model settings',
@@ -134,9 +135,9 @@ export const en = {
     'Connect an existing local checkout to its GitHub repository. The work switch starts closed.',
   'ui.runtimeSettings': 'Runtime settings',
   'ui.globalAssignmentsAreDefaultsForNewProjects':
-    'Projects inherit software defaults unless their agent or role profiles are pinned.',
+    'Projects can inherit defaults or use their own settings.',
   'ui.changesAffectFutureRunsActiveAndHistorical':
-    'Changes affect future runs. Active and historical runs retain their pinned assignments.',
+    'Applies to future runs; active runs keep their configuration.',
   'ui.thePmCanInferTheseCommandsFrom':
     'The PM can infer these commands from the repository. You can also edit them here.',
   'ui.taskSpecification': 'Task specification',
@@ -163,6 +164,8 @@ export const en = {
   'ui.build': 'Build',
   'ui.acceptanceTestsRequiredForDelivery': 'Acceptance tests (required for delivery)',
   'ui.previewStartCommand': 'Preview start command',
+  'ui.installExample': 'For example: npm ci',
+  'ui.buildExample': 'For example: npm run build',
   'ui.forExampleNpmTest': 'For example: npm test',
   'ui.previewPort': 'Preview port',
   'ui.requiredGithubChecks': 'Required GitHub checks',
@@ -180,7 +183,7 @@ export const en = {
   'ui.profileCheckTimeout':
     'Configuration check timed out (30 seconds). Saved settings are unchanged.',
   'ui.profileSaveNote':
-    'Save applies local checks immediately. Check configurations separately; each check is limited to 15 seconds, with 30 seconds for all roles. Runs still verify the effective configuration.',
+    'Saving does not execute a model turn. Connection checks take up to 30 seconds; runs still verify their configuration.',
   'ui.saveSettings': 'Save settings',
   'ui.queued2': 'Queued',
   'ui.running2': 'Running',
@@ -227,7 +230,7 @@ export const en = {
   'ui.youCanExplicitlyChooseACustomModel': '; you can explicitly choose a custom model ID.',
   'ui.officialModelsMustBeSelectedFromA': '; official models must be selected from a valid list.',
   'ui.theUpstreamDidNotProvideKnownReasoning':
-    'The upstream did not provide known reasoning efforts. Use Check configurations or verify on the first Run.',
+    'No effort list is available. Enter a value supported by your provider.',
   'ui.upstreamCompatibilityIsVerifiedOnTheFirst':
     'Upstream compatibility is verified on the first run.',
   'ui.cannotLoadProviders': 'Cannot load providers',
@@ -303,8 +306,7 @@ export const en = {
   'tabs.tasks': 'Tasks',
   'tabs.runs': 'Runs',
   'chat.emptyTitle': 'Let’s talk about your idea.',
-  'chat.emptyDescription': 'Describe the problem to solve or the experience you want.',
-  'chat.emptyHint': 'Keep the work switch closed while we discuss.',
+  'chat.emptyDescription': 'Tell the PM what you want to build.',
   'chat.requirements': 'Explore requirements',
   'chat.explore': 'Explore the project',
   'chat.message': 'Message to PM',
