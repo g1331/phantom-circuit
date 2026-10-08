@@ -51,6 +51,49 @@ export async function checkUsability() {
     });
   }
   const secondProject = store.createProject('Second project', 'Second project content');
+  const conversationProject = store.createProject('Conversation fixture', 'Long conversation');
+  for (let index = 1; index <= 50; index++) {
+    const input = store.addMessage(conversationProject.id, 'user', `Question ${index}`, 'discuss');
+    const run = store.run('pm', conversationProject.id, 'pm', { sourceMessageId: input.id });
+    store.addMessage(
+      conversationProject.id,
+      'assistant',
+      `Intermediate ${index}`,
+      undefined,
+      undefined,
+      { runId: run.id },
+    );
+    store.activity(run, 'command', {
+      kind: 'command',
+      title: '执行命令',
+      status: 'completed',
+      details: { command: `echo step-${index}`, output: `Output ${index}` },
+    });
+    store.addMessage(
+      conversationProject.id,
+      'assistant',
+      `Final answer ${index}\n\n${'Readable answer. '.repeat(20)}`,
+      undefined,
+      undefined,
+      { runId: run.id, sourceMessageId: input.id },
+    );
+    store.finishRun(run.id, 'completed');
+  }
+  const pendingInput = store.addMessage(
+    conversationProject.id,
+    'user',
+    'Latest question',
+    'discuss',
+  );
+  const pendingRun = store.run('pm', conversationProject.id, 'pm', {
+    sourceMessageId: pendingInput.id,
+  });
+  store.activity(pendingRun, 'live', {
+    kind: 'command',
+    title: 'Live command',
+    status: 'running',
+    details: { command: 'npm run check' },
+  });
   for (let index = 0; index < 24; index++) {
     store.addMessage(
       project.id,
@@ -152,7 +195,147 @@ export async function checkUsability() {
     );
   });
   try {
+    await mkdir(resolve('test-results'), { recursive: true });
+    await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: 'Conversation fixture', exact: true }).click();
+    await page.getByLabel('外观', { exact: true }).selectOption('system');
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+    await page.getByLabel('外观', { exact: true }).selectOption('light');
+    await page.reload();
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+    assert.equal(
+      await page.getByLabel('外观', { exact: true }).inputValue(),
+      'light',
+      'explicit theme survives reload',
+    );
+    const firstProcess = page.locator('.pm-process').first();
+    const liveProcess = page.locator(`.pm-process[data-run-id="${pendingRun.id}"]`);
+    await liveProcess.locator(':scope > summary').waitFor();
+    assert.equal(await liveProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
+    assert.equal(await firstProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+    assert.equal(
+      await page.getByText('Intermediate 1', { exact: true }).isVisible(),
+      false,
+      'completed intermediate prose folds with the tools',
+    );
+    assert.equal(
+      await page.getByText(/^Final answer 1\b/).isVisible(),
+      true,
+      'final answer is retained',
+    );
+    await page.getByRole('button', { name: '跳转到第 1 轮', exact: true }).focus();
+    await page.getByRole('tooltip').getByText('Question 1', { exact: true }).waitFor();
+    await page.keyboard.press('Enter');
+    await firstProcess.locator(':scope > summary').click();
+    assert.equal(await page.getByText('Intermediate 1', { exact: true }).isVisible(), true);
+    const firstQuestion = page
+      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByText('Question 1', { exact: true });
+    const before = await firstQuestion.boundingBox();
+    store.finishRun(pendingRun.id, 'completed');
+    await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
+    await page.waitForFunction(
+      (id) =>
+        document.querySelector(`.pm-process[data-run-id="${id}"]`)?.getAttribute('data-status') ===
+        'completed',
+      pendingRun.id,
+    );
+    assert.equal(
+      await liveProcess.evaluate((el: HTMLDetailsElement) => el.open),
+      false,
+      'offscreen normal completion auto-collapses',
+    );
+    assert.equal(
+      await firstProcess.evaluate((el: HTMLDetailsElement) => el.open),
+      true,
+      'manual expansion survives refresh',
+    );
+    const after = await firstQuestion.boundingBox();
+    assert.ok(
+      before && after && Math.abs(before.y - after.y) < 2,
+      'history reading position is stable',
+    );
+    await page.screenshot({
+      animations: 'disabled',
+      path: resolve('test-results', 'conversation-navigation-light.png'),
+    });
+    await page.getByLabel('外观', { exact: true }).selectOption('dark');
+    await page.screenshot({
+      animations: 'disabled',
+      path: resolve('test-results', 'conversation-navigation-dark.png'),
+    });
+    const readingInput = store.addMessage(
+      conversationProject.id,
+      'user',
+      'Reading a live reply',
+      'discuss',
+    );
+    const readingRun = store.run('pm', conversationProject.id, 'pm', {
+      sourceMessageId: readingInput.id,
+    });
+    store.addMessage(
+      conversationProject.id,
+      'assistant',
+      'Live explanation being read',
+      undefined,
+      undefined,
+      { runId: readingRun.id },
+    );
+    store.activity(readingRun, 'read', {
+      kind: 'search',
+      title: '搜索资料',
+      status: 'running',
+      details: { summary: 'Relevant evidence' },
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
+    await page.getByRole('button', { name: '跳转到第 52 轮', exact: true }).click();
+    const liveExplanation = page
+      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByText('Live explanation being read', { exact: true });
+    await liveExplanation.scrollIntoViewIfNeeded();
+    store.addMessage(
+      conversationProject.id,
+      'assistant',
+      'New final answer',
+      undefined,
+      undefined,
+      { runId: readingRun.id },
+    );
+    store.finishRun(readingRun.id, 'completed');
+    await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
+    await page.getByText('New final answer', { exact: true }).waitFor();
+    assert.equal(
+      await liveExplanation.isVisible(),
+      true,
+      'a reply moving into a completed process stays visible while being read',
+    );
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
+    await page.reload();
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await page.setViewportSize({ width: 390, height: 500 });
+    await page.getByRole('button', { name: '对话目录', exact: true }).click();
+    const directory = page.getByRole('dialog', { name: '对话目录' });
+    await directory.getByRole('button', { name: '50 Question 50', exact: true }).click();
+    await directory.waitFor({ state: 'hidden' });
+    assert.ok(
+      await page
+        .getByRole('region', { name: '与 PM 讨论', exact: true })
+        .getByText('Question 50', { exact: true })
+        .isVisible(),
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await page.screenshot({
+      animations: 'disabled',
+      path: resolve('test-results', 'conversation-navigation-mobile.png'),
+    });
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await page.getByRole('button', { name: 'UI fixture', exact: true }).click();
     await page.getByRole('tab', { name: '任务' }).click();
     await page.locator('.claim-order time').waitFor();
     assert.equal(
@@ -367,12 +550,7 @@ export async function checkUsability() {
       await page.setViewportSize(viewport);
       for (const theme of ['dark', 'light']) {
         if ((await page.locator('html').getAttribute('data-theme')) !== theme)
-          await page
-            .getByRole('button', {
-              name: theme === 'light' ? 'Light appearance' : 'Dark appearance',
-              exact: true,
-            })
-            .click();
+          await page.locator('.theme-control select').selectOption(theme);
         for (const view of ['Discuss with PM', 'Tasks', 'Runs']) {
           await page.getByRole('tab', { name: view, exact: view !== 'Tasks' }).click();
           assert.equal(

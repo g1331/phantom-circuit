@@ -9,11 +9,11 @@ import { Fault, Store, id } from './store.ts';
 import type { ImageAttachment, Message } from '../shared/types.ts';
 
 export const imageLimits = {
-  files: 4,
-  fileSize: 10 * 1024 * 1024,
+  files: Infinity,
+  fileSize: Infinity,
   fields: 3,
   fieldSize: 120000,
-  parts: 7,
+  parts: Infinity,
 };
 const formats = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' } as const;
 const messageFields = z
@@ -72,10 +72,9 @@ export class MessageImages {
         const attachmentId = id();
         const uploaded = join(staging, `${attachmentId}.upload`);
         // Multipart limit handling can close a queued file before the consumer reaches it.
-        if (part.file.destroyed)
-          throw new Fault('上传中断或超限：最多 4 张图片，每张不超过 10 MiB');
+        if (part.file.destroyed) throw new Fault('图片上传中断');
         await pipeline(part.file, createWriteStream(uploaded, { flags: 'wx' }));
-        if (part.file.truncated) throw new Fault('每张图片不能超过 10 MiB', 413);
+        if (part.file.truncated) throw new Fault('图片上传不完整', 400);
         const decoder = sharp(await readFile(uploaded), {
           limitInputPixels: 25_000_000,
           failOn: 'warning',
@@ -128,7 +127,7 @@ export class MessageImages {
         ),
       );
     } catch (error) {
-      // Drain remaining bounded parts so a rejected image does not leave unread file streams.
+      // Drain remaining parts so a rejected image does not leave unread file streams.
       try {
         for (let item = await iterator.next(); !item.done; item = await iterator.next()) {
           if (item.value.type === 'file') item.value.file.resume();

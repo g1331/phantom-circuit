@@ -160,10 +160,6 @@ test(
         upload('', png.subarray(0, 45)),
         upload('', Buffer.alloc(10 * 1024 * 1024 + 1)),
         upload('', tooManyPixels),
-        uploadMany(
-          '',
-          Array.from({ length: 5 }, () => ({ bytes: png, filename: 'image.png' })),
-        ),
         uploadMany('', []),
         uploadMany('Reject the whole batch', [
           { bytes: png, filename: 'valid.png' },
@@ -280,10 +276,22 @@ test('PM sends the same managed images on first turn and retry in the same threa
     };
     const jpeg = await sharp(png).jpeg().toBuffer();
     const webp = await sharp(png).webp().toBuffer();
+    const largePng = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: 'gray' },
+    })
+      .png({ compressionLevel: 0 })
+      .toBuffer();
+    assert.ok(
+      largePng.length > 10 * 1024 * 1024,
+      'valid image exceeds the former local byte limit',
+    );
     const body = uploadMany('Please inspect this screenshot', [
       { bytes: png, filename: 'first.png' },
       { bytes: jpeg, filename: 'second.jpg' },
       { bytes: webp, filename: 'third.webp' },
+      { bytes: png, filename: 'fourth.png' },
+      { bytes: jpeg, filename: 'fifth.jpg' },
+      { bytes: largePng, filename: 'large.png' },
     ]);
     const response = await app.inject({
       method: 'POST',
@@ -295,15 +303,15 @@ test('PM sends the same managed images on first turn and retry in the same threa
     const message = response.json();
     assert.deepEqual(
       message.attachments.map((a: any) => a.mediaType),
-      ['image/png', 'image/jpeg', 'image/webp'],
+      ['image/png', 'image/jpeg', 'image/webp', 'image/png', 'image/jpeg', 'image/png'],
     );
     await waitFor(message.id, 'failed');
     assert.equal(turns[0].input[1]?.type, 'localImage');
-    assert.equal(turns[0].input.length, 4);
-    for (let i = 0; i < 3; i++) {
+    assert.equal(turns[0].input.length, 7);
+    for (let i = 0; i < 6; i++) {
       assert.ok(
         turns[0].input[i + 1].path.endsWith(
-          `${message.attachments[i].id}.${['png', 'jpeg', 'webp'][i]}`,
+          `${message.attachments[i].id}.${['png', 'jpeg', 'webp', 'png', 'jpeg', 'png'][i]}`,
         ),
       );
     }

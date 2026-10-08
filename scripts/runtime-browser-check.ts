@@ -538,18 +538,8 @@ export async function checkRuntimeUI() {
       for (const theme of ['dark', 'light']) {
         if ((await page.locator('html').getAttribute('data-theme')) !== theme)
           await page
-            .getByRole('button', {
-              name:
-                locale === 'en'
-                  ? theme === 'light'
-                    ? 'Light appearance'
-                    : 'Dark appearance'
-                  : theme === 'light'
-                    ? '浅色外观'
-                    : '深色外观',
-              exact: true,
-            })
-            .click();
+            .getByLabel(locale === 'en' ? 'Appearance' : '外观', { exact: true })
+            .selectOption(theme);
         for (const width of [1366, 390]) {
           await page.setViewportSize({ width, height: width === 390 ? 500 : 768 });
           await page.locator('.context-trigger').click();

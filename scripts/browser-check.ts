@@ -124,10 +124,13 @@ try {
         'Authorization: Bearer browser-secret\npsql postgresql://alice:browser-db-secret@localhost/app',
     },
   });
-  const process = page.locator('.pm-process').first();
+  const process = page.locator(`.pm-process[data-run-id="${activityRun.id}"]`);
   await process.locator(':scope > summary').waitFor({ timeout: 5000 });
-  assert.equal(await process.evaluate((el: HTMLDetailsElement) => el.open), false);
-  await process.locator(':scope > summary').click();
+  assert.equal(
+    await process.evaluate((el: HTMLDetailsElement) => el.open),
+    true,
+    'a live process stays visible until normal completion',
+  );
   const activity = process.locator('.pm-activity').filter({ hasText: '执行命令' });
   await activity.locator('summary').waitFor({ timeout: 5000 });
   await activity.locator('summary').click();
@@ -152,7 +155,11 @@ try {
   await activity.locator('summary').getByText('失败', { exact: true }).waitFor();
   assert.equal(await process.locator(':scope > summary .process-failure').count(), 1);
   await page.reload();
-  await process.locator(':scope > summary').click();
+  assert.equal(
+    await process.evaluate((el: HTMLDetailsElement) => el.open),
+    true,
+    'a failed process remains visible after reload',
+  );
   await activity.locator('summary').click();
   assert.ok((await activity.textContent())?.includes(diagnosticPath));
   await page.setViewportSize({ width: 390, height: 844 });
@@ -181,12 +188,11 @@ try {
   const groupedProcess = page.locator(`.pm-process[data-run-id="${groupedRun.id}"]`);
   await groupedProcess.locator(':scope > summary').waitFor({ timeout: 5000 });
   assert.equal(await groupedProcess.locator('.pm-activity').count(), 2);
-  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
   assert.equal(
     await groupedProcess.evaluate((el) => el.nextElementSibling?.classList.contains('message')),
     true,
   );
-  await groupedProcess.locator(':scope > summary').click();
   store.activity(groupedRun, 'search', {
     kind: 'search',
     title: '搜索资料',
@@ -227,7 +233,6 @@ try {
     '查看恢复后的工具摘要',
   );
   assert.equal(await toolOperation.evaluate((el: HTMLDetailsElement) => el.open), false);
-  assert.ok((await groupedProcess.locator('.process-categories .process-category').count()) <= 2);
   await toolSummary.focus();
   await page.keyboard.press('Enter');
   assert.equal(await toolOperation.evaluate((el: HTMLDetailsElement) => el.open), true);
@@ -300,6 +305,7 @@ try {
   await page.getByLabel('选择图片').setInputFiles(imageFile);
   await page.getByRole('img', { name: '待发送：screenshot.png' }).waitFor();
   await page.getByRole('button', { name: '移除 screenshot.png' }).click();
+  await page.getByRole('img', { name: '待发送：screenshot.png' }).waitFor({ state: 'detached' });
   assert.equal(await page.getByRole('img', { name: '待发送：screenshot.png' }).count(), 0);
   assert.equal(await page.getByRole('button', { name: '发送消息' }).isDisabled(), true);
   await page
@@ -610,7 +616,7 @@ try {
   });
   const followProcess = page.locator(`.pm-process[data-run-id="${followRun.id}"]`);
   await followProcess.locator(':scope > summary').waitFor();
-  await followProcess.locator(':scope > summary').click();
+  assert.equal(await followProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
   store.activity(followRun, 'follow-command-update', {
     kind: 'command',
     title: '底部继续跟随活动',
@@ -934,9 +940,7 @@ try {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     for (const theme of ['dark', 'light']) {
       if ((await page.locator('html').getAttribute('data-theme')) !== theme) {
-        await page
-          .getByRole('button', { name: theme === 'light' ? '浅色外观' : '深色外观' })
-          .click();
+        await page.locator('.theme-control select').selectOption(theme);
       }
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -1073,8 +1077,8 @@ try {
     longMarkdown,
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole('button', { name: '深色外观' }).click();
-  await page.getByRole('button', { name: '浅色外观' }).click();
+  await page.getByLabel('外观', { exact: true }).selectOption('dark');
+  await page.getByLabel('外观', { exact: true }).selectOption('light');
   await page.screenshot({ path: resolve(artifacts, '04-workspace-light.png'), fullPage: true });
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.getByLabel('全局 Dev 上限').fill('3');
@@ -1086,12 +1090,12 @@ try {
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByLabel('选择图片').setInputFiles(
-    Array.from({ length: 4 }, (_, i) => ({
+    Array.from({ length: 6 }, (_, i) => ({
       ...imageFile,
       name: `手机截图-${i}-很长的文件名用于验证换行.png`,
     })),
   );
-  assert.equal(await page.locator('.image-drafts img').count(), 4);
+  assert.equal(await page.locator('.image-drafts img').count(), 6);
   await page.screenshot({
     path: resolve(artifacts, '08-images-mobile-preview.png'),
     fullPage: true,
@@ -1112,7 +1116,7 @@ try {
     true,
     'mobile must not overflow horizontally',
   );
-  await page.getByRole('button', { name: '深色外观' }).click();
+  await page.getByLabel('外观', { exact: true }).selectOption('dark');
   await page.getByRole('button', { name: '运行设置' }).click();
   await page.screenshot({
     path: resolve(artifacts, '06-mobile-settings.png'),

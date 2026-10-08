@@ -1,4 +1,11 @@
-import { useEffect, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -32,26 +39,6 @@ const labels = {
   error: 'ui.error',
   summary: 'ui.summary',
 } as const;
-type ActivityCategory = 'command' | 'tool' | 'search' | 'files' | 'analysis' | 'plan';
-const categoryByKind: Record<PMActivity['kind'], ActivityCategory> = {
-  trigger: 'analysis',
-  plan: 'plan',
-  summary: 'analysis',
-  tool: 'tool',
-  command: 'command',
-  files: 'files',
-  search: 'search',
-  phase: 'analysis',
-  error: 'analysis',
-};
-const categoryLabels: Record<ActivityCategory, `activity.category.${ActivityCategory}`> = {
-  command: 'activity.category.command',
-  tool: 'activity.category.tool',
-  search: 'activity.category.search',
-  files: 'activity.category.files',
-  analysis: 'activity.category.analysis',
-  plan: 'activity.category.plan',
-};
 const iconsByKind: Record<PMActivity['kind'], LucideIcon> = {
   trigger: Activity,
   plan: Code2,
@@ -122,7 +109,7 @@ function compact(activity: PMActivity, roots: string[]) {
   return text.length > 160 ? `${text.slice(0, 159).trimEnd()}…` : text;
 }
 
-function ActivityRow({ activity, roots }: { activity: PMActivity; roots: string[] }) {
+export function ActivityRow({ activity, roots }: { activity: PMActivity; roots: string[] }) {
   const { t, date, duration: formatDuration, activityTitle } = useLocale();
   const timestamp = (value: string) => date(value, { dateStyle: 'short', timeStyle: 'medium' });
   const duration = (start: string, end: string | number) =>
@@ -248,74 +235,83 @@ export function ActivityGroup({
   activities,
   runStatus,
   roots,
+  run,
+  runId,
+  children,
+  disclosures,
+  groupId,
+  wasLive,
+  following,
 }: {
   activities: PMActivity[];
   runStatus?: RunStatus;
   roots: string[];
+  run?: Run;
+  runId?: string;
+  children?: ReactNode;
+  disclosures?: Map<string, boolean>;
+  groupId?: string;
+  wasLive?: boolean;
+  following?: RefObject<boolean>;
 }) {
-  const { t } = useLocale();
-  const first = activities[0]!;
-  const categoryCounts = new Map<ActivityCategory, { count: number; firstIndex: number }>();
-  activities.forEach((activity, index) => {
-    if (!operationSummary(activity)) return;
-    const category = categoryByKind[activity.kind];
-    const existing = categoryCounts.get(category);
-    if (existing) existing.count++;
-    else categoryCounts.set(category, { count: 1, firstIndex: index });
-  });
-  const majorCategories = [...categoryCounts]
-    .sort(([, a], [, b]) => b.count - a.count || a.firstIndex - b.firstIndex)
-    .slice(0, 2)
-    .map(([category]) => category);
-  let preview = '';
-  for (let index = activities.length - 1; index >= 0; index--) {
-    preview = compact(activities[index]!, roots);
-    if (preview) break;
-  }
+  const { t, duration } = useLocale();
+  const status = runStatus ?? activities.at(-1)?.status ?? 'completed';
+  const ref = useRef<HTMLDetailsElement>(null);
+  const key = groupId ?? activities[0]?.id ?? runId ?? '';
+  const touched = useRef(disclosures?.has(key) ?? false);
   const failures = activities.filter(
     (activity) => activity.status === 'failed' && activity.kind !== 'phase',
   );
-  const status = runStatus ?? activities.at(-1)!.status;
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    if (touched.current && disclosures?.has(key)) element.open = disclosures.get(key)!;
+    else if (status !== 'completed') element.open = true;
+    else if (!touched.current && !element.contains(document.activeElement)) {
+      const scroller = element.closest('.conversation');
+      const box = element.getBoundingClientRect();
+      const viewport = scroller?.getBoundingClientRect();
+      const reading = following
+        ? !following.current
+        : scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 64;
+      const inView = viewport && box.bottom > viewport.top && box.top < viewport.bottom;
+      if (wasLive && reading && inView) element.open = true;
+      else element.open = false;
+    }
+  }, [status]);
+  const elapsed = run?.endedAt
+    ? duration((Date.parse(run.endedAt) - Date.parse(run.startedAt)) / 1000)
+    : '';
   return (
     <details
+      ref={ref}
+      id={`process-${key}`}
       className="pm-process"
       data-status={status}
       data-has-failure={failures.length > 0}
-      data-run-id={first.runId}
+      data-run-id={runId ?? run?.id ?? activities[0]?.runId}
     >
-      <summary className="process-summary">
+      <summary
+        className="process-summary"
+        onClick={() => {
+          touched.current = true;
+          if (ref.current) disclosures?.set(key, !ref.current.open);
+        }}
+      >
         <span className="process-title">{t('activity.process')}</span>
-        <span className="process-count">
-          {t(activities.length === 1 ? 'activity.operation' : 'activity.operations', {
-            count: activities.length,
-          })}
-        </span>
-        <span className="process-categories">
-          {majorCategories.map((category) => (
-            <span className="process-category" key={category}>
-              {t(categoryLabels[category])}
-            </span>
-          ))}
-        </span>
-        {preview && <span className="process-preview">{preview}</span>}
+        <span className="process-status">{t(statuses[status])}</span>
+        {elapsed && <span className="process-duration">{elapsed}</span>}
         {!!failures.length && (
           <span className="process-failure">
             {t('activity.failedOperations', { count: failures.length })}
           </span>
         )}
-        <span className="process-status">{t(statuses[status])}</span>
-        <span
-          className="process-run"
-          title={first.runId}
-          aria-label={t('activity.runShortId', { id: first.runId })}
-        >
-          #{first.runId.slice(-7)}
-        </span>
       </summary>
       <div className="process-rows">
-        {activities.map((activity) => (
-          <ActivityRow key={activity.id} activity={activity} roots={roots} />
-        ))}
+        {children ??
+          activities.map((activity) => (
+            <ActivityRow key={activity.id} activity={activity} roots={roots} />
+          ))}
       </div>
     </details>
   );

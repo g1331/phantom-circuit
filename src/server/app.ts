@@ -165,7 +165,7 @@ export function createApp(
     const legacy = uploadStorageFailure
       ? '图片保存失败，请检查本地磁盘空间和权限后重试'
       : uploadLimit
-        ? '上传超限：每条消息最多 4 张图片，每张不超过 10 MiB'
+        ? '上传请求被服务端拒绝'
         : providerRequest && !(error instanceof Fault)
           ? 'Provider 请求无效，请检查输入或稍后重试'
           : redact(error instanceof Error ? error.message : String(error));
