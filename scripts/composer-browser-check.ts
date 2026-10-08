@@ -49,6 +49,7 @@ export async function checkComposer(page: Page, store: Store, projectId: string,
   await page.locator('.image-drafts img').waitFor();
   const imageStrip = await page.locator('.image-drafts').boundingBox();
   assert.ok(imageStrip && imageStrip.height <= 56, 'pending images use one compact thumbnail row');
+  await checkImagePreview(page);
   assert.equal(
     await input.inputValue(),
     '普通粘贴文本',
@@ -100,6 +101,52 @@ export async function checkComposer(page: Page, store: Store, projectId: string,
   });
   await page.getByText('仅支持 PNG、JPEG、WebP 图片', { exact: true }).waitFor();
   assert.equal(await page.locator('.image-drafts img').count(), 0);
+}
+
+export async function checkImagePreview(page: Page) {
+  const originalViewport = page.viewportSize();
+  const draft = await page.locator('.composer textarea').inputValue();
+  const thumbnail = page.locator('.image-preview-trigger').first();
+  const dialog = page.locator('.image-preview-dialog');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 500 : 1000 });
+    await thumbnail.click();
+    await dialog.waitFor();
+    await page.waitForFunction(() => {
+      const image = document.querySelector<HTMLImageElement>('.image-preview-dialog > img');
+      return image?.complete && image.naturalWidth > 0;
+    });
+    const box = await dialog.boundingBox();
+    assert.ok(
+      box &&
+        box.x >= 0 &&
+        box.y >= 0 &&
+        box.x + box.width <= width &&
+        box.y + box.height <= (width === 390 ? 500 : 1000),
+      'image preview fits the viewport',
+    );
+    await page.screenshot({ path: `test-results/image-preview-${width}.png` });
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(
+      await thumbnail.evaluate((element) => element === document.activeElement),
+      true,
+      'closing preview returns keyboard focus to the thumbnail',
+    );
+  }
+  await thumbnail.click();
+  await dialog.getByRole('button').click();
+  await dialog.waitFor({ state: 'detached' });
+  await thumbnail.click();
+  await page.mouse.click(2, 2);
+  await dialog.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.composer textarea').inputValue(), draft);
+  assert.equal(
+    await page.locator('.image-drafts img').count(),
+    1,
+    'preview never removes the attachment',
+  );
+  if (originalViewport) await page.setViewportSize(originalViewport);
 }
 
 export async function checkPMModels(page: Page, store: Store, projectId: string) {

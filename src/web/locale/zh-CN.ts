@@ -72,6 +72,7 @@ export const zhCN = {
   'tasks.columnEmpty': '此阶段没有任务',
   'tasks.dependencies': { one: '{count} 个依赖', other: '{count} 个依赖' },
   'images.pending': '待发送：{name}',
+  'images.preview': '预览图片：{name}',
   'images.remove': '移除 {name}',
   'repos.configure': '配置 {name}',
   'repos.running': '仍有 {count} 个 Dev 在完成当前任务',

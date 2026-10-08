@@ -70,6 +70,7 @@ export const en = {
   'tasks.columnEmpty': 'No tasks in this stage',
   'tasks.dependencies': { one: '{count} dependency', other: '{count} dependencies' },
   'images.pending': 'Pending image: {name}',
+  'images.preview': 'Preview image: {name}',
   'images.remove': 'Remove {name}',
   'repos.configure': 'Configure {name}',
   'repos.running': '{count} Dev runs are finishing their current tasks',

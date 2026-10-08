@@ -1053,7 +1053,17 @@ time {
   background: var(--line);
   border-radius: 5px;
 }
-.image-draft button {
+.image-draft .image-preview-trigger {
+  display: block;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: zoom-in;
+}
+.image-draft .image-remove {
   position: absolute;
   top: -4px;
   right: -4px;
@@ -1067,9 +1077,54 @@ time {
   color: var(--muted);
   background: var(--panel);
 }
-.image-draft button:hover {
+.image-draft .image-remove:hover {
   color: var(--text);
   background: var(--raised);
+}
+.image-preview-dialog {
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+}
+.image-preview-dialog::backdrop {
+  background: #000b;
+}
+.image-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+}
+.image-preview-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.image-preview-header button {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  padding: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.image-preview-dialog > img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(1100px, calc(100vw - 34px));
+  max-height: calc(100dvh - 90px);
+  object-fit: contain;
 }
 .message-images a {
   width: 180px;

@@ -41,6 +41,15 @@ export function PMComposer({
   const [deliveryMode, setDeliveryMode] = useState<'queue' | 'steer'>('queue');
   const [error, setError] = useState<Error>();
   const [images, setImages] = useState<{ file: File; url: string }[]>([]);
+  const [preview, setPreview] = useState<(typeof images)[number]>();
+  const previewDialog = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    if (preview && previewDialog.current && !previewDialog.current.open)
+      previewDialog.current.showModal();
+  }, [preview]);
+  useEffect(() => {
+    if (preview && !images.includes(preview)) setPreview(undefined);
+  }, [images, preview]);
   const imageDrafts = useRef(images);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const sending = useRef(false);
@@ -114,8 +123,17 @@ export function PMComposer({
               className="image-draft"
               title={`${image.file.name} · ${Math.max(1, Math.ceil(image.file.size / 1024))} KiB`}
             >
-              <img src={image.url} alt={t('images.pending', { name: image.file.name })} />
               <button
+                type="button"
+                className="image-preview-trigger"
+                aria-label={t('images.preview', { name: image.file.name })}
+                onClick={() => setPreview(image)}
+              >
+                <img src={image.url} alt={t('images.pending', { name: image.file.name })} />
+              </button>
+              <button
+                type="button"
+                className="image-remove"
                 aria-label={t('images.remove', { name: image.file.name })}
                 disabled={busy}
                 onClick={() => updateImages(images.filter((item) => item !== image))}
@@ -125,6 +143,38 @@ export function PMComposer({
             </div>
           ))}
         </div>
+      )}
+      {preview && (
+        <dialog
+          ref={previewDialog}
+          className="image-preview-dialog"
+          aria-label={t('images.preview', { name: preview.file.name })}
+          onClose={() => setPreview(undefined)}
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            if (
+              event.clientX < rect.left ||
+              event.clientX > rect.right ||
+              event.clientY < rect.top ||
+              event.clientY > rect.bottom
+            )
+              event.currentTarget.close();
+          }}
+        >
+          <div className="image-preview-header">
+            <span title={preview.file.name}>{preview.file.name}</span>
+            <button
+              type="button"
+              aria-label={t('common.close')}
+              onClick={() => previewDialog.current?.close()}
+              autoFocus
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <img src={preview.url} alt={t('images.preview', { name: preview.file.name })} />
+        </dialog>
       )}
       <textarea
         ref={draftRef}
