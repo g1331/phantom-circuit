@@ -31,8 +31,10 @@ export async function api<T>(
   path: string,
   body?: unknown,
   method = body === undefined ? 'GET' : 'POST',
+  signal?: AbortSignal,
 ): Promise<T> {
   const r = await fetch(`/api${path}`, {
+    signal,
     method,
     headers: {
       ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),

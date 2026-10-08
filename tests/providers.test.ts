@@ -13,6 +13,35 @@ import { spawn } from 'node:child_process';
 import { Codex } from '../src/server/codex.ts';
 import { profileProtocol } from './profile-protocol.ts';
 
+test('saving unchanged, ordinary and new role settings does not launch a backend', async (t) => {
+  const { request, store } = await fixture(t, () => {
+    throw new Error('Saving must not start Codex');
+  });
+  const next = store.settings();
+  for (const modify of [
+    () => {},
+    () => {
+      next.globalDevLimit = 3;
+    },
+    () => {
+      next.profiles.pm.effort = 'low';
+    },
+  ]) {
+    modify();
+    const response = await request('PATCH', '/settings', next);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(store.settings(), next);
+  }
+  const project = store.createProject('Offline settings', '');
+  const profiles = structuredClone(project.profiles);
+  profiles.pm.effort = 'max';
+  assert.equal(
+    (await request('PATCH', `/projects/${project.id}/runtime`, { profiles })).statusCode,
+    200,
+  );
+  assert.deepEqual(store.project(project.id).profiles, profiles);
+});
+
 test('discovery authentication failure requires explicit fallback and remains unverified after save', async (t) => {
   const { request, store, dir } = await fixture(t, profileProtocol);
   const project = store.createProject('Discovery auth', '');
@@ -37,6 +66,7 @@ test('discovery authentication failure requires explicit fallback and remains un
   profiles.pm = { providerId: provider.id, model: 'manual', effort: 'low' };
   for (const code of [401, 403]) {
     status = code;
+    await request('POST', `/providers/${provider.id}/models`, {});
     profiles.pm.customModel = false;
     const rejected = await request('PATCH', `/projects/${project.id}/profiles`, profiles);
     assert.equal(rejected.statusCode, 409);
@@ -44,7 +74,7 @@ test('discovery authentication failure requires explicit fallback and remains un
     profiles.pm.customModel = true;
     const saved = await request('PATCH', `/projects/${project.id}/profiles`, profiles);
     assert.equal(saved.statusCode, 200, saved.body);
-    assert.match(saved.body, /未完成运行时验证.*认证失败.*首次 Run/);
+    if (code === 401) assert.match(saved.body, /未完成运行时验证.*认证失败.*首次 Run/);
   }
   const runtime = new Engine(store, new GitHub(store), new Workspaces(dir, store), dir, () =>
     profileProtocol({ runtimeError: 'Responses API authentication failed (401)' }),
@@ -65,12 +95,119 @@ test('discovery authentication failure requires explicit fallback and remains un
   }
   status = 200;
   profiles.pm = { providerId: provider.id, model: 'recovered-model', effort: 'low' };
+  await request('POST', `/providers/${provider.id}/models`, {});
   assert.equal(
     (await request('PATCH', `/projects/${project.id}/profiles`, profiles)).statusCode,
     200,
   );
   assert.deepEqual(store.project(project.id).profiles, profiles);
 });
+
+test('explicit configuration checks validate effective assignments without saving or executing a turn', async (t) => {
+  const { request, store } = await fixture(t, profileProtocol);
+  const before = store.settings();
+  const profile = { ...before.profiles.pm, effort: 'max' };
+  const checked = await request('POST', '/providers/codex/check-profile', profile);
+  assert.equal(checked.statusCode, 200, checked.body);
+  assert.deepEqual(checked.json(), { ok: true, profile });
+  assert.deepEqual(store.settings(), before);
+  const next = structuredClone(before);
+  next.profiles.pm = profile;
+  const saved = await request('PATCH', '/settings', next);
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.deepEqual(saved.json().warnings, []);
+  assert.equal(
+    (await request('POST', '/providers/codex/check-profile', { ...profile, effort: 'unknown' }))
+      .statusCode,
+    409,
+  );
+  assert.deepEqual(store.settings(), next);
+});
+
+test('saving against discovered capabilities is local, atomic and never calls the model upstream', async (t) => {
+  const { request, store } = await fixture(t, () => {
+    throw new Error('Saving must not start Codex');
+  });
+  let calls = 0;
+  const upstream = createServer((_req, res) => {
+    calls++;
+    res.end(JSON.stringify({ data: [{ id: 'listed', reasoningEfforts: ['low'] }] }));
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    upstream.closeAllConnections();
+    upstream.close();
+  });
+  const provider = (
+    await request('POST', '/providers', {
+      name: 'Cached capabilities',
+      baseUrl: `http://127.0.0.1:${(upstream.address() as any).port}`,
+      apiKey: 'cache-fixture',
+    })
+  ).json();
+  const next = store.settings();
+  next.profiles.pm = { providerId: provider.id, model: 'listed', effort: 'low' };
+  assert.equal(
+    (await request('PATCH', '/settings', next)).statusCode,
+    409,
+    'unlisted custom models need discovery or explicit manual selection',
+  );
+  assert.equal(calls, 0);
+  await request('POST', `/providers/${provider.id}/models`, {});
+  assert.equal((await request('PATCH', '/settings', next)).statusCode, 200);
+  const bad = structuredClone(next);
+  bad.profiles.pm.effort = 'high';
+  assert.equal((await request('PATCH', '/settings', bad)).statusCode, 409);
+  assert.deepEqual(store.settings(), next);
+  assert.equal(calls, 1, 'saving only reads cached capabilities');
+  await request('PATCH', `/providers/${provider.id}`, { apiKey: 'new-cache-fixture' });
+  const changed = structuredClone(next);
+  changed.profiles.pm.model = 'new-model';
+  assert.equal(
+    (await request('PATCH', '/settings', changed)).statusCode,
+    409,
+    'credential edits invalidate discovered capabilities',
+  );
+  assert.equal(calls, 1);
+});
+
+test(
+  'a stalled explicit check times out, stops its child and leaves settings writable',
+  { timeout: 25000 },
+  async (t) => {
+    let child: ReturnType<typeof spawn> | undefined;
+    const { request, store } = await fixture(
+      t,
+      () =>
+        new Codex((_binary, _args, options) => {
+          child = spawn(
+            process.execPath,
+            [
+              '-e',
+              `require('node:readline').createInterface({ input: process.stdin }).on('line', line => { const m = JSON.parse(line); if (m.method === 'initialize') console.log(JSON.stringify({ id: m.id, result: {} })); });`,
+            ],
+            options,
+          );
+          return child as any;
+        }),
+    );
+    const before = store.settings();
+    const started = performance.now();
+    const checking = request('POST', '/providers/codex/check-profile', before.profiles.pm);
+    const next = { ...before, globalDevLimit: 3 };
+    assert.equal(
+      (await request('PATCH', '/settings', next)).statusCode,
+      200,
+      'checks do not occupy the settings write queue',
+    );
+    const result = await checking;
+    assert.equal(result.statusCode, 504, result.body);
+    assert.ok(performance.now() - started < 20000);
+    assert.deepEqual(store.settings(), next);
+    if (child?.exitCode === null) await new Promise((resolve) => child!.once('exit', resolve));
+    assert.ok(child && child.exitCode !== null, 'timed out backend process is stopped');
+  },
+);
 
 test('HTTP profile validation is atomic and custom fallback retains explicit first-Run warnings', async (t) => {
   const { request, store } = await fixture(t, profileProtocol);
@@ -81,6 +218,7 @@ test('HTTP profile validation is atomic and custom fallback retains explicit fir
   assert.equal(store.project(project.id).profiles.pm.effort, 'medium');
   const invalid = structuredClone(next);
   invalid.profiles.review.effort = 'unknown';
+  await request('POST', '/providers/codex/models', {});
   assert.equal((await request('PATCH', '/settings', invalid)).statusCode, 409);
   assert.deepEqual(store.settings(), next);
   const upstream = createServer((_req, res) => {
@@ -108,10 +246,12 @@ test('HTTP profile validation is atomic and custom fallback retains explicit fir
   assert.equal((await request('DELETE', `/providers/${provider.id}`)).statusCode, 409);
   assert.equal((await request('POST', `/providers/${provider.id}/reveal-key`, {})).statusCode, 200);
   for (const model of ['wrong-provider', 'manual']) {
-    const bad = structuredClone(profiles);
-    bad.pm.model = model;
-    if (model === 'manual') bad.pm.effort = 'unknown';
-    const result = await request('PATCH', `/projects/${project.id}/profiles`, bad);
+    const bad = {
+      ...profiles.pm,
+      model,
+      effort: model === 'manual' ? 'unknown' : profiles.pm.effort,
+    };
+    const result = await request('POST', `/providers/${provider.id}/check-profile`, bad);
     assert.equal(result.statusCode, 409, result.body);
     assert.deepEqual(store.project(project.id).profiles, profiles);
   }

@@ -36,6 +36,46 @@ export function ProfileEditor({
   const cache = useRef(new Map<string, Promise<ModelDiscovery>>());
   const [selectedRole, setSelectedRole] = useState<ProfileName>('pm');
   const { t } = useLocale();
+  const [checking, setChecking] = useState<string>();
+  const [checkResult, setCheckResult] = useState<{ signature: string; error?: string }>();
+  const checkController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => checkController.current?.abort(), []);
+  const signature = JSON.stringify(profiles);
+  async function checkProfiles() {
+    const controller = new AbortController();
+    checkController.current = controller;
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    setCheckResult(undefined);
+    const checked = new Set<string>();
+    try {
+      for (const [role, profile] of Object.entries(profiles)) {
+        const key = JSON.stringify([profile.providerId, profile.model, profile.effort]);
+        if (checked.has(key)) continue;
+        setChecking(t('ui.checkingProfile', { role: t(labels[role as ProfileName]) }));
+        await api(
+          `/providers/${encodeURIComponent(profile.providerId)}/check-profile`,
+          profile,
+          'POST',
+          controller.signal,
+        );
+        checked.add(key);
+      }
+      setCheckResult({ signature });
+    } catch (error) {
+      setCheckResult({
+        signature,
+        error: controller.signal.aborted
+          ? t('ui.profileCheckTimeout')
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      });
+    } finally {
+      clearTimeout(timer);
+      setChecking(undefined);
+      checkController.current = undefined;
+    }
+  }
   const discover = useCallback((id: string, refresh = false) => {
     if (refresh || !cache.current.has(id))
       cache.current.set(
@@ -67,6 +107,23 @@ export function ProfileEditor({
           change={(profile) => change({ ...profiles, [selectedRole]: profile })}
         />
       </div>
+      <div className="assignment-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={!!checking}
+          onClick={() => void checkProfiles()}
+        >
+          {t('ui.checkProfiles')}
+        </button>
+      </div>
+      <p className="field-note">{t('ui.profileSaveNote')}</p>
+      {checking && <p role="status">{checking}</p>}
+      {!checking && checkResult?.signature === signature && (
+        <p role={checkResult.error ? 'alert' : 'status'}>
+          {checkResult.error ?? t('ui.profilesChecked')}
+        </p>
+      )}
     </div>
   );
 }

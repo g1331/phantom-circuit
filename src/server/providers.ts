@@ -11,9 +11,10 @@ import {
   type PriceCard,
   type Provider,
   type ModelDiscovery,
+  type Profile,
 } from '../shared/types.ts';
 import { Codex } from './codex.ts';
-import { settingsSchema } from './schemas.ts';
+import { settingsSchema, profileSchema } from './schemas.ts';
 import type { Settings } from '../shared/types.ts';
 import type {
   AgentAllowance,
@@ -118,6 +119,10 @@ function baseUrl(value: string) {
 export class Providers {
   private readonly directory: string;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly discoveries = new Map<string, { at: number; value: ModelDiscovery }>();
+  private readonly verified = new Map<string, number>();
+  private readonly revisions = new Map<string, number>();
+  private readonly freshnessMs = 5 * 60_000;
   constructor(
     private store: Store,
     private createCodex: () => Codex = () => new Codex(),
@@ -213,53 +218,38 @@ export class Providers {
         settings?.profiles ?? settingsSchema.shape.profiles.parse(input);
       if (projectId !== undefined) this.store.project(projectId);
       const warnings: string[] = [];
-      const cwd = resolve(dirname(this.directory), 'profile-validation');
-      await mkdir(cwd, { recursive: true });
-      const discoveries = new Map<string, ModelDiscovery>();
-      const checked = new Set<string>();
+      const previous =
+        projectId === undefined
+          ? this.store.settings().profiles
+          : this.store.project(projectId).profiles;
       for (const [role, profile] of Object.entries(profiles)) {
         const provider = this.get(profile.providerId);
         if (provider.kind === 'codex' && profile.customModel)
           throw new Fault(`${role}: 官方 Provider 必须从模型列表选择`, 409);
+        if (this.profileKey(profile) === this.profileKey(previous[role as keyof typeof previous]))
+          continue;
+        const cached = this.discoveries.get(provider.id);
+        const discovery =
+          cached && Date.now() - cached.at < this.freshnessMs ? cached.value : undefined;
+        const model = discovery?.ok
+          ? discovery.models.find((m) => m.id === profile.model)
+          : undefined;
         if (provider.kind === 'custom') {
-          if (!discoveries.has(provider.id))
-            discoveries.set(provider.id, await this.models(provider.id));
-          const discovery = discoveries.get(provider.id)!;
-          const model = discovery.ok
-            ? discovery.models.find((m) => m.id === profile.model)
-            : undefined;
           if (!model && !profile.customModel)
             throw new Fault(
-              `${role}: ${discovery.ok ? '模型不在发现列表中' : discovery.error}；请明确选择“自定义模型 ID”`,
+              `${role}: ${discovery?.ok ? '模型不在发现列表中' : (discovery?.error ?? '请刷新模型列表')}；请明确选择“自定义模型 ID”`,
               409,
             );
-          if (model?.reasoningEfforts && !model.reasoningEfforts.includes(profile.effort))
-            throw new Fault(`${role}: 模型不支持推理档位 ${profile.effort}`, 409);
+        }
+        if (provider.kind === 'codex' && discovery?.ok && !model)
+          throw new Fault(`${role}: 模型不可用：${profile.model}`, 409);
+        if (model?.reasoningEfforts && !model.reasoningEfforts.includes(profile.effort))
+          throw new Fault(`${role}: 模型不支持推理档位 ${profile.effort}`, 409);
+        const checkedAt = this.verified.get(this.profileKey(profile)) ?? 0;
+        if (Date.now() - checkedAt >= this.freshnessMs)
           warnings.push(
-            `${role}: ${provider.name} / ${profile.model} 未完成运行时验证；${discovery.ok ? '' : discovery.error + '；'}此配置将在首次 Run 验证上游兼容性`,
+            `${role}: ${provider.name} / ${profile.model} 未完成运行时验证；${discovery && !discovery.ok ? discovery.error + '；' : ''}此配置将在首次 Run 验证上游兼容性`,
           );
-        }
-        const key = JSON.stringify([profile.providerId, profile.model, profile.effort]);
-        if (checked.has(key)) continue;
-        const codex = this.createCodex();
-        try {
-          await codex.start(await this.connection(provider.id));
-          await codex.thread({
-            cwd,
-            profile,
-            writable: false,
-            ephemeral: true,
-            instructions: 'Validate effective configuration only. Do not execute a turn.',
-          });
-          checked.add(key);
-        } catch (error) {
-          throw new Fault(
-            `${role}: 配置校验失败：${error instanceof Fault ? error.message : '无法启动或连接 Codex app-server，请检查 Provider 与本机 Codex'}`,
-            409,
-          );
-        } finally {
-          await codex.stop();
-        }
       }
       const saved = settings
         ? this.store.saveSettings(settings)
@@ -267,7 +257,75 @@ export class Providers {
       return { ...saved, warnings };
     });
   }
+  private profileKey(profile: Profile) {
+    return JSON.stringify([
+      profile.providerId,
+      this.revisions.get(profile.providerId) ?? 0,
+      profile.model,
+      profile.effort,
+      !!profile.customModel,
+    ]);
+  }
+  /** Explicit preflight never writes assignments or executes a model turn. */
+  async checkProfile(input: unknown, timeoutMs = 15_000) {
+    const profile = profileSchema.parse(input);
+    const provider = this.get(profile.providerId);
+    if (provider.kind === 'codex' && profile.customModel)
+      throw new Fault('官方 Provider 必须从模型列表选择', 409);
+    const key = this.profileKey(profile);
+    const codex = this.createCodex();
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const work = (async () => {
+        const cwd = resolve(dirname(this.directory), 'profile-validation');
+        await mkdir(cwd, { recursive: true });
+        const connection = await this.connection(provider.id);
+        controller.signal.throwIfAborted();
+        await codex.start(connection, controller.signal);
+        controller.signal.throwIfAborted();
+        await codex.thread({
+          cwd,
+          profile,
+          writable: false,
+          ephemeral: true,
+          instructions: 'Validate effective configuration only. Do not execute a turn.',
+        });
+      })();
+      await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(
+              new Fault(
+                '配置检查超时（15 秒），配置未被修改；请检查本机 Codex 与 Provider 连接',
+                504,
+              ),
+            );
+          }, timeoutMs);
+        }),
+      ]);
+      if (this.profileKey(profile) !== key) throw new Fault('Provider 已修改，请重新检查配置', 409);
+      this.verified.set(key, Date.now());
+      return { ok: true, profile };
+    } catch (error) {
+      if (error instanceof Fault) throw error;
+      throw new Fault('无法检查配置，请检查 Provider 与本机 Codex；保存设置不受影响', 409);
+    } finally {
+      if (timer) clearTimeout(timer);
+      controller.abort();
+      await codex.stop();
+    }
+  }
   async models(id: string): Promise<ModelDiscovery> {
+    const revision = this.revisions.get(id) ?? 0;
+    const value = await this.discoverModels(id);
+    if ((this.revisions.get(id) ?? 0) === revision)
+      this.discoveries.set(id, { at: Date.now(), value });
+    return value;
+  }
+  private async discoverModels(id: string): Promise<ModelDiscovery> {
     const provider = this.get(id);
     if (provider.kind === 'codex') {
       const codex = this.createCodex();
@@ -387,6 +445,8 @@ export class Providers {
       };
       if (data.apiKey) await this.write(provider.id, data.apiKey);
       this.store.put('provider', provider.id, provider);
+      this.discoveries.delete(provider.id);
+      this.revisions.set(provider.id, (this.revisions.get(provider.id) ?? 0) + 1);
       this.store.changes.emit('change');
       return provider;
     });
@@ -416,6 +476,8 @@ export class Providers {
           throw new Fault('无法删除 Provider 密钥', 503);
       }
       this.store.deleteProvider(id);
+      this.discoveries.delete(id);
+      this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
       return { ok: true };
     });
   }

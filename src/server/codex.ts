@@ -264,7 +264,8 @@ export class Codex extends EventEmitter implements AgentBackend {
   private stopping = false;
   private scrubSecret = (text: string) => text;
   private finishStreams = () => {};
-  async start(provider?: { id: string; baseUrl: string; apiKey: string }) {
+  async start(provider?: { id: string; baseUrl: string; apiKey: string }, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     this.stopping = false;
     this.customProvider = provider !== undefined;
     this.modelProvider = provider?.id ?? 'openai';
@@ -316,11 +317,14 @@ export class Codex extends EventEmitter implements AgentBackend {
     }
     if (this.launch === spawn) {
       const versionArgs = binary === process.execPath ? [args[0], '--version'] : ['--version'];
-      this.version = (await command(binary, versionArgs, undefined, undefined, 15000)).stdout
+      this.version = (
+        await command(binary, versionArgs, undefined, undefined, 15000, true, signal)
+      ).stdout
         .trim()
         .slice(0, 200);
       this.emit('notification', 'agent/ready', { agentVersion: this.version });
     }
+    signal?.throwIfAborted();
     let child: ChildProcessWithoutNullStreams;
     try {
       child = this.launch(binary, args, {
@@ -1021,6 +1025,11 @@ export class Codex extends EventEmitter implements AgentBackend {
   async stop() {
     this.finishStreams();
     const stopped = new Error('Codex 已停止');
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(stopped);
+    }
+    this.pending.clear();
     for (const threadId of this.followUpQueues.keys()) this.rejectFollowUps(threadId, stopped);
     if (this.child) {
       this.stopping = true;

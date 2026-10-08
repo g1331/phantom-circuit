@@ -166,6 +166,13 @@ export const zhCN = {
   'ui.saved': '已保存。',
   'ui.defaultModelAssignmentsForNewProjects': '新 Project 默认模型分配',
   'ui.validating': '正在校验…',
+  'ui.saving': '正在保存…',
+  'ui.checkProfiles': '检查 Codex 角色配置',
+  'ui.checkingProfile': '正在检查{role}：连接与实际生效配置…',
+  'ui.profilesChecked': '配置检查通过。未执行模型回合，也未保存设置。',
+  'ui.profileCheckTimeout': '配置检查超时（30 秒）。已保存的设置未被修改。',
+  'ui.profileSaveNote':
+    '保存完成本地检查后立即生效。连接检查单独执行，单项最多 15 秒，全部角色最多 30 秒；实际运行仍核对生效配置。',
   'ui.saveSettings': '保存设置',
   'ui.queued2': '排队',
   'ui.running2': '进行中',
@@ -209,7 +216,8 @@ export const zhCN = {
   'ui.providerIsUnavailableSelectAnotherProvider': 'Provider 已失效，请重新选择。',
   'ui.youCanExplicitlyChooseACustomModel': '；可明确切换到自定义模型 ID。',
   'ui.officialModelsMustBeSelectedFromA': '；官方模型必须从有效列表选择。',
-  'ui.theUpstreamDidNotProvideKnownReasoning': '上游未提供已知推理档位，保存时将核对有效配置。',
+  'ui.theUpstreamDidNotProvideKnownReasoning':
+    '上游未提供已知推理档位，可单独检查配置；首次运行仍核对实际配置。',
   'ui.upstreamCompatibilityIsVerifiedOnTheFirst': '上游兼容性将在首次 Run 验证。',
   'ui.cannotLoadProviders': '无法读取 Provider',
   'ui.providerManagement': 'Provider 管理',

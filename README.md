@@ -42,6 +42,10 @@ During discussion, the PM can persist glossary/ADR drafts locally using the upst
 
 ## Controls
 
+Saving role settings performs local schema, Provider-reference and recent model-capability checks without launching an Agent or contacting an upstream. Unchanged assignments are preserved. Model lists refreshed in the editor are shared for five minutes; editing a Provider connection invalidates its cached capabilities. New custom models require discovery or explicit custom-model selection. Changed assignments that have not passed a recent connection check are saved with a first-Run verification notice.
+
+Use **Check Codex role configurations** in the Codex model section for an explicit read-only connection and effective-configuration check. Identical Provider/model/effort combinations are checked once; the UI shows the current role, limits each check to 15 seconds and stops waiting after 30 seconds overall. Checking does not save settings, execute a model turn or block other settings writes. Actual Runs still verify their resolved Provider, model and reasoning effort before execution.
+
 - Closing a work switch stops new claims; existing tasks finish development, review, revision and merge. Pause interrupts a task separately; cancel retains its branch, worktree and PR.
 - Global/project/repository Dev limits apply together. Defaults: 4 / 4 / 2. Independent Review has a separate global two-session limit; PM activity is separate.
 - New Projects inherit the software's default Agent (OMP). A Project can select OMP or Codex, and each role can inherit its global model or pin a local assignment. OMP models are initialized once from its `default`, `slow` and `advisor` roles. Existing Projects retain explicit Codex assignments. Runs fix their resolved configuration; changing settings does not rewrite history or silently substitute models.

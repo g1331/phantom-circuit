@@ -1981,6 +1981,10 @@ function SettingsForm({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | Error>('');
   const [saved, setSaved] = useState<string[]>();
+  useEffect(() => {
+    setSaved(undefined);
+    setSaveError('');
+  }, [settings, runtime]);
   const [health, setHealth] = useState<any>();
   const [checking, setChecking] = useState(false);
   const effectiveAgent =
@@ -2149,7 +2153,7 @@ function SettingsForm({
         )}
       </div>
       <button className="primary-button" disabled={busy || saving}>
-        {saving ? t('ui.validating') : t('ui.saveSettings')}
+        {saving ? t('ui.saving') : t('ui.saveSettings')}
       </button>
     </form>
   );

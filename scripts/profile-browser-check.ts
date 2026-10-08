@@ -5,12 +5,21 @@ import { resolve } from 'node:path';
 import { createServer } from 'node:http';
 
 export async function checkProfiles(page: Page, store: Store, artifacts: string) {
+  const checkRequests: string[] = [];
+  const trackCheck = (request: import('playwright').Request) => {
+    if (request.url().endsWith('/check-profile')) checkRequests.push(request.url());
+  };
+  page.on('request', trackCheck);
   async function openProjectSettings() {
     await page.locator('.context-trigger').click();
     await page.locator('#project-context').getByRole('button', { name: '项目模型设置' }).click();
     await page.locator('#project-context').waitFor({ state: 'hidden' });
   }
   const project = store.list('project')[0];
+  const profiles = structuredClone(project.profiles);
+  for (const role of ['backend', 'frontend', 'fullstack', 'complex', 'review'] as const)
+    profiles[role] = { ...profiles.pm };
+  store.saveProjectProfiles(project.id, profiles);
   // This suite verifies explicitly pinned Codex profiles; runtime-browser-check covers inheritance.
   store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   store.saveProjectProfileModes(project.id, {
@@ -30,7 +39,9 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await codexGroup.locator('summary').click();
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
-  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor();
+  assert.equal(checkRequests.length, 0, 'save does not execute connection checks');
+  await page.getByRole('button', { name: '关闭窗口' }).click();
   assert.equal(store.settings().profiles.pm.effort, 'low');
   assert.equal(store.project(project.id).profiles.pm.effort, original);
   await openProjectSettings();
@@ -57,6 +68,13 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await page.screenshot({ path: resolve(artifacts, `project-profiles-${width}.png`) });
   }
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('max');
+  await page.getByRole('button', { name: '检查 Codex 角色配置', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '配置检查通过。' }).waitFor();
+  assert.equal(
+    checkRequests.length,
+    2,
+    'five identical assignments share one check and the changed PM uses one',
+  );
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(store.project(project.id).profiles.pm.effort, 'max');
@@ -92,7 +110,8 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor();
     assert.equal(store.project(project.id).profiles.pm.model, 'manual-model');
     await page.getByLabel('项目 PM推理等级', { exact: true }).fill('unknown');
-    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '检查 Codex 角色配置', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '实际推理档位' }).waitFor();
     assert.equal(await page.getByLabel('项目 PM推理等级', { exact: true }).inputValue(), 'unknown');
     assert.equal(store.project(project.id).profiles.pm.effort, 'low');
@@ -104,6 +123,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await page.getByRole('tab', { name: '运行记录', exact: true }).click();
     await page.getByText(/Profile browser upstream.*manual-model/).waitFor();
   } finally {
+    page.off('request', trackCheck);
     upstream.closeAllConnections();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }

@@ -275,6 +275,12 @@ export function createApp(
   app.patch('/api/providers/:id', async (req) => providers.save(req.body, providerId(req.params)));
   app.delete('/api/providers/:id', async (req) => providers.remove(providerId(req.params)));
   app.post('/api/providers/:id/models', async (req) => providers.models(providerId(req.params)));
+  app.post('/api/providers/:id/check-profile', async (req) => {
+    const profile = profileSchema.parse(req.body);
+    if (profile.providerId !== providerId(req.params))
+      throw new Fault('Provider 与配置不匹配', 409);
+    return providers.checkProfile(profile);
+  });
   app.patch('/api/providers/:id/prices', async (req) =>
     providers.savePrices(providerId(req.params), req.body),
   );

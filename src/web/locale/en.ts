@@ -166,6 +166,15 @@ export const en = {
   'ui.saved': 'Saved. ',
   'ui.defaultModelAssignmentsForNewProjects': 'Default model assignments for new projects',
   'ui.validating': 'Validating…',
+  'ui.saving': 'Saving…',
+  'ui.checkProfiles': 'Check Codex role configurations',
+  'ui.checkingProfile': 'Checking {role}: connection and effective configuration…',
+  'ui.profilesChecked':
+    'Configurations checked. No model turn was executed and no settings were saved.',
+  'ui.profileCheckTimeout':
+    'Configuration check timed out (30 seconds). Saved settings are unchanged.',
+  'ui.profileSaveNote':
+    'Save applies local checks immediately. Check configurations separately; each check is limited to 15 seconds, with 30 seconds for all roles. Runs still verify the effective configuration.',
   'ui.saveSettings': 'Save settings',
   'ui.queued2': 'Queued',
   'ui.running2': 'Running',
@@ -212,7 +221,7 @@ export const en = {
   'ui.youCanExplicitlyChooseACustomModel': '; you can explicitly choose a custom model ID.',
   'ui.officialModelsMustBeSelectedFromA': '; official models must be selected from a valid list.',
   'ui.theUpstreamDidNotProvideKnownReasoning':
-    'The upstream did not provide known reasoning efforts. Configuration will be checked on save.',
+    'The upstream did not provide known reasoning efforts. Use Check configurations or verify on the first Run.',
   'ui.upstreamCompatibilityIsVerifiedOnTheFirst':
     'Upstream compatibility is verified on the first run.',
   'ui.cannotLoadProviders': 'Cannot load providers',
