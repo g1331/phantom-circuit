@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { checkTyping } from './composer-browser-check.ts';
 import { chromium } from 'playwright';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -72,7 +73,7 @@ export async function checkUsability() {
     store.addMessage(
       conversationProject.id,
       'assistant',
-      `Final answer ${index}\n\n${'Readable answer. '.repeat(20)}`,
+      `Final answer ${index}\n\n${'Readable **answer** with [a link](https://example.com).\n\n'.repeat(20)}`,
       undefined,
       undefined,
       { runId: run.id, sourceMessageId: input.id },
@@ -214,6 +215,7 @@ export async function checkUsability() {
     const firstProcess = page.locator('.pm-process').first();
     const liveProcess = page.locator(`.pm-process[data-run-id="${pendingRun.id}"]`);
     await liveProcess.locator(':scope > summary').waitFor();
+    await checkTyping(page);
     assert.equal(await liveProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
     assert.equal(await firstProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
     assert.equal(

@@ -127,7 +127,10 @@ export async function checkRuntimeUI() {
   let allowanceFails = false;
   const deliveries: string[] = [];
   const imageDeliveries: boolean[] = [];
-  const models = [{ id: 'omp-fixture', provider: 'fixture', reasoningEfforts: ['low', 'high'] }];
+  const models = [
+    { id: 'omp-fixture', provider: 'fixture', reasoningEfforts: ['low', 'high'] },
+    { id: 'omp-alt', provider: 'fixture', reasoningEfforts: ['low', 'high'] },
+  ];
   await page.route('**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace('/api', '');
@@ -391,6 +394,30 @@ export async function checkRuntimeUI() {
     assert.deepEqual(current.agentSelection, { mode: 'override', agent: 'omp' });
     assert.equal(current.profileModes?.pm, 'pinned');
     assert.equal(current.recoveryPolicy, 'manual');
+    const globalBeforePM = structuredClone(snapshot.settings);
+    const otherRoleBeforePM = structuredClone(current.ompProfiles?.review);
+    const pmTrigger = page.getByRole('button', {
+      name: 'Switch PM model and reasoning effort',
+      exact: true,
+    });
+    const pmMenu = page.getByRole('menu', {
+      name: 'Switch PM model and reasoning effort',
+      exact: true,
+    });
+    await pmTrigger.click();
+    await pmMenu.getByRole('menuitem').filter({ hasText: 'Model' }).click();
+    await pmMenu.getByRole('menuitemradio', { name: 'omp-alt', exact: true }).click();
+    await pmMenu.waitFor({ state: 'hidden' });
+    assert.equal(current.ompProfiles?.pm.model, 'omp-alt');
+    assert.equal(current.ompProfiles?.pm.providerId, 'fixture');
+    await pmTrigger.click();
+    await pmMenu.getByRole('menuitem').filter({ hasText: 'Reasoning effort' }).click();
+    await pmMenu.getByRole('menuitemradio', { name: 'low', exact: true }).click();
+    await pmMenu.waitFor({ state: 'hidden' });
+    assert.equal(current.ompProfiles?.pm.effort, 'low');
+    assert.deepEqual(current.ompProfiles?.review, otherRoleBeforePM);
+    assert.deepEqual(snapshot.settings, globalBeforePM);
+
     assert.ok(current.secondaryReviewProfiles?.omp);
     assert.equal(
       JSON.stringify(snapshot.runs[0]),

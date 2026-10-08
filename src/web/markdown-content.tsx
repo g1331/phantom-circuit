@@ -1,6 +1,6 @@
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { useLocale } from './locale/provider.tsx';
 
 const components: Components = {
@@ -22,7 +22,13 @@ const components: Components = {
     ),
 };
 
-export function MarkdownContent({ content, label }: { content: string; label?: string }) {
+export const MarkdownContent = memo(function MarkdownContent({
+  content,
+  label,
+}: {
+  content: string;
+  label?: string;
+}) {
   const { t } = useLocale();
   const [copyResult, setCopyResult] = useState<{ content: string; ok: boolean }>();
   async function copy() {
@@ -52,4 +58,4 @@ export function MarkdownContent({ content, label }: { content: string; label?: s
       </div>
     </section>
   );
-}
+});

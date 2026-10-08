@@ -42,6 +42,8 @@ During discussion, the PM can persist glossary/ADR drafts locally using the upst
 
 ## Controls
 
+Paste PNG, JPEG or WebP images directly into the PM message box, or use **Add images**. The compact model button beside Send opens model and reasoning-effort choices for the Project PM; changes apply to future Runs and leave an active Run unchanged.
+
 Saving role settings performs local schema, Provider-reference and recent model-capability checks without launching an Agent or contacting an upstream. Unchanged assignments are preserved. Model lists refreshed in the editor are shared for five minutes; editing a Provider connection invalidates its cached capabilities. New custom models require discovery or explicit custom-model selection. Changed assignments that have not passed a recent connection check are saved with a first-Run verification notice.
 
 Use **Check Codex role configurations** in the Codex model section for an explicit read-only connection and effective-configuration check. Identical Provider/model/effort combinations are checked once; the UI shows the current role, limits each check to 15 seconds and stops waiting after 30 seconds overall. Checking does not save settings, execute a model turn or block other settings writes. Actual Runs still verify their resolved Provider, model and reasoning effort before execution.

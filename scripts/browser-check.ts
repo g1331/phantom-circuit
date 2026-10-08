@@ -1,4 +1,5 @@
 import { chromium, type Page } from 'playwright';
+import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -361,6 +362,7 @@ try {
     .getByText('图片说明', { exact: true })
     .waitFor();
   await page.screenshot({ path: resolve(artifacts, '07-images-desktop.png'), fullPage: true });
+  await checkComposer(page, store, project.id, imageFile.buffer);
   const originalChat = engine.chat.bind(engine);
   engine.chat = async () => 'fixture intercepted';
   try {
@@ -1132,6 +1134,12 @@ try {
   assert.deepEqual(errors, []);
   await checkProviders(page, artifacts);
   await checkProfiles(page, store, artifacts);
+  const pmProfiles = structuredClone(store.project(project.id).profiles);
+  pmProfiles.pm = { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' };
+  store.saveProjectProfiles(project.id, pmProfiles);
+  await page.getByRole('tab', { name: '与 PM 讨论', exact: true }).click();
+  await page.reload();
+  await checkPMModels(page, store, project.id);
   await checkLocale(page, artifacts);
   await checkUsability();
   await checkRuntimeUI();

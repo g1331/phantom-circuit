@@ -24,7 +24,6 @@ import {
   Plus,
   Radio,
   RotateCw,
-  Send,
   Settings2,
   ShieldCheck,
   Sun,
@@ -46,6 +45,8 @@ import { api, session, LocalRequestError, LocalUiError, HostRequestError } from 
 import { ErrorText } from './error-text.tsx';
 import { MarkdownContent } from './markdown-content.tsx';
 import { PMProgress } from './pm-activity.tsx';
+import { PMComposer, type PMComposerHandle, type PMSubmission } from './pm-composer.tsx';
+import { PMModelControl } from './pm-model-control.tsx';
 import { ProfileEditor } from './profile-editor.tsx';
 import { ProviderSettings } from './providers.tsx';
 import { RuntimeFields, profileNames, type RuntimeConfig } from './runtime-settings.tsx';
@@ -88,36 +89,11 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     localStorage.getItem('phantom.sidebar') === 'collapsed',
   );
-  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<PMComposerHandle>(null);
   useEffect(() => {
     localStorage.setItem('phantom.sidebar', sidebarCollapsed ? 'collapsed' : 'expanded');
   }, [sidebarCollapsed]);
   const [stream, setStream] = useState<Record<string, string>>({});
-  const [draft, setDraft] = useState('');
-  const [images, setImages] = useState<{ file: File; url: string }[]>([]);
-  const imageDrafts = useRef(images);
-  const sending = useRef(false);
-  function updateImages(next: typeof images) {
-    for (const image of imageDrafts.current) {
-      if (!next.includes(image)) URL.revokeObjectURL(image.url);
-    }
-    imageDrafts.current = next;
-    setImages(next);
-  }
-  useEffect(
-    () => () => {
-      for (const image of imageDrafts.current) URL.revokeObjectURL(image.url);
-    },
-    [],
-  );
-  useEffect(() => {
-    const element = draftRef.current;
-    if (!element) return;
-    element.style.height = 'auto';
-    element.style.height = `${Math.min(240, Math.max(52, element.scrollHeight))}px`;
-  }, [draft, selected, view]);
-  const [intent, setIntent] = useState<Message['intent']>('discuss');
-  const [deliveryMode, setDeliveryMode] = useState<'queue' | 'steer'>('queue');
   const [filter, setFilter] = useState('all');
   const [controlFilter, setControlFilter] = useState('all');
   const [taskView, setTaskView] = useState<'board' | 'list'>(() =>
@@ -197,9 +173,6 @@ function App() {
     localStorage.setItem('phantom.project', selected);
     setTaskDetail(undefined);
     setContextOpen(false);
-    setDraft('');
-    setDeliveryMode('queue');
-    updateImages([]);
   }, [selected]);
   async function act(fn: () => Promise<unknown>) {
     setError('');
@@ -277,9 +250,6 @@ function App() {
       `${t.title} ${t.spec}`.toLowerCase().includes(query.toLowerCase()),
   );
   const pmBusy = active.some((r) => r.role === 'pm');
-  useEffect(() => {
-    if (!pmBusy) setDeliveryMode('queue');
-  }, [pmBusy]);
   const detail = state?.tasks.find((t) => t.id === taskDetail);
   const currentSchedule = schedule?.projectId === project?.id ? schedule : undefined;
   const stages = Object.keys(stageLabels) as Stage[];
@@ -302,36 +272,30 @@ function App() {
       current = false;
     };
   }, [state, project?.id, scheduleRefresh]);
-  async function send() {
-    if ((!draft.trim() && !images.length) || !project || busy || sending.current) return;
-    sending.current = true;
-    const content = draft;
+  async function send({ content, images, intent, deliveryMode }: PMSubmission) {
+    if (!project || busy) return false;
     let submitted = false;
-    try {
-      await act(async () => {
-        let body: unknown = { content, intent, deliveryMode: pmBusy ? deliveryMode : 'queue' };
-        if (images.length) {
-          const form = new FormData();
-          form.append('content', content);
-          form.append('intent', intent ?? 'discuss');
-          form.append('deliveryMode', pmBusy ? deliveryMode : 'queue');
-          for (const image of images) form.append('images', image.file);
-          body = form;
-        }
-        await api(`/projects/${project.id}/messages`, body);
-        submitted = true;
-        setDraft('');
-        updateImages([]);
-      });
-      if (submitted) {
-        followingLatest.current = true;
-        setAtLatest(true);
-        requestAnimationFrame(scrollToLatest);
+    await act(async () => {
+      let body: unknown = { content, intent, deliveryMode };
+      if (images.length) {
+        const form = new FormData();
+        form.append('content', content);
+        form.append('intent', intent);
+        form.append('deliveryMode', deliveryMode);
+        for (const image of images) form.append('images', image);
+        body = form;
       }
-    } finally {
-      sending.current = false;
+      await api(`/projects/${project.id}/messages`, body);
+      submitted = true;
+    });
+    if (submitted) {
+      followingLatest.current = true;
+      setAtLatest(true);
+      requestAnimationFrame(scrollToLatest);
     }
+    return submitted;
   }
+
   return (
     <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
@@ -539,365 +503,247 @@ function App() {
             </section>
             <div className="workspace-grid">
               <section className="primary-workspace">
-                {view === 'chat' ? (
-                  <div className="chat-workspace">
-                    <div className="conversation-shell">
-                      <div
-                        className="conversation"
-                        ref={scroll}
-                        role="region"
-                        aria-label={t('tabs.chat')}
-                        aria-live="polite"
-                        tabIndex={0}
-                        onScroll={trackConversationScroll}
-                        onWheel={markUserScroll}
-                        onTouchMove={markUserScroll}
-                        onPointerDown={(event) => {
-                          if (event.target === event.currentTarget) markUserScroll();
-                        }}
-                        onPointerMove={(event) => {
-                          if (event.buttons && event.target === event.currentTarget)
-                            markUserScroll();
-                        }}
-                        onKeyDown={(event) => {
-                          if (
-                            ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp'].includes(
-                              event.key,
-                            )
+                <div
+                  className="chat-workspace"
+                  style={{ display: view === 'chat' ? undefined : 'none' }}
+                >
+                  <div className="conversation-shell">
+                    <div
+                      className="conversation"
+                      ref={scroll}
+                      role="region"
+                      aria-label={t('tabs.chat')}
+                      aria-live="polite"
+                      tabIndex={0}
+                      onScroll={trackConversationScroll}
+                      onWheel={markUserScroll}
+                      onTouchMove={markUserScroll}
+                      onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) markUserScroll();
+                      }}
+                      onPointerMove={(event) => {
+                        if (event.buttons && event.target === event.currentTarget) markUserScroll();
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp'].includes(
+                            event.key,
                           )
-                            markUserScroll();
-                        }}
-                      >
-                        <div className="conversation-content" ref={conversationContent}>
-                          <ProjectActions
-                            key={project.id}
-                            state={state}
-                            project={project}
-                            reload={reload}
-                          />
-                          {!messages.length && !activities.length && (
-                            <div className="chat-empty">
-                              <div className="pm-avatar">
-                                <Layers3 size={22} />
-                              </div>
-                              <h2>{t('chat.emptyTitle')}</h2>
-                              <p>
-                                {t('chat.emptyDescription')}
-                                <br />
-                                {t('chat.emptyHint')}
-                              </p>
-                              <div className="suggestions">
-                                <button onClick={() => setDraft(t('chat.requirementsDraft'))}>
-                                  {t('chat.requirements')} <ArrowUpRight size={13} />
-                                </button>
-                                <button onClick={() => setDraft(t('chat.exploreDraft'))}>
-                                  {t('chat.explore')} <ArrowUpRight size={13} />
-                                </button>
-                              </div>
+                        )
+                          markUserScroll();
+                      }}
+                    >
+                      <div className="conversation-content" ref={conversationContent}>
+                        <ProjectActions
+                          key={project.id}
+                          state={state}
+                          project={project}
+                          reload={reload}
+                        />
+                        {!messages.length && !activities.length && (
+                          <div className="chat-empty">
+                            <div className="pm-avatar">
+                              <Layers3 size={22} />
                             </div>
-                          )}
-                          <ConversationFlow
-                            key={project.id}
-                            messages={messages}
-                            activities={activities}
-                            runs={runs}
-                            disclosures={processDisclosures.current.items}
-                            following={followingLatest}
-                            roots={repos.map((repo) => repo.path)}
-                            renderMessage={(m) => {
-                              const messageRun =
-                                m.role === 'assistant'
-                                  ? active.find((run) => run.id === m.runId)
-                                  : undefined;
-                              return (
-                                <article
-                                  key={`${m.role}:${m.draftId ?? m.id}`}
-                                  id={`message-${m.id}`}
-                                  tabIndex={-1}
-                                  className={`message ${m.role}`}
-                                >
-                                  <div className="message-heading">
-                                    <span
-                                      className={
-                                        m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'
-                                      }
-                                    >
-                                      {m.role === 'assistant' ? (
-                                        <Layers3 size={13} />
-                                      ) : m.role === 'user' ? (
-                                        t('chat.you')
-                                      ) : (
-                                        '!'
-                                      )}
-                                    </span>
-                                    <strong>
-                                      {m.role === 'assistant'
-                                        ? t('profile.pm')
-                                        : m.role === 'user'
-                                          ? t('ui.you')
-                                          : t('ui.runNotice')}
-                                    </strong>
-                                    {m.intent && (
-                                      <span className="message-intent">
-                                        {
-                                          {
-                                            discuss: t('ui.discussion'),
-                                            implement: t('ui.implementationRequest'),
-                                            feedback: t('ui.experienceFeedback'),
-                                          }[m.intent]
-                                        }
-                                      </span>
-                                    )}
-                                    <time>{time(m.createdAt)}</time>
-                                    {(m.draftStatus ?? m.status) && (
-                                      <span className="runtime-badge">
-                                        {t(`delivery.${m.draftStatus ?? m.status!}`)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {messageRun && (
-                                    <PMProgress run={messageRun} activities={activities} />
-                                  )}
-                                  <div className="message-content">
-                                    {m.role === 'system' ? (
-                                      host(m.content, m.descriptor)
-                                    ) : (
-                                      <MarkdownContent
-                                        content={
-                                          m.runId &&
-                                          isRunning(m.draftStatus ?? m.status ?? '') &&
-                                          stream[m.runId]
-                                            ? stream[m.runId]
-                                            : m.content
-                                        }
-                                      />
-                                    )}
-                                  </div>
-                                  {!!m.attachments?.length && (
-                                    <div className="message-images">
-                                      {m.attachments.map((attachment) => {
-                                        const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
-                                        return (
-                                          <a
-                                            key={attachment.id}
-                                            href={url}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                          >
-                                            <img src={url} alt={attachment.name} />
-                                            <span>{attachment.name}</span>
-                                          </a>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                  {m.role === 'user' && (
-                                    <button
-                                      className="retry-message"
-                                      disabled={busy || pmBusy}
-                                      onClick={() =>
-                                        void act(() => api(`/messages/${m.id}/retry`, {}))
-                                      }
-                                    >
-                                      {t('common.retry')}
-                                    </button>
-                                  )}
-                                </article>
-                              );
-                            }}
-                          />
-                          {active
-                            .filter(
-                              (r) =>
-                                r.role === 'pm' &&
-                                !messages.some(
-                                  (message) =>
-                                    message.role === 'assistant' && message.runId === r.id,
-                                ),
-                            )
-                            .map((r) => (
-                              <article className="message assistant" key={r.id}>
-                                <div className="message-heading">
-                                  <span className="mini-avatar">
-                                    <Layers3 size={13} />
-                                  </span>
-                                  <strong>{t('profile.pm')}</strong>
-                                  <span className="thinking">
-                                    {t('chat.thinking')}
-                                    <span>…</span>
-                                  </span>
-                                </div>
-                                <PMProgress run={r} activities={activities} />
-                                {stream[r.id] ? (
-                                  <div className="message-content">
-                                    <MarkdownContent content={stream[r.id]} />
-                                  </div>
-                                ) : null}
-                              </article>
-                            ))}
-                        </div>
-                      </div>
-                      <TurnNavigator
-                        key={project.id}
-                        messages={messages}
-                        runs={runs}
-                        scroll={scroll}
-                        onNavigate={() => {
-                          followingLatest.current = false;
-                          setAtLatest(false);
-                        }}
-                      />
-                      {!atLatest && (
-                        <button className="latest-message" onClick={scrollToLatest}>
-                          <ChevronDown size={15} />
-                          {t('chat.backToLatest')}
-                        </button>
-                      )}
-                    </div>
-                    <div className="composer">
-                      {!!images.length && (
-                        <div className="image-drafts">
-                          {images.map((image) => (
-                            <div key={image.url} className="image-draft">
-                              <img
-                                src={image.url}
-                                alt={t('images.pending', { name: image.file.name })}
-                              />
-                              <span>
-                                {image.file.name}
-                                <small>{Math.max(1, Math.ceil(image.file.size / 1024))} KiB</small>
-                              </span>
+                            <h2>{t('chat.emptyTitle')}</h2>
+                            <p>
+                              {t('chat.emptyDescription')}
+                              <br />
+                              {t('chat.emptyHint')}
+                            </p>
+                            <div className="suggestions">
                               <button
-                                aria-label={t('images.remove', { name: image.file.name })}
-                                disabled={busy}
                                 onClick={() =>
-                                  updateImages(images.filter((item) => item !== image))
+                                  composerRef.current?.setDraft(t('chat.requirementsDraft'))
                                 }
                               >
-                                <X size={16} />
+                                {t('chat.requirements')} <ArrowUpRight size={13} />
+                              </button>
+                              <button
+                                onClick={() =>
+                                  composerRef.current?.setDraft(t('chat.exploreDraft'))
+                                }
+                              >
+                                {t('chat.explore')} <ArrowUpRight size={13} />
                               </button>
                             </div>
+                          </div>
+                        )}
+                        <ConversationFlow
+                          key={project.id}
+                          messages={messages}
+                          activities={activities}
+                          runs={runs}
+                          disclosures={processDisclosures.current.items}
+                          following={followingLatest}
+                          roots={repos.map((repo) => repo.path)}
+                          renderMessage={(m) => {
+                            const messageRun =
+                              m.role === 'assistant'
+                                ? active.find((run) => run.id === m.runId)
+                                : undefined;
+                            return (
+                              <article
+                                key={`${m.role}:${m.draftId ?? m.id}`}
+                                id={`message-${m.id}`}
+                                tabIndex={-1}
+                                className={`message ${m.role}`}
+                              >
+                                <div className="message-heading">
+                                  <span
+                                    className={
+                                      m.role === 'assistant' ? 'mini-avatar' : 'user-avatar'
+                                    }
+                                  >
+                                    {m.role === 'assistant' ? (
+                                      <Layers3 size={13} />
+                                    ) : m.role === 'user' ? (
+                                      t('chat.you')
+                                    ) : (
+                                      '!'
+                                    )}
+                                  </span>
+                                  <strong>
+                                    {m.role === 'assistant'
+                                      ? t('profile.pm')
+                                      : m.role === 'user'
+                                        ? t('ui.you')
+                                        : t('ui.runNotice')}
+                                  </strong>
+                                  {m.intent && (
+                                    <span className="message-intent">
+                                      {
+                                        {
+                                          discuss: t('ui.discussion'),
+                                          implement: t('ui.implementationRequest'),
+                                          feedback: t('ui.experienceFeedback'),
+                                        }[m.intent]
+                                      }
+                                    </span>
+                                  )}
+                                  <time>{time(m.createdAt)}</time>
+                                  {(m.draftStatus ?? m.status) && (
+                                    <span className="runtime-badge">
+                                      {t(`delivery.${m.draftStatus ?? m.status!}`)}
+                                    </span>
+                                  )}
+                                </div>
+                                {messageRun && (
+                                  <PMProgress run={messageRun} activities={activities} />
+                                )}
+                                <div className="message-content">
+                                  {m.role === 'system' ? (
+                                    host(m.content, m.descriptor)
+                                  ) : (
+                                    <MarkdownContent
+                                      content={
+                                        m.runId &&
+                                        isRunning(m.draftStatus ?? m.status ?? '') &&
+                                        stream[m.runId]
+                                          ? stream[m.runId]
+                                          : m.content
+                                      }
+                                    />
+                                  )}
+                                </div>
+                                {!!m.attachments?.length && (
+                                  <div className="message-images">
+                                    {m.attachments.map((attachment) => {
+                                      const url = `/api/projects/${m.projectId}/messages/${m.id}/images/${attachment.id}`;
+                                      return (
+                                        <a
+                                          key={attachment.id}
+                                          href={url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          <img src={url} alt={attachment.name} />
+                                          <span>{attachment.name}</span>
+                                        </a>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {m.role === 'user' && (
+                                  <button
+                                    className="retry-message"
+                                    disabled={busy || pmBusy}
+                                    onClick={() =>
+                                      void act(() => api(`/messages/${m.id}/retry`, {}))
+                                    }
+                                  >
+                                    {t('common.retry')}
+                                  </button>
+                                )}
+                              </article>
+                            );
+                          }}
+                        />
+                        {active
+                          .filter(
+                            (r) =>
+                              r.role === 'pm' &&
+                              !messages.some(
+                                (message) => message.role === 'assistant' && message.runId === r.id,
+                              ),
+                          )
+                          .map((r) => (
+                            <article className="message assistant" key={r.id}>
+                              <div className="message-heading">
+                                <span className="mini-avatar">
+                                  <Layers3 size={13} />
+                                </span>
+                                <strong>{t('profile.pm')}</strong>
+                                <span className="thinking">
+                                  {t('chat.thinking')}
+                                  <span>…</span>
+                                </span>
+                              </div>
+                              <PMProgress run={r} activities={activities} />
+                              {stream[r.id] ? (
+                                <div className="message-content">
+                                  <MarkdownContent content={stream[r.id]} />
+                                </div>
+                              ) : null}
+                            </article>
                           ))}
-                        </div>
-                      )}
-                      <textarea
-                        ref={draftRef}
-                        aria-label={t('chat.message')}
-                        title={t('chat.shortcut')}
-                        disabled={busy}
-                        placeholder={
-                          intent === 'discuss'
-                            ? t('chat.discussPlaceholder')
-                            : intent === 'implement'
-                              ? t('chat.implementPlaceholder')
-                              : t('chat.feedbackPlaceholder')
-                        }
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                            e.preventDefault();
-                            void send();
-                          }
-                        }}
-                      />
-                      <div className="composer-footer">
-                        <div className="composer-tools">
-                          <div className="image-picker">
-                            <label title={t('images.formats')}>
-                              {t('ui.addImages')}{' '}
-                              <input
-                                aria-label={t('ui.chooseImages')}
-                                type="file"
-                                accept="image/png,image/jpeg,image/webp"
-                                multiple
-                                disabled={busy}
-                                onChange={(event) => {
-                                  const files = Array.from(event.target.files ?? []);
-                                  event.target.value = '';
-                                  if (
-                                    files.some(
-                                      (file) =>
-                                        !['image/png', 'image/jpeg', 'image/webp'].includes(
-                                          file.type,
-                                        ),
-                                    )
-                                  ) {
-                                    setError(new LocalUiError('ui.onlyPngJpegAndWebpImagesAre'));
-                                    return;
-                                  }
-                                  setError('');
-                                  updateImages([
-                                    ...images,
-                                    ...files.map((file) => ({
-                                      file,
-                                      url: URL.createObjectURL(file),
-                                    })),
-                                  ]);
-                                }}
-                              />
-                            </label>
-                          </div>
-                          <div className="intent-row">
-                            {(['discuss', 'implement', 'feedback'] as const).map((i) => (
-                              <button
-                                key={i}
-                                className={intent === i ? 'selected' : ''}
-                                title={`${i === 'discuss' ? t('chat.discussNote') : t('chat.implementNote')} · ${t('chat.shortcut')}`}
-                                aria-pressed={intent === i}
-                                onClick={() => setIntent(i)}
-                              >
-                                {
-                                  {
-                                    discuss: t('chat.talk'),
-                                    implement: t('chat.delegate'),
-                                    feedback: t('chat.feedback'),
-                                  }[i]
-                                }
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="send-actions">
-                          <div className="send-controls">
-                            {pmBusy && (
-                              <select
-                                className="delivery-select"
-                                aria-label={t('delivery.mode')}
-                                value={deliveryMode}
-                                onChange={(event) =>
-                                  setDeliveryMode(event.target.value as 'queue' | 'steer')
-                                }
-                              >
-                                <option value="queue">{t('delivery.queue')}</option>
-                                <option value="steer">{t('delivery.steer')}</option>
-                              </select>
-                            )}
-                            <button
-                              className="send-button"
-                              disabled={(!draft.trim() && !images.length) || busy}
-                              onClick={() => void send()}
-                            >
-                              <span>
-                                {pmBusy
-                                  ? t(
-                                      deliveryMode === 'steer'
-                                        ? 'delivery.sendSteer'
-                                        : 'delivery.sendQueue',
-                                    )
-                                  : t('common.send')}
-                              </span>
-                              <Send size={17} />
-                            </button>
-                          </div>
-                          {pmBusy && (
-                            <small className="delivery-note">{t('delivery.steerFallback')}</small>
-                          )}
-                        </div>
                       </div>
                     </div>
+                    <TurnNavigator
+                      key={project.id}
+                      messages={messages}
+                      runs={runs}
+                      scroll={scroll}
+                      onNavigate={() => {
+                        followingLatest.current = false;
+                        setAtLatest(false);
+                      }}
+                    />
+                    {!atLatest && (
+                      <button className="latest-message" onClick={scrollToLatest}>
+                        <ChevronDown size={15} />
+                        {t('chat.backToLatest')}
+                      </button>
+                    )}
                   </div>
-                ) : view === 'tasks' ? (
+                  <PMComposer
+                    key={project.id}
+                    ref={composerRef}
+                    busy={busy}
+                    pmBusy={pmBusy}
+                    onSend={send}
+                    modelControl={
+                      <PMModelControl
+                        project={project}
+                        settings={state.settings}
+                        agent={projectAgent}
+                        profile={pmProfile}
+                        onSave={reload}
+                      />
+                    }
+                  />
+                </div>
+                {view === 'tasks' ? (
                   <div className="task-workspace">
                     <ClaimOrder
                       schedule={currentSchedule}
@@ -1042,7 +888,7 @@ function App() {
                       />
                     )}
                   </div>
-                ) : (
+                ) : view === 'runs' ? (
                   <div className="run-workspace">
                     {runs.length ? (
                       runs
@@ -1104,7 +950,7 @@ function App() {
                       />
                     )}
                   </div>
-                )}
+                ) : null}
               </section>
               <dialog
                 id="project-context"
