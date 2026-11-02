@@ -165,9 +165,10 @@ time {
   gap: 10px;
   align-items: center;
   padding: 0 10px;
+  margin-bottom: 32px;
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 1.7px;
+  letter-spacing: 0.2px;
   line-height: 1.25;
 }
 .brand-mark {
@@ -179,19 +180,11 @@ time {
 }
 .brand-sub {
   display: block;
-  font-size: 10px;
-  letter-spacing: 5.5px;
+  font-size: 12px;
+  letter-spacing: 0.3px;
   font-weight: 400;
   color: var(--muted);
-  margin-top: 5px;
-}
-.workspace-label {
-  margin: 34px 12px 31px;
-  font-size: 11px;
-  color: var(--muted);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  margin-top: 2px;
 }
 .local-dot {
   width: 5px;
@@ -260,8 +253,14 @@ time {
 }
 .nav-count {
   margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
   font-size: 11px;
-  opacity: 0.7;
+  line-height: 18px;
+  text-align: center;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
 }
 .sidebar-hint {
   color: var(--faint);
@@ -319,7 +318,7 @@ time {
   gap: 7px;
   margin: 20px -16px 0;
   padding: 17px 15px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .version {
@@ -389,7 +388,7 @@ time {
 }
 
 .eyebrow {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 2px;
   color: var(--muted);
   margin-bottom: 10px;
@@ -496,7 +495,7 @@ time {
   content: none;
 }
 .tab-count {
-  font-size: 10px;
+  font-size: 11px;
   border-radius: 4px;
   background: var(--raised);
   padding: 1px 5px;
@@ -518,7 +517,7 @@ time {
   font-size: 12px;
 }
 .panel-heading > span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
 }
 .repo-control {
@@ -546,7 +545,7 @@ time {
   margin-left: auto;
 }
 .repo-slug {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
   display: flex;
   align-items: center;
@@ -568,7 +567,7 @@ time {
   font-weight: 400;
 }
 .switch-row small {
-  font-size: 10px;
+  font-size: 11px;
   display: block;
   margin-top: 6px;
   line-height: 1.5;
@@ -604,7 +603,7 @@ time {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   margin-top: 20px;
 }
@@ -652,7 +651,7 @@ time {
 .project-capacity > span {
   display: block;
   color: var(--faint);
-  font-size: 10px;
+  font-size: 11px;
   margin-top: 10px;
 }
 .activity-heading {
@@ -687,7 +686,7 @@ time {
 }
 .activity-item time {
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   margin-top: 4px;
   color: var(--faint);
 }
@@ -784,9 +783,11 @@ time {
   scroll-margin-top: 20px;
 }
 .message.user {
+  position: relative;
   width: fit-content;
   max-width: min(85%, 680px);
   margin-left: auto;
+  margin-bottom: 40px;
   padding: 12px 16px;
   background: var(--input);
   border: 0;
@@ -810,7 +811,7 @@ time {
   font-weight: 500;
 }
 .message-heading time {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--faint);
   margin-left: auto;
 }
@@ -823,15 +824,24 @@ time {
   place-items: center;
   background: var(--accent-bg);
   color: var(--accent);
-  font-size: 10px;
+  font-size: 11px;
 }
 .user-avatar {
   background: var(--raised);
   color: var(--muted);
 }
 .message-intent {
-  font-size: 9px;
-  color: var(--faint);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--raised);
+}
+.message-intent.intent-implement {
+  color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+}
+.message-intent.intent-feedback {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
 }
 
 .message.user .message-content {
@@ -843,9 +853,17 @@ time {
 .message.user .message-images {
   padding: 10px 0 0;
 }
+.message.user .retry-message,
+.message.user .markdown-tools {
+  position: absolute;
+  top: 100%;
+  margin: 4px 0 0;
+}
 .message.user .retry-message {
-  display: block;
-  margin: 6px 0 0;
+  right: 0;
+}
+.message.user .markdown-tools {
+  right: 72px;
 }
 .markdown-rendered {
   white-space: normal;
@@ -862,7 +880,7 @@ time {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 10px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .markdown-block + .markdown-block {
@@ -1015,7 +1033,7 @@ time {
 }
 .retry-message {
   margin: 5px 0 0 31px;
-  font-size: 10px;
+  font-size: 11px;
   background: none;
   border: 0;
   padding: 3px 0;
@@ -1023,7 +1041,7 @@ time {
 }
 .thinking {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .thinking span {
   animation: pulse 1s infinite;
@@ -1211,13 +1229,13 @@ time {
 }
 .composer-footer > span {
   min-width: 0;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--faint);
   line-height: 1.8;
 }
 .composer-footer small {
   display: block;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--faint);
 }
 .send-actions {
@@ -1241,7 +1259,7 @@ time {
   border-radius: 8px;
   background: var(--raised);
   color: var(--text);
-  font-size: 10px;
+  font-size: 11px;
 }
 .delivery-select:focus-visible {
   outline: 2px solid var(--focus);
@@ -1250,7 +1268,7 @@ time {
 .delivery-note {
   max-width: 360px;
   color: var(--faint);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.45;
   text-align: right;
 }
@@ -1320,7 +1338,7 @@ time {
   white-space: nowrap;
 }
 .task-row-main > span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
   display: block;
   margin-top: 7px;
@@ -1337,7 +1355,7 @@ time {
   color: var(--danger);
 }
 .stage {
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   color: var(--muted);
 }
@@ -1362,11 +1380,11 @@ time {
   min-width: 0;
 }
 .run-row strong {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
 }
 .run-row strong span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
   font-weight: 400;
   margin-left: 10px;
@@ -1389,12 +1407,23 @@ time {
   align-items: flex-end;
   gap: 8px;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .run-meta time {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--faint);
+}
+.run-status.running,
+.run-status.waiting {
+  color: var(--success);
+}
+.run-status.failed,
+.run-status.interrupted {
+  color: var(--danger);
+}
+.run-status.paused {
+  color: var(--warning);
 }
 .empty-state {
   padding: 85px 25px;
@@ -1588,7 +1617,7 @@ time {
   accent-color: var(--accent);
 }
 .field-note {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--faint);
   line-height: 1.9;
 }
@@ -1707,9 +1736,12 @@ time {
   padding: 10px 0;
 }
 .review-result h3 span {
-  font-size: 11px;
-  color: var(--accent);
+  font-size: 12px;
+  color: var(--success);
   margin-left: 10px;
+}
+.review-result.changes h3 span {
+  color: var(--danger);
 }
 .task-detail details {
   border-top: 1px solid var(--line);
@@ -1874,7 +1906,7 @@ time {
     gap: 7px;
   }
   .suggestions button {
-    font-size: 10px;
+    font-size: 11px;
   }
   .run-row strong span {
     display: block;
@@ -1896,7 +1928,7 @@ time {
     padding: 0 18px;
   }
   .breadcrumb {
-    font-size: 10px;
+    font-size: 11px;
     gap: 8px;
   }
   .topbar-actions {
@@ -1911,7 +1943,7 @@ time {
   }
   .project-header .secondary-button {
     padding: 7px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .project-header p {
     font-size: 11px;
@@ -1929,10 +1961,10 @@ time {
     gap: 4px;
   }
   .metric-value > span {
-    font-size: 10px;
+    font-size: 11px;
   }
   .metric-label {
-    font-size: 9px;
+    font-size: 11px;
   }
   .workspace-grid {
     display: flex;
@@ -1993,7 +2025,7 @@ time {
     gap: 8px;
   }
   .task-row > .stage {
-    font-size: 9px;
+    font-size: 11px;
   }
   .task-row > svg:last-child {
     display: none;
@@ -2005,7 +2037,7 @@ time {
   }
   .profile-row input,
   .profile-row select {
-    font-size: 10px;
+    font-size: 11px;
     padding: 8px 4px;
   }
   .form-columns {
@@ -2061,7 +2093,7 @@ time {
 .process-failure {
   flex: 0 0 auto;
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
 }
 .process-status,
 .pm-process[data-status='running'] > summary,
@@ -2128,7 +2160,7 @@ time {
 .activity-state {
   flex: 0 0 auto;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-chevron {
   flex: 0 0 14px;
@@ -2184,7 +2216,7 @@ time {
   padding: 6px 9px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 .activity-panel pre {
@@ -2205,7 +2237,7 @@ time {
   gap: 5px 12px;
   margin: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .activity-meta dt {
   color: var(--faint);
@@ -2520,48 +2552,109 @@ time {
   scroll-padding-inline: var(--page-gutter);
 }
 .board-column {
-  flex: 0 0 235px;
+  flex: 0 0 248px;
   min-width: 0;
   scroll-snap-align: start;
 }
+.board-column.empty h3 {
+  color: var(--muted);
+}
 .board-column h3 {
   display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  font-weight: 500;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
   padding: 0 var(--surface-padding) 12px;
   border-bottom: 1px solid var(--line);
   margin: 0 0 12px;
 }
-.board-column h3 span {
+.board-column h3 > span:last-child {
+  margin-left: auto;
   color: var(--faint);
+  font-weight: 400;
+}
+.stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+.stage-dot.developing,
+.stage-dot.reviewing,
+.stage-dot.merging {
+  background: var(--focus);
+}
+.stage-dot.done {
+  background: var(--success);
+}
+.stage-dot.clarifying {
+  background: var(--warning);
 }
 .task-card {
   display: flex;
   flex-direction: column;
   gap: var(--field-gap);
   width: 100%;
-  padding: var(--surface-padding);
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-left: 3px solid var(--line);
+  border-radius: 8px;
+  transition: border-color 120ms, box-shadow 120ms;
   margin-bottom: 10px;
   text-align: left;
   background: var(--panel);
   overflow-wrap: anywhere;
 }
+.task-card:hover {
+  box-shadow: 0 2px 10px var(--shadow);
+}
+.task-card.tone-moving {
+  border-left-color: var(--focus);
+}
+.task-card.tone-done {
+  border-left-color: var(--success);
+}
+.task-card.tone-paused {
+  border-left-color: var(--warning);
+}
+.task-card.tone-blocked {
+  border-left-color: var(--danger);
+}
 .task-card strong {
-  font-size: 12px;
-  line-height: 1.7;
-  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 600;
 }
 .task-card > span {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
+}
+.task-meta,
+.task-badges,
+.task-refs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.task-refs {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.task-refs > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 .task-card em {
   font-style: normal;
   color: var(--danger);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.task-card.tone-paused em {
+  color: var(--warning);
 }
 .runtime-settings,
 .omp-profiles,
@@ -2632,15 +2725,21 @@ time {
 }
 .runtime-badge {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.6;
   color: var(--muted);
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 2px 5px;
 }
-.runtime-badge.warning {
+.runtime-badge.warning,
+.runtime-badge.delivery-failed {
   color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.runtime-badge.delivery-running,
+.runtime-badge.delivery-queued {
+  color: var(--focus);
 }
 .request-error-detail {
   display: block;
@@ -2952,7 +3051,7 @@ time {
   }
   .context-trigger {
     padding: 8px;
-    font-size: 10px;
+    font-size: 11px;
   }
   .workspace-grid {
     flex: 1;
@@ -3105,7 +3204,7 @@ time {
   font-size: 11px;
 }
 .role-picker small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 .role-panel .assignment {
@@ -3190,7 +3289,7 @@ time {
   }
   .sidebar-bottom > :is(.language-control, .theme-control) .choice-value {
     padding-inline: 1px;
-    font-size: 10px;
+    font-size: 11px;
   }
 }
 @container (max-width: 80px) {
@@ -3445,10 +3544,17 @@ time {
 .turn-directory-trigger {
   display: none;
   position: absolute;
-  top: 4px;
-  right: 10px;
+  top: 8px;
+  right: 12px;
   z-index: 3;
-  background: var(--bg);
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 4px 14px var(--shadow);
 }
 .turn-directory {
   width: min(420px, calc(100vw - 32px));
@@ -3498,6 +3604,9 @@ time {
   }
   .turn-directory-trigger {
     display: inline-flex;
+  }
+  .conversation-content {
+    padding-top: 36px;
   }
 }
 @media (hover: hover) {
