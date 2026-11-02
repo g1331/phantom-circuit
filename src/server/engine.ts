@@ -859,7 +859,19 @@ export class Engine {
         secondaryReview: oldRun.secondaryReview,
         reviewAxis: axis,
       });
-      await this.review(run, task, axis);
+      // The barrier only covers reconciliation and successor creation; running the whole Review
+      // here held every other Task's scheduling until it finished. The marker keeps the scheduler
+      // from launching a duplicate of this axis meanwhile.
+      const marker = `review:${task.id}:${axis}`;
+      this.mergeBusy.add(marker);
+      void this.track(
+        this.review(run, task, axis)
+          .catch(async (error) => {
+            this.block(task.id, this.pauseReason(error));
+            await this.incidentForRun(run, error, `review:${axis}`);
+          })
+          .finally(() => this.mergeBusy.delete(marker)),
+      );
       return this.store.get('recovery', item.id);
     }
     // Dev recovery is handed back to the normal FIFO scheduler after safe reconciliation. The
