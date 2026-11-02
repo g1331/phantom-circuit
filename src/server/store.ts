@@ -1774,6 +1774,19 @@ export class Store {
           updatedAt: now(),
         });
       }
+      // A later clean Run of the same phase is the evidence that an operational Incident is over.
+      const phase = r.role === 'dev' ? 'dev' : r.role === 'review' ? `review:${r.reviewAxis}` : '';
+      if (r.status === 'completed' && phase)
+        for (const incident of this.list('incident').filter(
+          (i) => i.taskId === r.taskId && i.phase === phase && i.status !== 'resolved',
+        )) {
+          const detail = `同阶段 Run ${r.id} 已成功完成，宿主自动结束此 Incident。原因：${incident.message}`;
+          this.updateIncident(incident.id, {
+            status: 'resolved',
+            message: detail,
+            descriptor: { code: 'incident_resolved', detail: redact(detail).slice(-3000) },
+          });
+        }
     }
     if (r.role === 'pm') {
       for (const a of this.list('activity').filter(

@@ -71,6 +71,24 @@ function conflictEventAgrees(message: string, head: string, sourceHead: string) 
   return !named || (named.includes(head) && named.includes(sourceHead));
 }
 
+const networkBlip =
+  /unable to access|SSL_ERROR|Could not resolve host|Failed to connect|Connection (?:reset|timed out)|RPC failed|early EOF|remote end hung up|HTTP 50[234]/i;
+/** Read-only remote calls (fetch, ls-remote) retry a connection blip; writes never retry here. */
+export async function retryNetworkRead<T>(
+  args: string[],
+  run: () => Promise<T>,
+  delaysMs = [2000, 8000],
+): Promise<T> {
+  const retryable = args[0] === 'fetch' || args[0] === 'ls-remote';
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!retryable || attempt >= delaysMs.length || !networkBlip.test(String(error))) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+    }
+  }
+}
 export type BaselineResult =
   | { status: 'clean' }
   | { status: 'conflicted'; merge: NonNullable<Task['pendingMerge']> }
@@ -121,7 +139,9 @@ export class Workspaces {
     }
   }
   async git(cwd: string, args: string[], signal?: AbortSignal) {
-    return (await command('git', args, cwd, undefined, 120000, true, signal)).stdout.trim();
+    return retryNetworkRead(args, async () =>
+      (await command('git', args, cwd, undefined, 120000, true, signal)).stdout.trim(),
+    );
   }
   async inspect(path: string, slug: string) {
     const canonical = await realpath(path);
@@ -265,119 +285,125 @@ export class Workspaces {
       throw new Fault('工作区分支不匹配');
   }
   async finalize(task: Task, signal?: AbortSignal) {
-    return this.exclusive(`repo:${task.repoId}`, async () => {
-      task = this.store.task(task.id);
-      await this.assertTask(task);
-      if (!task.base) throw new Fault('任务基线缺失');
-      const pending = await this.pending(task, signal);
-      task = this.store.task(task.id);
-      const before = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
-      if (!pending && !(await this.ancestor(task.worktree!, task.base!, before, signal)))
-        throw new Fault('任务 base 与 HEAD 祖先关系不可接受');
-      const { stdout } = await command(
-        'git',
-        ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'],
-        task.worktree,
-        undefined,
-        120000,
-        true,
-        signal,
-      );
-      const records = stdout.split('\0').filter(Boolean);
-      const paths: string[] = [];
-      for (let i = 0; i < records.length; i++) {
-        const record = records[i];
-        const fields = record.split(' ');
-        if (fields[0] === 'u') {
-          if (!pending) throw new Fault(`任务工作区存在未合并冲突：${fields.slice(10).join(' ')}`);
-          if (fields[2] !== 'N...' || fields.slice(3, 7).includes('160000'))
-            throw new Fault('任务工作区存在子模块异常或变更');
-          paths.push(fields.slice(10).join(' '));
-        } else if (fields[0] === '?') paths.push(record.slice(2));
-        else if (fields[0] === '1' || fields[0] === '2') {
-          if (fields[2] !== 'N...' || fields.slice(3, 6).includes('160000'))
-            throw new Fault('任务工作区存在子模块异常或变更');
-          paths.push(fields.slice(fields[0] === '1' ? 8 : 9).join(' '));
-          if (fields[0] === '2') paths.push(records[++i]);
-        } else throw new Fault('无法识别任务 Git 状态');
+    return this.exclusive(`repo:${task.repoId}`, () => this.commitTask(task, signal));
+  }
+  /**
+   * The caller holds the repo lock. A checkpoint commits interrupted or rejected Dev work so a
+   * moved base can still be merged; the later finalize checks the whole task diff anyway.
+   */
+  private async commitTask(task: Task, signal?: AbortSignal, checkpoint = false) {
+    task = this.store.task(task.id);
+    await this.assertTask(task);
+    if (!task.base) throw new Fault('任务基线缺失');
+    const pending = await this.pending(task, signal);
+    task = this.store.task(task.id);
+    const before = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
+    if (!pending && !(await this.ancestor(task.worktree!, task.base!, before, signal)))
+      throw new Fault('任务 base 与 HEAD 祖先关系不可接受');
+    const { stdout } = await command(
+      'git',
+      ['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=none'],
+      task.worktree,
+      undefined,
+      120000,
+      true,
+      signal,
+    );
+    const records = stdout.split('\0').filter(Boolean);
+    const paths: string[] = [];
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      const fields = record.split(' ');
+      if (fields[0] === 'u') {
+        if (!pending) throw new Fault(`任务工作区存在未合并冲突：${fields.slice(10).join(' ')}`);
+        if (fields[2] !== 'N...' || fields.slice(3, 7).includes('160000'))
+          throw new Fault('任务工作区存在子模块异常或变更');
+        paths.push(fields.slice(10).join(' '));
+      } else if (fields[0] === '?') paths.push(record.slice(2));
+      else if (fields[0] === '1' || fields[0] === '2') {
+        if (fields[2] !== 'N...' || fields.slice(3, 6).includes('160000'))
+          throw new Fault('任务工作区存在子模块异常或变更');
+        paths.push(fields.slice(fields[0] === '1' ? 8 : 9).join(' '));
+        if (fields[0] === '2') paths.push(records[++i]);
+      } else throw new Fault('无法识别任务 Git 状态');
+    }
+    for (const path of paths) {
+      if (
+        !path ||
+        isAbsolute(path) ||
+        path.split(/[\\/]/).some((p) => p === '..' || p.toLowerCase() === '.git')
+      )
+        throw new Fault('Git 变更路径不属于当前任务工作区');
+      for (
+        let dir = resolve(task.worktree!, path);
+        dir !== resolve(task.worktree!);
+        dir = dirname(dir)
+      ) {
+        let nested = false;
+        try {
+          await access(join(dir, '.git'));
+          nested = true;
+        } catch (e) {
+          if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
+        }
+        if (nested) throw new Fault(`任务工作区存在嵌套仓库：${path}`);
       }
+      // Check the nearest existing parent too: deleted paths need not exist.
+      let parent = dirname(resolve(task.worktree!, path));
+      for (;;) {
+        try {
+          const rel = relative(await realpath(task.worktree!), await realpath(parent));
+          if (rel.startsWith('..') || isAbsolute(rel))
+            throw new Fault('Git 变更路径超出任务工作区');
+          break;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+          parent = dirname(parent);
+        }
+      }
+    }
+    if (pending) {
+      await this.checkConflictEdits(task, pending);
       for (const path of paths) {
-        if (
-          !path ||
-          isAbsolute(path) ||
-          path.split(/[\\/]/).some((p) => p === '..' || p.toLowerCase() === '.git')
-        )
-          throw new Fault('Git 变更路径不属于当前任务工作区');
-        for (
-          let dir = resolve(task.worktree!, path);
-          dir !== resolve(task.worktree!);
-          dir = dirname(dir)
-        ) {
-          let nested = false;
-          try {
-            await access(join(dir, '.git'));
-            nested = true;
-          } catch (e) {
-            if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
-          }
-          if (nested) throw new Fault(`任务工作区存在嵌套仓库：${path}`);
-        }
-        // Check the nearest existing parent too: deleted paths need not exist.
-        let parent = dirname(resolve(task.worktree!, path));
-        for (;;) {
-          try {
-            const rel = relative(await realpath(task.worktree!), await realpath(parent));
-            if (rel.startsWith('..') || isAbsolute(rel))
-              throw new Fault('Git 变更路径超出任务工作区');
-            break;
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-            parent = dirname(parent);
-          }
+        try {
+          if (!(await lstat(join(task.worktree!, path))).isFile())
+            throw new Fault(`冲突解决文件不是普通文件：${path}`);
+          const text = await readFile(join(task.worktree!, path), 'utf8');
+          if (/^(?:<{7}|={7}|>{7}|\|{7})(?:\s|$)/m.test(text))
+            throw new Fault(`任务工作区存在未解决冲突标记：${path}`);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
         }
       }
-      if (pending) {
-        await this.checkConflictEdits(task, pending);
-        for (const path of paths) {
-          try {
-            if (!(await lstat(join(task.worktree!, path))).isFile())
-              throw new Fault(`冲突解决文件不是普通文件：${path}`);
-            const text = await readFile(join(task.worktree!, path), 'utf8');
-            if (/^(?:<{7}|={7}|>{7}|\|{7})(?:\s|$)/m.test(text))
-              throw new Fault(`任务工作区存在未解决冲突标记：${path}`);
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-          }
-        }
-        await this.assertPackages(task);
-        // Staging is the host's job and the Dev is told not to touch the index, so UU is expected
-        // here; `checkConflictEdits` above already refuses a Dev that rewrote the index anyway.
-        this.store.updateTask(task.id, { pendingMerge: { ...pending, phase: 'committing' } });
-      }
-      if (paths.length || pending) {
-        await this.git(task.worktree!, ['diff', '--check'], signal);
-        await this.git(task.worktree!, ['add', '--all', '--', '.'], signal);
-        await this.git(task.worktree!, ['diff', '--cached', '--check'], signal);
-        if (await this.unmerged(task, signal)) throw new Fault('宿主暂存后仍存在未合并冲突');
-        if (
-          pending ||
-          (await this.git(task.worktree!, ['diff', '--cached', '--name-only'], signal))
-        )
-          await this.git(task.worktree!, ['commit', '-m', commitMessage(task)], signal);
-      }
-      const head = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
-      if (pending)
-        await this.completeMerge(task, { ...pending, phase: 'committing' }, head, signal);
-      if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
-        throw new Fault('宿主提交后工作区不干净');
-      this.store.updateTask(task.id, { head });
-      const diff = await this.git(
-        task.worktree!,
-        ['diff', `${this.store.task(task.id).base}...${head}`, '--stat'],
-        signal,
-      );
-      return { head, changed: !!diff };
-    });
+      await this.assertPackages(task);
+      // Staging is the host's job and the Dev is told not to touch the index, so UU is expected
+      // here; `checkConflictEdits` above already refuses a Dev that rewrote the index anyway.
+      this.store.updateTask(task.id, { pendingMerge: { ...pending, phase: 'committing' } });
+    }
+    if (paths.length || pending) {
+      if (pending) await this.git(task.worktree!, ['diff', '--check'], signal);
+      await this.git(task.worktree!, ['add', '--all', '--', '.'], signal);
+      if (pending) await this.git(task.worktree!, ['diff', '--cached', '--check'], signal);
+      if (await this.unmerged(task, signal)) throw new Fault('宿主暂存后仍存在未合并冲突');
+      if (pending || (await this.git(task.worktree!, ['diff', '--cached', '--name-only'], signal)))
+        await this.git(task.worktree!, ['commit', '-m', commitMessage(task)], signal);
+    }
+    const head = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
+    if (pending) await this.completeMerge(task, { ...pending, phase: 'committing' }, head, signal);
+    if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
+      throw new Fault('宿主提交后工作区不干净');
+    this.store.updateTask(task.id, { head });
+    const range = `${this.store.task(task.id).base}...${head}`;
+    // The whole task diff, so whitespace in a checkpoint or an earlier round cannot slip through.
+    // These errors are in the Dev's own edits: the Dev fixes them, it is not an environment block.
+    if (!pending && !checkpoint)
+      await this.git(task.worktree!, ['diff', '--check', range], signal).catch((e) => {
+        throw new Fault(`改动未通过 git diff --check，请修正后重新交付：\n${String(e)}`, 422, {
+          code: 'diff_check_failed',
+        });
+      });
+    const diff = await this.git(task.worktree!, ['diff', range, '--stat'], signal);
+    return { head, changed: !!diff };
   }
   private async conflictSnapshot(task: Task, paths: string[]) {
     const hash = createHash('sha256');
@@ -801,10 +827,10 @@ export class Workspaces {
         refs.push(`refs/remotes/origin/${repo.defaultBranch}`);
         for (const sourceRef of refs) {
           const sourceHead = await this.git(task.worktree!, ['rev-parse', sourceRef], signal);
-          const oldHead = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
-          if (await this.ancestor(task.worktree!, sourceHead, oldHead, signal)) continue;
+          if (await this.ancestor(task.worktree!, sourceHead, 'HEAD', signal)) continue;
           if (await this.git(task.worktree!, ['status', '--porcelain'], signal))
-            throw new Fault('基线协调前存在未提交修改，已保留');
+            await this.commitTask(task, signal, true);
+          const oldHead = await this.git(task.worktree!, ['rev-parse', 'HEAD'], signal);
           const merge: NonNullable<Task['pendingMerge']> = {
             id: randomUUID(),
             origin: 'host',
