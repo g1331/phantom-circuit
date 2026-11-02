@@ -18,7 +18,10 @@ SQLite 正常管理 -wal/-shm；短 deferred 快照后关闭连接再聚合。�
   普通 done、mergeApproval、聊天、completionSyncedAt 不证明实际合并；历史 done 未确认单列。
   无干预率：确认无干预 Task / 全部确认合并 Task；零分母 N/A。
   合并前 Incident（含 resolved）、产品 Clarification（含 answered/cancelled，按 Task 和原始来源，含发布前）、
-  有明确用户来源的暂停/恢复均为干预；自动恢复不算用户操作，无 actor 的历史动作来源 unknown。
+  暂停/恢复/取消事件须有有效 control.action/source/reason，且 action 与原事件动作一致：user 计干预；
+  host 自动动作和 pm 技术操作仅排除该条用户直接操作，PM 关联 Incident 仍计入，后续动作不覆盖早先证据。
+  缺失、未知枚举、无效或不一致来源继续 unknown；关联不清单列未归属，不按原因文本或 pausedByUser 猜来源。
+  兼容 recovery.pauseProvenance=user；冲突时保留已确认干预或 unknown，不选择较乐观解释。旧数据不回填。
   当前无历史完整性标记，未发现干预不证明无干预，未知单列，比例明确为保守下界。
   Incident：Project 全部记录，按 ID 去重、原始 phase 分组，缺 phase 为 unknown。
   watchdog：type=watchdog Event 或 Run/Incident 的宿主 Watchdog：失败前缀/descriptor detail，按 Run ID 去重；

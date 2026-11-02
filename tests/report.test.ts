@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { Store } from '../src/server/store.ts';
 
 const exec = promisify(execFile);
 const cli = resolve('scripts/report.ts');
@@ -213,6 +214,143 @@ function event(db: DatabaseSync, value: Record<string, unknown>) {
   );
 }
 
+test('CLI attributes persisted control sources per event without treating explicit sources as full history', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-controls-'));
+  const store = new Store(join(root, 'phantom.sqlite'));
+  const p = store.createProject('Controls', '');
+  const repo = store.createRepo({
+    projectId: p.id,
+    name: 'r',
+    path: root,
+    github: 'owner/p',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const names = [
+    'user',
+    'host',
+    'pm',
+    'legacy',
+    'future',
+    'malformed',
+    'after',
+    'cancel',
+    'recovery-conflict',
+  ];
+  const ids = new Map<string, string>();
+  for (const name of names) {
+    const source = store.addMessage(p.id, 'user', name, 'implement');
+    const t = store.createTask({
+      projectId: p.id,
+      repoId: repo.id,
+      sourceMessageId: source.id,
+      title: name,
+      spec: name,
+      acceptance: ['works'],
+      dependencies: [],
+      kind: 'backend',
+      complexity: 'normal',
+      priority: 0,
+    });
+    ids.set(name, t.id);
+  }
+  const key = (name: string) => ids.get(name)!;
+  store.control(key('user'), 'pause', { source: 'user', reason: 'http_task_control' });
+  store.control(key('user'), 'resume', { source: 'host', reason: 'startup_recovery' });
+  store.control(key('host'), 'pause', { source: 'host', reason: 'sync_issue_changed' });
+  store.control(key('host'), 'resume', { source: 'host', reason: 'startup_recovery' });
+  store.control(key('pm'), 'pause', { source: 'pm', reason: 'resolve_incident' });
+  store.control(key('pm'), 'resume', { source: 'pm', reason: 'resolve_incident' });
+  store.control(key('legacy'), 'pause');
+  store.control(key('legacy'), 'resume', { source: 'host', reason: 'startup_recovery' });
+  store.control(key('cancel'), 'cancel', { source: 'user', reason: 'http_task_control' });
+  assert.throws(() => store.control(key('cancel'), 'resume'), /任务已经结束/);
+  store.control(key('recovery-conflict'), 'pause', { source: 'user', reason: 'http_task_control' });
+  store.control(key('recovery-conflict'), 'resume', { source: 'host', reason: 'startup_recovery' });
+  store.close();
+  try {
+    const db = new DatabaseSync(join(root, 'phantom.sqlite'));
+    // Synthetic report history only: remote merge evidence and a preceding cancellation.
+    // This does not claim the host supports cancelled -> resumed -> done transitions.
+    for (const id of ids.values()) {
+      const row = db.prepare("SELECT body FROM documents WHERE kind='task' AND id=?").get(id)!;
+      put(db, 'task', {
+        ...JSON.parse(String(row.body)),
+        stage: 'done',
+        head: `head-${id}`,
+        base: 'base',
+        pr: 1,
+        createdAt,
+      });
+      merged(db, id, 'p', '2099-01-01T00:00:10Z');
+      run(db, `run-${id}`, id, 10, { projectId: p.id });
+    }
+    const control = (name: string, value: unknown, extra: Record<string, unknown> = {}) =>
+      event(db, {
+        projectId: p.id,
+        taskId: key(name),
+        type: 'task',
+        message: '任务 pause',
+        control: value,
+        ...extra,
+      });
+    control('future', { action: 'pause', source: 'robot', reason: 'future' });
+    control('malformed', { action: 'resume', source: 'host', reason: 'mismatch' });
+    control('malformed', { action: 'pause', source: 'host' });
+    control(
+      'after',
+      { action: 'cancel', source: 'user', reason: 'http_task_control' },
+      { at: '2099-01-01T00:00:11Z', message: '任务 cancel' },
+    );
+    control(
+      'host',
+      { action: 'pause', source: 'user', reason: 'http_task_control' },
+      { projectId: 'foreign' },
+    );
+    control(
+      'host',
+      { action: 'pause', source: 'user', reason: 'http_task_control' },
+      { runId: `run-${key('user')}` },
+    );
+    control('host', {
+      action: 'pause',
+      source: 'user',
+      reason: 'http_incident',
+      incidentId: 'resolved-pm',
+    });
+    put(db, 'incident', {
+      id: 'resolved-pm',
+      projectId: p.id,
+      taskId: key('pm'),
+      phase: 'dev',
+      status: 'resolved',
+      createdAt,
+    });
+    put(db, 'recovery', {
+      id: 'runtime-conflict',
+      projectId: p.id,
+      taskId: key('recovery-conflict'),
+      pauseProvenance: 'runtime',
+      createdAt,
+    });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /确认合并任务：9/);
+    assert.match(stdout, /确认无干预：0；确认有干预：4；未知：5/);
+    assert.match(stdout, /保守下界.*0\/9/);
+    for (const name of ['user', 'pm', 'cancel', 'recovery-conflict'])
+      assert.match(stdout, new RegExp(`Task ${key(name)}：.*干预=有`));
+    for (const name of ['host', 'legacy', 'future', 'malformed', 'after'])
+      assert.match(stdout, new RegExp(`Task ${key(name)}：.*干预=unknown`));
+    assert.match(stdout, /控制事件来源：user=6；host=5；pm=2；unknown=4/);
+    assert.match(stdout, /暂停\/恢复\/取消=2/);
+    assert.match(stdout, /未归属 Project 的控制事件：1/);
+    assert.match(stdout, /token 中位数：10；n=9\/9/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('CLI retains resolved interventions and ambiguous PM usage without confusing automatic recovery or ordinary failures with watchdog', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-report-history-'));
   try {
@@ -303,7 +441,7 @@ test('CLI retains resolved interventions and ambiguous PM usage without confusin
     db.close();
     const { stdout } = await report(root);
     assert.match(stdout, /确认无干预：0；确认有干预：2；未知：4/);
-    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=1/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=1/);
     assert.match(stdout, /watchdog 触发次数：1/);
     assert.match(
       stdout,
@@ -617,7 +755,7 @@ test('CLI attributes pre-publication Clarification and exclusive PM usage throug
 
     const { stdout } = await report(root);
     assert.match(stdout, /确认无干预：0；确认有干预：1；未知：0/);
-    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=0/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=0/);
     assert.match(stdout, /PM 未分配：Run=0/);
     assert.match(stdout, /Task a：token=110；.*干预=有/);
     assert.match(stdout, /token 中位数：110；n=1\/1；unknown=0；partial=0/);
@@ -651,7 +789,7 @@ test('CLI keeps PM usage on a shared self-referencing source unallocated and mar
 
     const { stdout } = await report(root);
     assert.match(stdout, /确认无干预：0；确认有干预：2；未知：0/);
-    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=0/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=0/);
     assert.match(
       stdout,
       /PM 未分配：Run=1；已知 token=100；usage unknown=0；partial=0；歧义影响 Task=a,b/,
@@ -686,7 +824,7 @@ test('CLI leaves a genuine multi-message source cycle unknown rather than assign
 
     const { stdout } = await report(root);
     assert.match(stdout, /确认无干预：0；确认有干预：0；未知：1/);
-    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=1/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=1/);
     assert.match(stdout, /PM 未分配：Run=1；已知 token=100/);
     assert.match(stdout, /Task a：.*干预=unknown/);
   } finally {

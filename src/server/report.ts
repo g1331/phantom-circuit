@@ -140,7 +140,23 @@ const eventSchema = z.object({
   runId: id.optional(),
   message: z.string(),
   descriptor: descriptor.optional(),
+  // Invalid/newer provenance is an evidence gap, not a reason to reject readable history.
+  control: z.unknown().optional(),
 });
+const controlSchema = z.object({
+  action: z.enum(['pause', 'resume', 'cancel']),
+  source: z.enum(['user', 'host', 'pm']),
+  reason: z.string().trim().min(1),
+  incidentId: id.optional(),
+  recoveryItemId: id.optional(),
+});
+
+function controlSource(event: z.infer<typeof eventSchema>): 'user' | 'host' | 'pm' | 'unknown' {
+  const parsed = controlSchema.safeParse(event.control);
+  return parsed.success && event.type === 'task' && event.message === `任务 ${parsed.data.action}`
+    ? parsed.data.source
+    : 'unknown';
+}
 
 function json(body: string, label: string): unknown {
   try {
@@ -258,7 +274,8 @@ export function renderReport(snapshot: Snapshot): string {
     '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
     '干预覆盖：现行数据无历史完整性标记，未发现干预仍为 unknown；无干预率仅为保守下界。',
     'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
-    '暂停/恢复口径：无 actor 的动作来源为 unknown；仅明确用户来源（如 recovery.pauseProvenance=user）确认为用户干预。',
+    '暂停/恢复/取消口径：有效 control.action/source/reason 且动作一致才采用来源；user 计干预，host/pm 仅排除该条用户直接操作，关联 Incident 仍计入。',
+    '缺失、未知或不一致来源仍为 unknown；后续自动动作不覆盖早先用户/未知证据；兼容 recovery.pauseProvenance=user，不据此证明历史完整。',
   ];
   if (!data.projects.length) lines.push('暂无 Project');
   for (const project of data.projects) {
@@ -358,8 +375,30 @@ export function renderReport(snapshot: Snapshot): string {
         else unlinkedWatchdog++;
       }
     const controls = projectEvents.filter(
-      (event) => event.type === 'task' && /^任务 (pause|resume)$/.test(event.message),
+      (event) =>
+        event.type === 'task' &&
+        (/^任务 (pause|resume|cancel)$/.test(event.message) || event.control !== undefined),
     );
+    const controlTask = (event: (typeof controls)[number]) => {
+      const taskId = linkedTask(event);
+      const parsed = controlSchema.safeParse(event.control);
+      if (!taskId || !parsed.success) return taskId;
+      const { incidentId, recoveryItemId } = parsed.data;
+      if (incidentId) {
+        const incident = incidents.find((item) => item.id === incidentId);
+        if (!incident || linkedTask(incident) !== taskId) return undefined;
+      }
+      if (recoveryItemId) {
+        const recovery = recoveries.find((item) => item.id === recoveryItemId);
+        if (
+          !recovery ||
+          linkedTask({ taskId: recovery.taskId, runId: recovery.runId ?? recovery.oldRunId }) !==
+            taskId
+        )
+          return undefined;
+      }
+      return taskId;
+    };
     const rework = (subset: ReportTask[]) => {
       const known = subset.filter((task) => task.retries !== undefined);
       return `已知合计=${known.length ? known.reduce((sum, task) => sum + task.retries!, 0) : subset.length ? 'N/A' : 0}；覆盖=${known.length}/${subset.length}；unknown=${subset.length - known.length}`;
@@ -397,6 +436,12 @@ export function renderReport(snapshot: Snapshot): string {
         return value !== undefined && value <= (at ?? start ?? -Infinity);
       };
       const hasIntervention =
+        controls.some(
+          (event) =>
+            controlTask(event) === task.id &&
+            controlSource(event) === 'user' &&
+            beforeMerge(event.at),
+        ) ||
         incidents.some(
           (incident) => linkedTask(incident) === task.id && beforeMerge(incident.createdAt),
         ) ||
@@ -430,8 +475,8 @@ export function renderReport(snapshot: Snapshot): string {
       `Project：${project.name} [${project.id}]`,
       `确认合并任务：${merged.length}；历史 done 未确认：${tasks.filter((task) => task.stage === 'done' && !merged.some((item) => item.task.id === task.id)).length}`,
       `无干预合并率（保守下界）：${merged.length ? `0/${merged.length} (0%)` : 'N/A'}；确认无干预：0；确认有干预：${intervened}；未知：${merged.length - intervened}`,
-      `未归属干预：Incident=${incidents.filter((incident) => !linkedTask(incident)).length}；暂停/恢复=${controls.filter((event) => !linkedTask(event)).length}；Clarification=${unassignedClarifications.length}`,
-      `暂停/恢复事件（缺少 actor，不能确认为用户操作）：${controls.length}；明确用户暂停恢复记录：${recoveries.filter((item) => item.pauseProvenance === 'user').length}`,
+      `未归属干预：Incident=${incidents.filter((incident) => !linkedTask(incident)).length}；暂停/恢复/取消=${controls.filter((event) => !controlTask(event)).length}；Clarification=${unassignedClarifications.length}`,
+      `控制事件来源：${(['user', 'host', 'pm', 'unknown'] as const).map((source) => `${source}=${controls.filter((event) => controlSource(event) === source).length}`).join('；')}；明确用户暂停恢复记录：${recoveries.filter((item) => item.pauseProvenance === 'user').length}`,
       `Incident（全部状态，原始 phase）：${
         [...incidentPhases]
           .sort(([a], [b]) => a.localeCompare(b))
@@ -457,5 +502,13 @@ export function renderReport(snapshot: Snapshot): string {
     ...data.messages,
   ].filter((value) => !data.projects.some((project) => project.id === value.projectId)).length;
   if (orphaned) lines.push(`\n未归属 Project 的持久记录：${orphaned}（未摊入任何 Project）`);
+  const orphanedControls = events.filter(
+    (event) =>
+      event.type === 'task' &&
+      (/^任务 (pause|resume|cancel)$/.test(event.message) || event.control !== undefined) &&
+      !data.projects.some((project) => project.id === event.projectId),
+  ).length;
+  if (orphanedControls)
+    lines.push(`未归属 Project 的控制事件：${orphanedControls}（未摊入任何 Project）`);
   return lines.join('\n') + '\n';
 }
