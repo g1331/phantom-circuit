@@ -1,6 +1,6 @@
 {
   "sourceRevision": "a7270944b9e0aba776bfbf41f7bab077d9bf8123",
-  "generatedAt": "2026-11-02T11:14:14.027Z",
+  "generatedAt": "2026-11-02T12:16:14.331Z",
   "algorithm": "SHA256 of raw file bytes; no newline normalization",
   "excludes": [
     "sha256.json"
@@ -13,13 +13,13 @@
     },
     {
       "path": "README.md",
-      "bytes": 6850,
-      "sha256": "0fddaf2560d65a97c3840cf64b52805c07dcaba254cc4dc6bf71a8b1722c8aeb"
+      "bytes": 7297,
+      "sha256": "3c84369a300fe242c9a6aef21fe27062f0bb23c5279e0a9ed216b1cb759c9f6e"
     },
     {
       "path": "base-build.txt",
-      "bytes": 999,
-      "sha256": "11aa5c7c552c953113f504acd4a11102a7669de3e8cb4d6cd984cb7e2a5fb7f0"
+      "bytes": 976,
+      "sha256": "516ac97d7732f8cbcf11ddd8663dbd79314b49b7c1c15ad1ccdafe9e64a46e5b"
     },
     {
       "path": "build-assets.json",
@@ -28,8 +28,8 @@
     },
     {
       "path": "candidate-build.txt",
-      "bytes": 893,
-      "sha256": "acb47461584bd3a3fdb56b2e39338aa40a5c8d8c3ae1a31af58cf373db463fad"
+      "bytes": 872,
+      "sha256": "884296c9be50b112654478d79f928a1cd95156b49ec5bf9ef80eaeab307bf7ea"
     },
     {
       "path": "maintenance-network.json",
@@ -38,8 +38,8 @@
     },
     {
       "path": "production-browser.txt",
-      "bytes": 477,
-      "sha256": "698ffc3327bd9305266e0e0486a5fbfbdb3cd89b043f76cd27b22f2c8a83e724"
+      "bytes": 471,
+      "sha256": "c6ef4302a08b81c448337a43fc1292bd0e9df48204a4be810d1eedd3707b3915"
     },
     {
       "path": "screenshots/maintenance-board-1440-en-dark.png",
@@ -228,8 +228,8 @@
     },
     {
       "path": "source-binding.json",
-      "bytes": 2930,
-      "sha256": "86876fe26b695ad6c0604aaffa720e7103b5e1aa02d39d6986cc04ecbf14d300"
+      "bytes": 4744,
+      "sha256": "b7fc396e9647913986a4194dbcb12e3eecda407f8baa72789ecf5aa935e863eb"
     },
     {
       "path": "visual-inspection.md",

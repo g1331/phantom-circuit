@@ -1,6 +1,6 @@
 # Task #56 验收产物
 
-本目录补齐 Secondary 提出的第 5、6、8 项证据缺口，文件随 Task 交给宿主提交，供只读 Review 直接读取。此次只补文档和原始产物，未修改应用实现、测试、依赖或构建配置。
+本目录补齐 Secondary 提出的第 5、6、8 项证据缺口，文件随 Task 交给宿主提交，供只读 Review 直接读取。此次只补文档、构建/浏览器输出和原始截图，未修改应用实现、测试、依赖或构建配置。
 
 产物生成时的源码候选为 **`a7270944b9e0aba776bfbf41f7bab077d9bf8123`**；对照 BASE 为 **`765f049a63fc01285d832fe74f711a5dc7c3f7e3`**。产物不是来自尚未生成的证据提交。宿主仍需将最终提交、正式检查及本目录共同绑定到 Review。
 
@@ -55,6 +55,8 @@ npx tsx scripts/maintenance-browser-check.ts
 
 ## 完整性与交接
 
-[sha256.json](sha256.json) 按文件原始字节计算 SHA256，覆盖本目录的构建原文、JSON、Markdown、PNG 和 [.gitattributes](.gitattributes)，排除清单自身。本目录的 `* -text` 属性防止 Windows Git 在入库/检出证据时转换换行；证据清单不做 CRLF 规范化，与上文仅用于核对导出源码的换行处理不同。宿主提交后，应在最终只读评审 checkout 中再次按清单核对文件原始字节。
+`base-build.txt`、`candidate-build.txt` 和 `production-browser.txt` 入库前仅将控制台捕获的 CRLF 换行为 LF，以通过 `git diff --check`；文字、数值、警告、空行和输出顺序均未改变。每份文本的捕获字节数/哈希、包装后字节数/哈希及转换行数保存在 [source-binding.json](source-binding.json) 的 `evidenceTextPreparation`，可追溯到此次换行处理。截图和网络记录未作此转换。
+
+[sha256.json](sha256.json) 按最终交付文件的原始字节计算 SHA256，覆盖本目录的构建原文、JSON、Markdown、PNG 和 [.gitattributes](.gitattributes)，排除清单自身。本目录的 `* -text` 属性防止 Windows Git 再将已交付文件转换为 CRLF；计算清单哈希时不再做换行规范化。宿主提交后，应在最终只读评审 checkout 中再次按清单核对文件原始字节。
 
 目录不包含导出的源码、`node_modules`、缓存、生产数据或压缩后的应用 JS。文档和产物交由宿主提交；提交前若再修改影响构建或浏览器行为的源码，应重新生成相应产物。源码摘要和本次成功专项都不替代最终固定 revision 的规定 Review 与正式验证。
