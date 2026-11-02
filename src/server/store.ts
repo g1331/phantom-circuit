@@ -709,7 +709,12 @@ export class Store {
       typeof inputOrProject === 'string'
         ? { projectId: inputOrProject, runId, phase: phase!, message: message ?? '', evidence }
         : inputOrProject;
-    const parsed = incidentInput.parse(input);
+    // Bound host-made text before validation; the limits below are for storage, not a reason to lose the Incident.
+    const parsed = incidentInput.parse({
+      ...input,
+      message: input.message.slice(0, 16000),
+      ...(input.evidence !== undefined ? { evidence: input.evidence.slice(0, 32000) } : {}),
+    });
     this.project(parsed.projectId);
     if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
       throw new Fault('Incident 任务不属于当前项目', 403);

@@ -58,6 +58,16 @@ test('a later successful Run of the same phase settles the stale Incident; other
     assert.equal(store.get('incident', primary.id)?.status, 'resolved');
     assert.match(store.get('incident', primary.id)!.message, new RegExp(retried.id));
     assert.equal(store.get('incident', dev.id)?.status, 'open');
+
+    // Host-made Incidents carry whole command output; a long one must still be recorded.
+    const long = store.createIncident({
+      projectId: project.id,
+      taskId: task.id,
+      phase: 'retries',
+      message: `宿主正式验证环境阻塞：${'x'.repeat(16000)}`,
+      evidence: 'y'.repeat(40000),
+    });
+    assert.equal(long.message.length, 16000);
   } finally {
     store.close();
     await rm(root, { recursive: true, force: true });
