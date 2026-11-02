@@ -2080,6 +2080,11 @@ export class Store {
         });
     for (const m of this.list('message'))
       if (m.role === 'user' && m.status === 'running') {
+        // Automatic recovery resumes this message's PM Run and settles the message itself.
+        const resumes =
+          (this.project(m.projectId).recoveryPolicy ?? 'automatic') === 'automatic' &&
+          this.activeRuns().some((r) => r.role === 'pm' && r.sourceMessageId === m.id);
+        if (resumes) continue;
         this.put('message', m.id, { ...m, status: 'failed', draftStatus: 'failed' });
         this.addMessage(
           m.projectId,

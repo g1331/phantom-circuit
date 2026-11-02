@@ -759,17 +759,28 @@ export class Engine {
         recoveryPrompt: content,
       });
       if (item.incidentId) this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
-      await this.pmQueue(item.projectId, () =>
-        this.pmTurn(
-          item.projectId,
-          content,
-          source,
-          task,
-          item.incidentId ? '恢复：继续 Incident 评估' : '恢复：继续 PM 会话',
-          item.id,
-          run,
-        ),
-      );
+      const settle = (status: 'completed' | 'failed') => {
+        // Manual policy marked it failed at restart; a later successful resume settles it too.
+        if (source?.role === 'user' && this.store.get('message', source.id)?.status !== 'completed')
+          this.store.updateMessage(source.id, { status, draftStatus: status });
+      };
+      try {
+        await this.pmQueue(item.projectId, () =>
+          this.pmTurn(
+            item.projectId,
+            content,
+            source,
+            task,
+            item.incidentId ? '恢复：继续 Incident 评估' : '恢复：继续 PM 会话',
+            item.id,
+            run,
+          ),
+        );
+      } catch (error) {
+        settle('failed');
+        throw error;
+      }
+      settle('completed');
       return this.store.get('recovery', item.id);
     }
     if (!task) return this.store.get('recovery', item.id);
