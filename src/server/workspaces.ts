@@ -954,7 +954,8 @@ export class Workspaces {
     for (const text of [repo.commands.build, repo.commands.test].filter(Boolean)) {
       let r;
       try {
-        r = await shellCommand(text, task.worktree, signal);
+        // A full suite plus browser checks overran 10 minutes while two Tasks validated in parallel.
+        r = await shellCommand(text, task.worktree, signal, 30 * 60_000);
       } catch (e) {
         throw new Fault(`宿主正式验证环境阻塞：${String(e)}`);
       }
@@ -967,15 +968,22 @@ export class Workspaces {
       });
       this.store.updateTask(task.id, { tests: [...evidence] });
       // External test runners only expose text for nested process/OS failures.
-      if (
-        r.code !== 0 &&
-        /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问|UV_HANDLE_CLOSING|uv_async closing/i.test(
-          r.stderr + '\n' + r.stdout,
-        )
-      )
+      const all = r.stderr + '\n' + r.stdout;
+      const marker =
+        r.code !== 0
+          ? /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问|UV_HANDLE_CLOSING|uv_async closing/i.exec(
+              all,
+            )
+          : null;
+      if (marker) {
+        // Name the matched line first: the output tail alone can lose it, leaving the block unexplained.
+        const start = all.lastIndexOf('\n', marker.index + (marker[0].startsWith('\n') ? 0 : -1));
+        const end = all.indexOf('\n', marker.index + marker[0].length);
+        const line = all.slice(start + 1, end < 0 ? undefined : end).trim();
         throw new Fault(
-          `宿主正式验证环境阻塞：${redact(r.stderr + '\n' + r.stdout).slice(-16000)}`,
+          `宿主正式验证环境阻塞（命中：${redact(line).slice(0, 500)}）：${redact(all).slice(-16000)}`,
         );
+      }
       if (r.code !== 0) break;
     }
     const after = await this.git(task.worktree, ['rev-parse', 'HEAD']);

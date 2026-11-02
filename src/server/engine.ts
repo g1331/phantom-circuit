@@ -825,8 +825,18 @@ export class Engine {
           this.store.finishRecovery(item.id, 'cancelled');
           return this.store.get('recovery', item.id);
         }
-        if (remote.head.sha !== task.head || remote.base.sha !== task.base)
-          throw new Fault('恢复核对发现远端 PR revision 已变化，等待 PM 核对', 409);
+        // While developing, local work (rework, base merges) is ahead of the published head; only
+        // a remote head the worktree does not contain means someone else moved the branch.
+        const moved =
+          task.stage === 'developing' && task.worktree
+            ? !(await this.workspaces
+                .git(task.worktree, ['merge-base', '--is-ancestor', remote.head.sha, 'HEAD'])
+                .then(
+                  () => true,
+                  () => false,
+                ))
+            : remote.head.sha !== task.head || remote.base.sha !== task.base;
+        if (moved) throw new Fault('恢复核对发现远端 PR revision 已变化，等待 PM 核对', 409);
       }
       await this.github.authorizeTaskPRRetry(task, 'pm');
     }
