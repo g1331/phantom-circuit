@@ -6,6 +6,7 @@ import { PriorityEditor, ClaimConditions } from './task-priority.tsx';
 import { TaskRuntimeBadges } from './project-actions.tsx';
 import { TaskUsagePanel } from './usage-panel.tsx';
 import { useLocale } from './locale/provider.tsx';
+import { incidentAttention, taskAttention } from '../shared/task-history.ts';
 
 const reviewTitle: Record<ReviewResult['axis'], string> = {
   primary: 'Primary Review',
@@ -30,6 +31,10 @@ export function TaskDetail({
   reload: () => Promise<void>;
 }) {
   const { t, host, locale } = useLocale();
+  const attention = taskAttention(detail);
+  const historicalIncidents =
+    state.incidents?.filter((incident) => incidentAttention(incident, detail).historicalReason) ??
+    [];
   return (
     <div className="task-detail">
       <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />
@@ -39,8 +44,31 @@ export function TaskDetail({
       />
       <TaskRuntimeBadges state={state} taskId={detail.id} />
       <TaskUsagePanel key={detail.id} taskId={detail.id} revision={detail.updatedAt} />
-      {detail.blocked && (
-        <div className="inline-warning">{host(detail.blocked, detail.blockedDescriptor)}</div>
+      {attention.historicalReason && (
+        <section className="historical-completion" aria-label={t('tasks.historicalCompletion')}>
+          <p>{t('tasks.historicalCompletion')}</p>
+          <p className="muted">{attention.historicalReason}</p>
+          {!!historicalIncidents.length && (
+            <details className="historical-incidents">
+              <summary>{t('tasks.historicalIncidents')}</summary>
+              {historicalIncidents.map((incident) => (
+                <article key={incident.id}>
+                  <p>
+                    Incident {incident.id} · {t(`actions.${incident.status}`)}
+                  </p>
+                  <p>{incident.message}</p>
+                  <details>
+                    <summary>{t('ui.technicalRecords')}</summary>
+                    <pre>{JSON.stringify(incident, null, 2)}</pre>
+                  </details>
+                </article>
+              ))}
+            </details>
+          )}
+        </section>
+      )}
+      {attention.blocked && (
+        <div className="inline-warning">{host(attention.blocked, detail.blockedDescriptor)}</div>
       )}
       <div className="detail-actions">
         {detail.issueUrl && (

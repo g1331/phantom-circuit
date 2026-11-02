@@ -1,0 +1,100 @@
+{
+  "capturedAt": "2026-11-02T11:00:12.713Z",
+  "revisions": {
+    "base": {
+      "revision": "765f049a63fc01285d832fe74f711a5dc7c3f7e3",
+      "tree": "fbde76469a52f9909d32f5297049aa2c7b2019e8",
+      "buildInputTreeSha256": "1433cf5acdc0665dc2646dc7eaecceb7f262bf8653b90a9699e84b6d69f14276",
+      "lockGitBlob": "cb92477c19a8efc8695ff7c88f402608bfecdfc9",
+      "lockGitContentSha256": "331d53e443887f874edc2028753a0b8c0e09534239943baa95276817a5b858cb",
+      "exportedBuildInputBlobsVerified": 120,
+      "exportTextLineEndingNormalizations": 120,
+      "exportVerification": "Git blob comparison; Windows core.autocrlf=true archive text CRLF normalized to LF for comparison only. Build files were not changed."
+    },
+    "reviewed": {
+      "revision": "c0032f05495fa9ba035f7ec251c982f2ace609be",
+      "tree": "6d6190bb7c0c8bfcfe9afee37d065bc9f0534532",
+      "buildInputTreeSha256": "848aee4a303db84c9d468403245744a05bd01a45d6280d6877f67220fb6adc33",
+      "lockGitBlob": "cb92477c19a8efc8695ff7c88f402608bfecdfc9",
+      "lockGitContentSha256": "331d53e443887f874edc2028753a0b8c0e09534239943baa95276817a5b858cb"
+    },
+    "candidate": {
+      "revision": "a7270944b9e0aba776bfbf41f7bab077d9bf8123",
+      "tree": "370d3a813bd67d1b30ba2554e02e73cea0f8148d",
+      "buildInputTreeSha256": "848aee4a303db84c9d468403245744a05bd01a45d6280d6877f67220fb6adc33",
+      "lockGitBlob": "cb92477c19a8efc8695ff7c88f402608bfecdfc9",
+      "lockGitContentSha256": "331d53e443887f874edc2028753a0b8c0e09534239943baa95276817a5b858cb",
+      "exportedBuildInputBlobsVerified": 124,
+      "exportTextLineEndingNormalizations": 124,
+      "exportVerification": "Git blob comparison; Windows core.autocrlf=true archive text CRLF normalized to LF for comparison only. Build files were not changed."
+    }
+  },
+  "buildInputPaths": [
+    "src",
+    "tests",
+    "scripts",
+    "index.html",
+    "vite.config.ts",
+    "tsconfig.json",
+    "package.json",
+    "package-lock.json"
+  ],
+  "reviewedToCandidateDiff": "prompts/review.md | 2 ++\n 1 file changed, 2 insertions(+)",
+  "command": "npm run build -- --configLoader runner",
+  "browserCommand": "npx tsx scripts/maintenance-browser-check.ts",
+  "runtime": {
+    "node": "v24.19.0",
+    "npm": "11.17.0",
+    "vite": "7.3.6",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "rootLockWorkingFileSha256": "ca08a67f5765618df1cfb96431b6c0bc6415dff1fbc47461d9d8d7cef5abda3e",
+    "installedLockSha256": "1f66a6f100dc17c509c813ecff0f26df81090a03ad78b0456f0c61cca5e795a5",
+    "installedManifestVersionsChecked": 278,
+    "mismatchCount": 0,
+    "note": "All installed-lock entries match the revision lock and their installed package manifest versions; platform-optional packages absent from this installation are not claimed as installed."
+  },
+  "buildExitCodes": {
+    "base": 0,
+    "candidate": 0
+  },
+  "browserExitCode": 0,
+  "browserResultRecordedAt": "2026-11-02T11:02:19.773Z",
+  "evidenceTextPreparation": {
+    "preparedAt": "2026-11-02T12:13:05.671Z",
+    "preparationRevision": "38624424f825dfa3772fdceb176f7e0e83302561",
+    "operation": "Console TXT packaging only: CRLF to LF. No text, ordering, warning, numeric result or application changes. Capture hashes retain provenance; sha256.json hashes the final packaged raw bytes.",
+    "files": [
+      {
+        "path": "base-build.txt",
+        "captureBytes": 999,
+        "captureSha256": "11aa5c7c552c953113f504acd4a11102a7669de3e8cb4d6cd984cb7e2a5fb7f0",
+        "packagedBytes": 976,
+        "packagedSha256": "516ac97d7732f8cbcf11ddd8663dbd79314b49b7c1c15ad1ccdafe9e64a46e5b",
+        "crlfConverted": 23,
+        "captureGitBlob": "76da71762b4917a374667faa656948a7ce4fc27a"
+      },
+      {
+        "path": "candidate-build.txt",
+        "captureBytes": 893,
+        "captureSha256": "acb47461584bd3a3fdb56b2e39338aa40a5c8d8c3ae1a31af58cf373db463fad",
+        "packagedBytes": 872,
+        "packagedSha256": "884296c9be50b112654478d79f928a1cd95156b49ec5bf9ef80eaeab307bf7ea",
+        "crlfConverted": 21,
+        "captureGitBlob": "b6b7802c8cae05fe8ad56e319ac086b05abd9556"
+      },
+      {
+        "path": "production-browser.txt",
+        "captureBytes": 477,
+        "captureSha256": "698ffc3327bd9305266e0e0486a5fbfbdb3cd89b043f76cd27b22f2c8a83e724",
+        "packagedBytes": 471,
+        "packagedSha256": "c6ef4302a08b81c448337a43fc1292bd0e9df48204a4be810d1eedd3707b3915",
+        "crlfConverted": 6,
+        "captureGitBlob": "a62f31189101289338f4737c220991462c90aca5"
+      }
+    ],
+    "captureRecordDirectory": "docs/verification/task-56",
+    "verification": "Compared against retained original captures and their files at preparationRevision: only CRLF-to-LF differs; BOM and terminal newline counts unchanged."
+  }
+}

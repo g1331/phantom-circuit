@@ -1,0 +1,16 @@
+{
+  "initial": [
+    "http://127.0.0.1:4333/assets/index-CwDo2cpH.js",
+    "http://127.0.0.1:4333/assets/react-vendor-C9H2zL7m.js"
+  ],
+  "accessed": [
+    "http://127.0.0.1:4333/assets/index-CwDo2cpH.js",
+    "http://127.0.0.1:4333/assets/react-vendor-C9H2zL7m.js",
+    "http://127.0.0.1:4333/assets/settings-panel-xvfgebtY.js",
+    "http://127.0.0.1:4333/assets/task-detail-BO5SfTSm.js",
+    "http://127.0.0.1:4333/assets/index-CwDo2cpH.js",
+    "http://127.0.0.1:4333/assets/react-vendor-C9H2zL7m.js",
+    "http://127.0.0.1:4333/assets/task-detail-BO5SfTSm.js",
+    "http://127.0.0.1:4333/assets/settings-panel-xvfgebtY.js"
+  ]
+}

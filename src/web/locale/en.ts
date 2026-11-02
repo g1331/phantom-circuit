@@ -1,5 +1,10 @@
 import { runtimeEn } from './runtime.ts';
 export const en = {
+  'panel.loading': 'Loading panel…',
+  'panel.failed': 'Could not load this panel.',
+  'panel.retry': 'Try again',
+  'tasks.historicalCompletion': 'Historical completion record; original acceptance evidence is incomplete',
+  'tasks.historicalIncidents': 'Historical incidents (original records and status)',
   ...runtimeEn,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': 'Conversation outline',

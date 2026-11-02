@@ -426,8 +426,76 @@ async function repositoryFixture() {
   await command('git', ['add', '.'], source);
   await command('git', ['commit', '-m', 'Fixture'], source);
   await command('git', ['remote', 'add', 'origin', source], source);
-  return fixture(source, root);
+  return fixture(source, root, join(root, 'state.sqlite'));
 }
+
+for (const control of ['paused', 'active'] as const)
+  test(`settled ${control} legacy evidence gaps remain immutable history across sync, tick and restart`, async () => {
+    const f = await repositoryFixture();
+    legacyCompletion(f);
+    const reason =
+      'Error: 历史 Task 完成同步缺少固定 revision 的测试、双轴 Review 或 PM 验收证据，需要 PM 核对';
+    f.patch({
+      tests: [],
+      reviews: [],
+      control,
+      pausedByUser: false,
+      pendingFeedback: ['Historical feedback remains available'],
+      completionDeliveryPending: false,
+      blocked: reason,
+      reviewPolicyVersion: 2,
+      prUrl: 'https://github.com/example/repo/pull/2',
+      feedback: ['External PR delivered: https://github.com/example/repo/pull/2'],
+    });
+    for (const message of f.store.list('message'))
+      f.store.updateMessage(message.id, { status: 'completed' });
+    f.store.createIncident({
+      projectId: f.task().projectId,
+      taskId: f.task().id,
+      phase: 'sync',
+      message: reason,
+      evidence: 'Original audit evidence',
+    });
+    const before = f.store.snapshot();
+    for (let restart = 0; restart < 2; restart++) {
+      const engine = f.engine();
+      let remoteCalls = 0;
+      engine.github.pull = async () => {
+        remoteCalls++;
+        throw new Error('Must not poll history');
+      };
+      try {
+        await engine.start();
+        for (let tick = 0; tick < 3; tick++) {
+          await engine.sync();
+          await engine.tick();
+        }
+        assert.deepEqual(
+          f.store.snapshot(),
+          before,
+          'read/recovery cycles preserve all historical audit data',
+        );
+        const reasons = f.store.explainScheduling(f.task().projectId).tasks[0].reasons;
+        assert.equal(
+          reasons.some((r) => r.code === 'blocked' || r.code === 'paused'),
+          false,
+        );
+        assert.equal(
+          reasons.some((r) => r.code === 'feedback'),
+          false,
+          'historical feedback is not presented as a current waiting condition',
+        );
+        assert.equal(remoteCalls, 0);
+        assert.equal(f.writes(), 0);
+        assert.equal(f.statuses.length, 0);
+        assert.equal(f.pmCalls(), 0);
+      } finally {
+        await engine.stop();
+      }
+      if (!restart) f.reopen();
+    }
+    f.store.close();
+  });
 
 test('revise_task publishes unchecked criteria and invalidates evidence until the new revision passes', async () => {
   const f = await repositoryFixture();
@@ -623,6 +691,59 @@ test('a completed and synchronized Task leaves the GitHub polling loop until som
     await engine.sync();
     assert.equal(pulls, settled.pulls + 1, 'a blocked done Task is reconciled again');
     assert.equal(f.task().blocked, undefined);
+  } finally {
+    await engine.stop();
+    f.store.close();
+  }
+});
+
+test('a new fixed-revision failure on a settled Task stays actionable on repeated sync', async () => {
+  const f = await repositoryFixture();
+  const validTests = f.task().tests;
+  f.patch({
+    stage: 'done',
+    completionDeliveryPending: false,
+    tests: f.task().tests.map((evidence) => ({ ...evidence, exitCode: 1 })),
+  });
+  let engine = f.engine();
+  try {
+    await engine.sync();
+    const failed = f.task();
+    for (let i = 0; i < 3; i++) await engine.sync();
+    assert.deepEqual(f.task(), failed, 'the failure is recorded once');
+    assert.equal(f.writes(), 0);
+    assert.equal(f.messages().length, 0);
+    assert.ok(
+      f.store
+        .explainScheduling(f.task().projectId)
+        .tasks[0].reasons.some((reason) => reason.code === 'blocked'),
+      'new verification failures never become historical notes',
+    );
+    assert.equal(f.task().tests[0].exitCode, 1);
+    assert.equal(f.task().blockedDescriptor?.code, 'completion_evidence_invalid');
+    await engine.stop();
+    f.reopen();
+    engine = f.engine();
+    for (let i = 0; i < 2; i++) await engine.sync();
+    assert.deepEqual(
+      f.task(),
+      failed,
+      'the diagnostic survives Store reopen without repeated writes',
+    );
+    assert.ok(
+      f.store
+        .explainScheduling(f.task().projectId)
+        .tasks[0].reasons.some((reason) => reason.code === 'blocked'),
+    );
+    f.patch({ tests: validTests });
+    f.unmerged();
+    await engine.sync();
+    assert.match(f.task().blocked ?? '', /远端合并状态/);
+    assert.equal(
+      f.task().blockedDescriptor,
+      undefined,
+      'a different cause clears the previous diagnostic',
+    );
   } finally {
     await engine.stop();
     f.store.close();

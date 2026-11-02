@@ -13,6 +13,7 @@ import {
   settingsSchema,
 } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
+import { taskAttention } from '../shared/task-history.ts';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { redact, bounded } from './redaction.ts';
@@ -1903,9 +1904,11 @@ export class Store {
         .map((task) => {
           const reasons: SchedulingExplanation['tasks'][number]['reasons'] = [];
           const repo = snapshot.repos.find((r) => r.id === task.repoId)!;
-          if (task.control !== 'active') reasons.push({ code: 'paused' });
-          if (task.blocked) reasons.push({ code: 'blocked', detail: task.blocked });
-          if (task.pendingFeedback?.length) reasons.push({ code: 'feedback' });
+          const attention = taskAttention(task);
+          if (attention.paused) reasons.push({ code: 'paused' });
+          if (attention.blocked) reasons.push({ code: 'blocked', detail: attention.blocked });
+          if (task.pendingFeedback?.length && !attention.historicalReason)
+            reasons.push({ code: 'feedback' });
           if (!['ready', 'developing'].includes(task.stage))
             reasons.push({ code: 'stage', detail: task.stage });
           if (!repo.authorized) reasons.push({ code: 'unauthorized' });

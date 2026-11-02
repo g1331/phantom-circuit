@@ -1,0 +1,23 @@
+
+> phantom-circuit@0.1.0 build
+> tsc --noEmit && vite build --configLoader runner
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 1864 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.41 kB │ gzip:   0.29 kB
+dist/assets/index-oojF_oLi.css   55.27 kB │ gzip:  11.15 kB
+dist/assets/index-CEHuhibX.js   542.28 kB │ gzip: 167.17 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.21s
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice

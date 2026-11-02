@@ -1,4 +1,5 @@
 import { Providers } from './providers.ts';
+import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -1472,6 +1473,7 @@ export class Engine {
         );
       }
       for (const task of this.store.list('task')) {
+        if (historicalCompletionReason(task)) continue;
         if (task.control !== 'active' || task.blocked) continue;
         if (
           task.stage === 'done' &&
@@ -2380,6 +2382,7 @@ export class Engine {
     this.store.updateTask(task.id, {
       stage: 'done',
       blocked: undefined,
+      blockedDescriptor: undefined,
       completionDeliveryPending: true,
     });
     await this.deliverCompletion(this.store.task(task.id));
@@ -2387,6 +2390,7 @@ export class Engine {
   }
   private async cleanupCompleted(task: Task) {
     const current = this.store.task(task.id);
+    if (historicalCompletionReason(current)) return;
     if (current.stage !== 'done' || current.completionDeliveryPending !== false) return;
     try {
       const outcome = await this.workspaces.cleanup(current);
@@ -2428,7 +2432,10 @@ export class Engine {
       if (this.deferSync(task, e)) return false;
       const blocked = redact(String(e));
       if (task.blocked !== blocked) {
-        this.store.updateTask(task.id, { blocked });
+        this.store.updateTask(task.id, {
+          blocked,
+          blockedDescriptor: e instanceof Fault ? e.descriptor : undefined,
+        });
         this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
       }
       if (e instanceof IssueBodyConflict && task.stage !== 'done') {
@@ -2481,6 +2488,7 @@ export class Engine {
     if (Date.now() < this.syncRetryAt) return;
     for (const task of this.store.list('task')) {
       if (Date.now() < this.syncRetryAt) return;
+      if (historicalCompletionReason(task)) continue;
       if (!this.store.repo(task.repoId).authorized || task.stage === 'cancelled') continue;
       try {
         if (task.stage === 'done') {
@@ -2488,8 +2496,9 @@ export class Engine {
           if (task.completionSyncedAt && !task.blocked && !task.completionDeliveryPending) continue;
           if (!task.pr || !task.issue || !mergeReady(task) || !this.historicalMergeAccepted(task)) {
             throw new Fault(
-              '历史 Task 完成同步缺少固定 revision 的测试、双轴 Review 或 PM 验收证据，需要 PM 核对',
+              legacyCompletionGap,
               409,
+              diagnosticDescriptor('completion_evidence_invalid', legacyCompletionGap),
             );
           }
           const pr = await this.github.pull(task);
@@ -2497,7 +2506,7 @@ export class Engine {
             throw new Fault('历史 Task 的远端合并状态与固定 revision 不一致，需要 PM 核对', 409);
           }
           if (await this.syncCompletedIssue(task)) {
-            this.store.updateTask(task.id, { blocked: undefined });
+            this.store.updateTask(task.id, { blocked: undefined, blockedDescriptor: undefined });
             await this.deliverCompletion(this.store.task(task.id));
             this.store.updateTask(task.id, { completionSyncedAt: new Date().toISOString() });
           }
@@ -2544,9 +2553,14 @@ export class Engine {
         if (this.deferSync(task, e)) return;
         if (task.stage === 'done') {
           const blocked = redact(String(e));
+          const blockedDescriptor = e instanceof Fault ? e.descriptor : undefined;
           // A terminal Task re-fails identically every cycle; the first record is the evidence.
-          if (task.blocked === blocked) continue;
-          this.store.updateTask(task.id, { blocked });
+          if (
+            task.blocked === blocked &&
+            JSON.stringify(task.blockedDescriptor) === JSON.stringify(blockedDescriptor)
+          )
+            continue;
+          this.store.updateTask(task.id, { blocked, blockedDescriptor });
         }
         this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
       }
