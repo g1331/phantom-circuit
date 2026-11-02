@@ -2545,7 +2545,14 @@ export class Engine {
           ) {
             this.store.updateTask(taskId, { devPhase: 'implement' });
           } else {
-            await this.workspaces.finalize(this.store.task(taskId));
+            try {
+              await this.workspaces.finalize(this.store.task(taskId));
+            } catch (e) {
+              if (!(e instanceof Fault && e.descriptor?.code === 'diff_check_failed')) throw e;
+              this.rework(this.store.task(taskId), e.message);
+              // Exhausted retries pause for PM re-assessment; resuming here would override that.
+              if (this.store.task(taskId).control === 'paused') return;
+            }
             t = this.store.task(taskId);
             const operation = this.github.unresolvedTaskPR(t);
             if (operation?.reconciliation)

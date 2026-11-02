@@ -44,3 +44,29 @@ test('a Dev change that fails git diff --check goes back to the Dev as rework, n
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('resuming a paused finalize whose change fails git diff --check reopens the Dev, not a block', async () => {
+  const { root, store, task, github } = await devFixture('phantom-diff-check-resume-');
+  const ws = new Workspaces(join(root, 'ws'), store);
+  const engine = new Engine(store, github, ws, root, () => new Codex());
+  try {
+    const prepared = await ws.prepare(task);
+    await writeFile(join(prepared.worktree!, 'log.txt'), 'build log line   \r\n');
+    store.updateTask(task.id, {
+      stage: 'developing',
+      devPhase: 'finalize',
+      control: 'paused',
+      pausedByUser: false,
+    });
+    await engine.resume(task.id);
+    const resumed = store.task(task.id);
+    assert.equal(resumed.control, 'active');
+    assert.equal(resumed.devPhase, 'implement');
+    assert.equal(resumed.blocked, undefined);
+    assert.match(resumed.feedback.at(-1)!, /trailing whitespace/);
+  } finally {
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
