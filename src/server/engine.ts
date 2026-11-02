@@ -1767,6 +1767,10 @@ export class Engine {
       try {
         finalized = await this.workspaces.finalize(current, signal);
       } catch (e) {
+        if (e instanceof Fault && e.descriptor?.code === 'diff_check_failed') {
+          this.rework(current, e.message);
+          return;
+        }
         throw new Fault(`宿主提交环境阻塞：${String(e)}`);
       }
       const { head, changed } = finalized;

@@ -355,9 +355,18 @@ export class Workspaces {
         this.store.updateTask(task.id, { pendingMerge: { ...pending, phase: 'committing' } });
       }
       if (paths.length || pending) {
-        await this.git(task.worktree!, ['diff', '--check'], signal);
+        // Whitespace errors are in the Dev's own edits; outside merge coordination they are rework.
+        const check = (args: string[]) =>
+          this.git(task.worktree!, args, signal).catch((e) => {
+            throw pending
+              ? e
+              : new Fault(`改动未通过 git diff --check，请修正后重新交付：\n${String(e)}`, 422, {
+                  code: 'diff_check_failed',
+                });
+          });
+        await check(['diff', '--check']);
         await this.git(task.worktree!, ['add', '--all', '--', '.'], signal);
-        await this.git(task.worktree!, ['diff', '--cached', '--check'], signal);
+        await check(['diff', '--cached', '--check']);
         if (await this.unmerged(task, signal)) throw new Fault('宿主暂存后仍存在未合并冲突');
         if (
           pending ||
