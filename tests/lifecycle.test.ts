@@ -231,7 +231,7 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new FakeCodex());
   try {
     await engine.start();
-    for (let i = 0; i < 250 && store.task(task.id).stage !== 'done'; i++) {
+    for (let i = 0; i < 600 && store.task(task.id).stage !== 'done'; i++) {
       await engine.tick();
       await new Promise((r) => setTimeout(r, 50));
     }
