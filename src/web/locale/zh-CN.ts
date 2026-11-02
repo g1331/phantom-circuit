@@ -6,6 +6,7 @@ export const zhCN = {
   'panel.failed': '面板加载失败。',
   'panel.retry': '重试加载',
   'tasks.historicalCompletion': '历史完成记录，旧验收证据不完整',
+  'tasks.historicalIncidents': '历史 Incident（保留原始记录与状态）',
   ...runtimeZh,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': '对话目录',

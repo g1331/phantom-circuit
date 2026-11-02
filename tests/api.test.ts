@@ -111,6 +111,23 @@ test('state retains original historical evidence while scheduling excludes only 
       }),
     };
   });
+  const incidents = [
+    store.createIncident({
+      projectId: project.id,
+      taskId: records[0].task.id,
+      phase: 'sync',
+      message: reason,
+      evidence: 'Original historical evidence',
+    }),
+    store.createIncident({
+      projectId: project.id,
+      taskId: records[0].task.id,
+      phase: 'finalize',
+      message: 'HTTP 403: delivery permission denied',
+      descriptor: { code: 'incident_finalize' },
+      evidence: 'Original current failure',
+    }),
+  ];
   try {
     const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
     const headers = {
@@ -118,6 +135,11 @@ test('state retains original historical evidence while scheduling excludes only 
       cookie: String(init.headers['set-cookie']).split(';')[0],
     };
     const snapshot = (await app.inject({ url: '/api/state', headers })).json<Snapshot>();
+    assert.deepEqual(
+      snapshot.incidents,
+      incidents,
+      'historical and current Incidents retain original status and audit data',
+    );
     const schedule = (
       await app.inject({ url: `/api/projects/${project.id}/scheduling`, headers })
     ).json();

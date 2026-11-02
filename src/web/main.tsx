@@ -410,7 +410,7 @@ function App() {
                     >
                       <div className="conversation-content" ref={conversationContent}>
                         <ProjectActions
-                          key={project.id}
+                          key={`project-actions:${project.id}`}
                           state={state}
                           project={project}
                           reload={reload}
@@ -441,7 +441,7 @@ function App() {
                           </div>
                         )}
                         <ConversationFlow
-                          key={project.id}
+                          key={`conversation-flow:${project.id}`}
                           messages={messages}
                           activities={activities}
                           runs={runs}

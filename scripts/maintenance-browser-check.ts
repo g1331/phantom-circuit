@@ -117,7 +117,12 @@ export async function checkMaintenance() {
     );
     const page = await context.newPage();
     const errors: string[] = [];
+    const keyWarnings: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => {
+      if (message.type() === 'error' && /same key|unique.*key/i.test(message.text()))
+        keyWarnings.push(message.text());
+    });
     page.setDefaultTimeout(10000);
     const scripts: string[] = [];
     page.on('request', (request) => {
@@ -125,6 +130,11 @@ export async function checkMaintenance() {
     });
     await page.goto(origin);
     await page.getByLabel('Message to PM').waitFor();
+    assert.equal(
+      await page.locator('.project-actions .action-record').count(),
+      0,
+      'the exact historical evidence Incident does not ask for current intervention',
+    );
     const initial = [...scripts];
     assert.equal(
       initial.some((url) => /\/(settings-panel|task-detail)-/.test(url)),
@@ -189,8 +199,8 @@ export async function checkMaintenance() {
     assert.equal(await card.locator('em').count(), 0);
     assert.equal(
       await card.locator('.runtime-badge.warning').count(),
-      1,
-      'existing Incident remains visible',
+      0,
+      'the historical evidence Incident does not produce a current warning badge',
     );
     assert.match(
       (await page
@@ -228,6 +238,16 @@ export async function checkMaintenance() {
     await dialog.locator('.historical-completion').waitFor();
     await page.unroute('**/assets/task-detail-*.js');
     assert.equal(await dialog.locator('.historical-completion .muted').innerText(), reason);
+    const historicalIncidents = dialog.locator('.historical-incidents');
+    await historicalIncidents.locator(':scope > summary').click();
+    await historicalIncidents.getByText(`Incident ${incident.id}`, { exact: false }).waitFor();
+    await historicalIncidents.locator('details > summary').click();
+    assert.deepEqual(
+      JSON.parse(await historicalIncidents.locator('pre').innerText()),
+      incident,
+      'the original Incident, status, evidence and references remain inspectable',
+    );
+    assert.equal(await historicalIncidents.locator('button').count(), 0);
     assert.equal(await dialog.locator('.inline-warning').count(), 0);
     assert.equal(await dialog.getByRole('button', { name: /Resume|Pause/ }).count(), 0);
     assert.equal(
@@ -310,6 +330,7 @@ export async function checkMaintenance() {
           await row.click();
           const note = dialog.locator('.historical-completion');
           await note.waitFor();
+          await note.locator('.historical-incidents > summary').click();
           assert.ok(
             (await note.innerText()).includes(
               locale === 'en' ? 'Historical completion record' : '历史完成记录，旧验收证据不完整',
@@ -348,8 +369,128 @@ export async function checkMaintenance() {
     await page.getByRole('button', { name: 'Project model settings', exact: true }).click();
     await page.locator('.runtime-settings').waitFor();
     await page.keyboard.press('Escape');
+    // Classify each Incident independently, even when several belong to the same Task.
+    await page.getByRole('tab', { name: 'Discuss with PM', exact: true }).click();
+    let currentIncidents = 0;
+    const incidentCases = [
+      {
+        phase: 'finalize',
+        message: reason,
+        descriptor: { code: 'incident_finalize' },
+        historical: true,
+      },
+      {
+        phase: 'sync',
+        message: reason.slice('Error: '.length),
+        descriptor: { code: 'incident_paused' },
+        historical: true,
+      },
+      {
+        phase: 'finalize',
+        message: reason,
+        descriptor: { code: 'completion_evidence_invalid' },
+        historical: false,
+      },
+      {
+        phase: 'finalize',
+        message: reason,
+        descriptor: { code: 'unknown_specific_failure' },
+        historical: false,
+      },
+      { phase: 'unknown-phase', message: reason, descriptor: undefined, historical: false },
+      {
+        phase: 'finalize',
+        message: `${reason}; another failure`,
+        descriptor: undefined,
+        historical: false,
+      },
+      {
+        phase: 'finalize',
+        message: 'HTTP 403: delivery permission denied',
+        descriptor: { code: 'incident_finalize' },
+        historical: false,
+      },
+    ];
+    for (const [index, sample] of incidentCases.entries()) {
+      const run = store.run('review', project.id, 'review', store.task(history.id));
+      store.finishRun(run.id, 'failed', `Incident fixture ${index}`);
+      const added = store.createIncident({
+        projectId: project.id,
+        taskId: history.id,
+        runId: run.id,
+        phase: sample.phase,
+        message: sample.message,
+        descriptor: sample.descriptor,
+        evidence: `Original evidence ${index}`,
+      });
+      if (!sample.historical) currentIncidents++;
+      await page.waitForFunction(
+        (count) => document.querySelectorAll('.project-actions .action-record').length === count,
+        currentIncidents,
+      );
+      await page.getByRole('tab', { name: /^Tasks(?:\s+\d+)?$/ }).click();
+      assert.equal(await row.locator('.runtime-badge.warning').count(), currentIncidents ? 1 : 0);
+      if (sample.historical) {
+        await row.click();
+        await dialog.locator('.historical-incidents > summary').click();
+        await dialog.getByText(`Incident ${added.id}`, { exact: false }).waitFor();
+        await page.keyboard.press('Escape');
+      }
+      await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+      const runRow = page.locator('.run-row').filter({ hasText: `Incident fixture ${index}` });
+      await runRow.waitFor();
+      assert.equal(
+        await runRow.locator('.runtime-badge.warning').count(),
+        sample.historical ? 0 : 1,
+      );
+      await page.getByRole('tab', { name: 'Discuss with PM', exact: true }).click();
+      assert.deepEqual(store.get('incident', added.id), added);
+    }
+    const orphan = store.createIncident({ projectId: project.id, phase: 'sync', message: reason });
+    currentIncidents++;
+    await page.waitForFunction(
+      (count) => document.querySelectorAll('.project-actions .action-record').length === count,
+      currentIncidents,
+    );
+    const actions = page.locator('.project-actions');
+    await actions.getByText('HTTP 403: delivery permission denied', { exact: true }).waitFor();
+    assert.equal(
+      await actions.getByRole('button', { name: 'Mark resolved', exact: true }).count(),
+      currentIncidents,
+      'real and uncertain Incidents retain their existing actions',
+    );
+    const otherProject = store.createProject('Other Incident project', '');
+    const foreign = store.createIncident({
+      projectId: otherProject.id,
+      phase: 'sync',
+      message: reason,
+    });
+    await page.getByRole('button', { name: otherProject.name, exact: true }).click();
+    await page.getByRole('heading', { name: otherProject.name, exact: true }).waitFor();
+    await page.waitForFunction(
+      () => document.querySelectorAll('.project-actions .action-record').length === 1,
+    );
+    assert.equal(
+      await page.locator('.project-actions .action-record').count(),
+      1,
+      'matching prose in another Project without a historical Task stays actionable',
+    );
+    assert.deepEqual(store.get('incident', foreign.id), foreign);
+    assert.deepEqual(store.get('incident', orphan.id), orphan);
+    await page.getByRole('button', { name: 'Background refresh happened', exact: true }).click();
+    await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
+    assert.equal(await page.locator('.project-actions').count(), 1);
+    assert.equal(await page.locator('.project-actions .action-record').count(), currentIncidents);
+    await page.getByLabel('Message to PM').fill('Draft after project switch');
+    assert.equal(await page.getByLabel('Message to PM').inputValue(), 'Draft after project switch');
+    const raw = await (await page.request.get(`${origin}/api/state`)).json();
+    assert.deepEqual(
+      raw.incidents.find((item: { id: string }) => item.id === incident.id),
+      incident,
+    );
     assert.deepEqual(errors, []);
-    assert.equal(store.get('incident', incident.id)?.status, 'open');
+    assert.deepEqual(keyWarnings, []);
+    assert.deepEqual(store.get('incident', incident.id), incident);
     assert.deepEqual(store.task(history.id).tests, []);
     assert.deepEqual(store.task(history.id).reviews, []);
     await writeFile(
