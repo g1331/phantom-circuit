@@ -593,3 +593,103 @@ test('CLI leaves conflicting Project and Run associations unassigned', async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('CLI attributes pre-publication Clarification and exclusive PM usage through a self-referencing steer source', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-steer-source-'));
+  try {
+    const db = database(root);
+    project(db);
+    // Store.beginSteer persists this legitimate sourceMessageId === id shape.
+    put(db, 'message', { id: 'steer', projectId: 'p', sourceMessageId: 'steer' });
+    put(db, 'message', { id: 'reply', projectId: 'p', sourceMessageId: 'steer' });
+    task(db, 'a', 'p', { sourceMessageId: 'reply' });
+    merged(db, 'a');
+    run(db, 'dev-a', 'a', 10);
+    run(db, 'pm-a', undefined, 100, { role: 'pm', sourceMessageId: 'steer' });
+    put(db, 'clarification', {
+      id: 'before-publication',
+      projectId: 'p',
+      sourceMessageId: 'steer',
+      status: 'answered',
+      createdAt: '2025-12-31T23:59:00Z',
+    });
+    db.close();
+
+    const { stdout } = await report(root);
+    assert.match(stdout, /确认无干预：0；确认有干预：1；未知：0/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=0/);
+    assert.match(stdout, /PM 未分配：Run=0/);
+    assert.match(stdout, /Task a：token=110；.*干预=有/);
+    assert.match(stdout, /token 中位数：110；n=1\/1；unknown=0；partial=0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI keeps PM usage on a shared self-referencing source unallocated and marks both Task samples partial', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-shared-steer-'));
+  try {
+    const db = database(root);
+    project(db);
+    put(db, 'message', { id: 'steer', projectId: 'p', sourceMessageId: 'steer' });
+    put(db, 'message', { id: 'reply', projectId: 'p', sourceMessageId: 'steer' });
+    task(db, 'a', 'p', { sourceMessageId: 'steer' });
+    task(db, 'b', 'p', { sourceMessageId: 'reply' });
+    merged(db, 'a');
+    merged(db, 'b');
+    run(db, 'dev-a', 'a', 10);
+    run(db, 'dev-b', 'b', 20);
+    run(db, 'shared-pm', undefined, 100, { role: 'pm', sourceMessageId: 'reply' });
+    put(db, 'clarification', {
+      id: 'before-publication',
+      projectId: 'p',
+      sourceMessageId: 'steer',
+      status: 'cancelled',
+      createdAt: '2025-12-31T23:59:00Z',
+    });
+    db.close();
+
+    const { stdout } = await report(root);
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：0/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=0/);
+    assert.match(
+      stdout,
+      /PM 未分配：Run=1；已知 token=100；usage unknown=0；partial=0；歧义影响 Task=a,b/,
+    );
+    assert.match(stdout, /Task a：token=partial\(已知=10\)/);
+    assert.match(stdout, /Task b：token=partial\(已知=20\)/);
+    assert.match(stdout, /token 中位数：N\/A；n=0\/2；unknown=0；partial=2/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI leaves a genuine multi-message source cycle unknown rather than assigning its Clarification or PM Run', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-source-cycle-'));
+  try {
+    const db = database(root);
+    project(db);
+    put(db, 'message', { id: 'cycle-a', projectId: 'p', sourceMessageId: 'cycle-b' });
+    put(db, 'message', { id: 'cycle-b', projectId: 'p', sourceMessageId: 'cycle-a' });
+    task(db, 'a', 'p', { sourceMessageId: 'cycle-a' });
+    merged(db, 'a');
+    run(db, 'dev-a', 'a', 10);
+    run(db, 'pm-a', undefined, 100, { role: 'pm', sourceMessageId: 'cycle-b' });
+    put(db, 'clarification', {
+      id: 'cycle-clarification',
+      projectId: 'p',
+      sourceMessageId: 'cycle-a',
+      status: 'answered',
+      createdAt: '2025-12-31T23:59:00Z',
+    });
+    db.close();
+
+    const { stdout } = await report(root);
+    assert.match(stdout, /确认无干预：0；确认有干预：0；未知：1/);
+    assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复=0；Clarification=1/);
+    assert.match(stdout, /PM 未分配：Run=1；已知 token=100/);
+    assert.match(stdout, /Task a：.*干预=unknown/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

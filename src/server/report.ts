@@ -279,7 +279,8 @@ export function renderReport(snapshot: Snapshot): string {
         if (seen.has(source)) return undefined;
         seen.add(source);
         const parent = messages.get(source)?.sourceMessageId;
-        if (!parent) return source;
+        // A steered user message is its own original source (Store.beginSteer).
+        if (!parent || parent === source) return source;
         source = parent;
       }
       return undefined;
