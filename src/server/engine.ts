@@ -1764,14 +1764,23 @@ export class Engine {
       if (current.control !== 'active' || current.stage === 'cancelled') return;
       let base = current.base!;
       let finalized;
-      try {
-        finalized = await this.workspaces.finalize(current, signal);
-      } catch (e) {
-        if (e instanceof Fault && e.descriptor?.code === 'diff_check_failed') {
-          this.rework(current, e.message);
-          return;
+      for (let fixed = false; !finalized; fixed = true) {
+        try {
+          finalized = await this.workspaces.finalize(this.store.task(task.id), signal);
+        } catch (e) {
+          // The uncommitted change cannot become a rework round: base coordination refuses a dirty
+          // tree, so the Dev fixes its own whitespace once inside this Run.
+          if (fixed || !(e instanceof Fault && e.descriptor?.code === 'diff_check_failed'))
+            throw new Fault(`宿主提交环境阻塞：${String(e)}`);
+          await this.editTask(
+            run,
+            this.store.task(task.id),
+            abort,
+            undefined,
+            `${e.message}\nThe host could not commit your change. Fix only these problems; delete files that do not belong in the repository, such as build logs or other verification output. Then stop.`,
+          );
+          if (signal.aborted) throw new Fault('执行已暂停');
         }
-        throw new Fault(`宿主提交环境阻塞：${String(e)}`);
       }
       const { head, changed } = finalized;
       base = this.store.task(task.id).base!;
@@ -1842,7 +1851,13 @@ export class Engine {
       throw new Fault('原 PR 仓库或 head 分支归属不匹配');
     return this.store.updateTask(task.id, { mergeSourceBranch: task.branch });
   }
-  private async editTask(run: Run, task: Task, abort: AbortController, conflict?: string) {
+  private async editTask(
+    run: Run,
+    task: Task,
+    abort: AbortController,
+    conflict?: string,
+    fix?: string,
+  ) {
     const repo = this.store.repo(task.repoId);
     const profile = this.agentProfile(run);
     await this.withAgent(
@@ -1873,7 +1888,7 @@ export class Engine {
         this.saveThread(run, thread);
         const reply = await c.turn(
           thread,
-          `${taskPrompt(task)}\n${conflict ?? ''}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, targeted checks and local self-review. Leave changes in this worktree. Do not stage, commit or push; the host owns finalization and formal validation.`,
+          `${taskPrompt(task)}\n${conflict ?? fix ?? ''}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, targeted checks and local self-review. Leave changes in this worktree. Do not stage, commit or push; the host owns finalization and formal validation.`,
           profile,
           signal,
           undefined,
@@ -2548,10 +2563,8 @@ export class Engine {
             try {
               await this.workspaces.finalize(this.store.task(taskId));
             } catch (e) {
+              // The Dev Run stays in finalize and gets its own fix turn for whitespace errors.
               if (!(e instanceof Fault && e.descriptor?.code === 'diff_check_failed')) throw e;
-              this.rework(this.store.task(taskId), e.message);
-              // Exhausted retries pause for PM re-assessment; resuming here would override that.
-              if (this.store.task(taskId).control === 'paused') return;
             }
             t = this.store.task(taskId);
             const operation = this.github.unresolvedTaskPR(t);
