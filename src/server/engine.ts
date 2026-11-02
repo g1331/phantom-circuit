@@ -111,7 +111,12 @@ const reviseInput = z
     taskId: z.string(),
     spec: z.string().min(1).max(30000),
     acceptance: z.array(z.string().min(1)).min(1),
-    documentIds: z.array(z.string()).default([]),
+    documentIds: z
+      .array(z.string())
+      .default([])
+      .describe(
+        'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference.',
+      ),
     guidance: z.string().min(1),
   })
   .strict();

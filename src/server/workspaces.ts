@@ -908,9 +908,18 @@ export class Workspaces {
     if (!repo.commands.test.trim()) throw new Fault('仓库尚未配置验收测试命令');
     for (const doc of task.documentChanges ?? []) {
       const path = join(task.worktree, doc.path);
-      await this.assertManaged(path);
-      const actual = await readFile(path, 'utf8');
-      if (actual.replaceAll('\r\n', '\n').trim() !== doc.content.replaceAll('\r\n', '\n').trim())
+      const actual = await this.assertManaged(path).then(
+        () => readFile(path, 'utf8'),
+        (error: NodeJS.ErrnoException) => {
+          // A document Dev never wrote is a rework verdict like a wrong one, not an environment fault.
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        },
+      );
+      if (
+        actual === undefined ||
+        actual.replaceAll('\r\n', '\n').trim() !== doc.content.replaceAll('\r\n', '\n').trim()
+      )
         throw new Fault(`设计文档未按已接受版本落地：${doc.path}`);
     }
     const before = await this.git(task.worktree, ['rev-parse', 'HEAD']);
