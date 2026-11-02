@@ -1,0 +1,56 @@
+{
+  "base": {
+    "revision": "765f049a63fc01285d832fe74f711a5dc7c3f7e3",
+    "htmlSha256": "82f68b1f6f3c930a724744fa51e625c5ec1dd33d98a7af9741b61548f922acf8",
+    "assets": [
+      {
+        "path": "assets/index-CEHuhibX.js",
+        "bytes": 542279,
+        "gzipBytes": 167170,
+        "sha256": "90dd2b63774b7ca7769bbc711e1f010a1f0d291c8c40335b363a85f04f00be20"
+      },
+      {
+        "path": "assets/index-oojF_oLi.css",
+        "bytes": 55267,
+        "gzipBytes": 11154,
+        "sha256": "4e06a617860ce09dc7c1bbd4a7daf354c9c08a67d4657607b221bfa0cc4fc87f"
+      }
+    ]
+  },
+  "candidate": {
+    "revision": "a7270944b9e0aba776bfbf41f7bab077d9bf8123",
+    "htmlSha256": "dd5094258a0f23317728087d9c88a2dd1c58a727ddd91627e2f230e06e9dade4",
+    "assets": [
+      {
+        "path": "assets/index-CwDo2cpH.js",
+        "bytes": 296790,
+        "gzipBytes": 92624,
+        "sha256": "c749924b8f31af8454087678ddf3df2597d2c667612a5df80a2d2e59c3a81bcf"
+      },
+      {
+        "path": "assets/index-oojF_oLi.css",
+        "bytes": 55267,
+        "gzipBytes": 11154,
+        "sha256": "4e06a617860ce09dc7c1bbd4a7daf354c9c08a67d4657607b221bfa0cc4fc87f"
+      },
+      {
+        "path": "assets/react-vendor-C9H2zL7m.js",
+        "bytes": 221852,
+        "gzipBytes": 69037,
+        "sha256": "3dc2c191871e150a0f51d8b7be47f6e4753042ccc412322cfb062633cbcea334"
+      },
+      {
+        "path": "assets/settings-panel-xvfgebtY.js",
+        "bytes": 22767,
+        "gzipBytes": 6647,
+        "sha256": "09b856487dcfd6c02b1198e2b07cb889dd9c119449cf82246c487467b7b2320f"
+      },
+      {
+        "path": "assets/task-detail-BO5SfTSm.js",
+        "bytes": 4292,
+        "gzipBytes": 1550,
+        "sha256": "1be25758ce17f8bc399e8e16efb1d1e9b0175038ecc6f9683edb0808fafdaa9d"
+      }
+    ]
+  }
+}

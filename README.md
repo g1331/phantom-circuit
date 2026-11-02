@@ -99,6 +99,8 @@ The maintenance browser checks additionally serve the real `dist/` build on fixt
 
 Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner.
 
+Task #56's checked-in [verification evidence](docs/verification/task-56/README.md) includes the actual BASE `765f049…` build (542.28 kB maximum JS) and candidate `a727094…` build (296.79 kB), their common dependency/build settings, production network records, original screenshots and a per-state visual inspection record. The evidence states its source revision and includes SHA256 checksums so a read-only Review can inspect the artifacts without relying on ignored `test-results/` files.
+
 ## MVP boundaries
 
 Single user, loopback-only local service, trusted repositories, Windows-native execution. Worktrees and prompts do not provide container-level protection against hostile repository code. OMP and Codex are supported; cloud workers, multi-user access and automatic production deployment are outside this implementation. Arbitrary project stacks need valid commands; unsupported model/permission states are surfaced explicitly.
