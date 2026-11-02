@@ -951,6 +951,26 @@ test('finalization rejects a base that is not an ancestor of the task HEAD', asy
   assert.equal(await readFile(join(f.path, 'value.txt'), 'utf8'), 'after');
 });
 
+test('a host validation environment block names the matched line even under long output', async (t) => {
+  const f = await fixture(t, async (cwd) => {
+    await writeFile(join(cwd, 'value.txt'), 'after');
+  });
+  const failure = 'Error: EBUSY: resource busy or locked, unlink preview.log';
+  f.store.patchRepo(f.repo.id, {
+    commands: {
+      install: '',
+      build: 'node -e "process.exit(0)"',
+      test: `node -e "console.error('${failure}');console.log('ok\\n'.repeat(9000));process.exit(1)"`,
+      start: '',
+      port: 3000,
+    },
+  });
+  const result = await f.run();
+  assert.equal(result.control, 'paused', JSON.stringify(result).slice(0, 500));
+  assert.match(result.blocked!, /宿主正式验证环境阻塞/);
+  assert.ok(result.blocked!.includes(failure), 'the matched line survives the output tail');
+});
+
 for (const failure of [
   'Error: spawn taskkill EPERM',
   'Error: EBUSY: resource busy or locked, unlink preview.log',
