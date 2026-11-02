@@ -2247,8 +2247,11 @@ export class Engine {
       return true;
     } catch (e) {
       if (this.deferSync(task, e)) return false;
-      this.store.updateTask(task.id, { blocked: redact(String(e)) });
-      this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
+      const blocked = redact(String(e));
+      if (task.blocked !== blocked) {
+        this.store.updateTask(task.id, { blocked });
+        this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
+      }
       if (e instanceof IssueBodyConflict && task.stage !== 'done') {
         this.control(task.id, 'pause');
         void this.technical(
@@ -2358,7 +2361,12 @@ export class Engine {
         await this.github.syncStatus(this.store.task(task.id));
       } catch (e) {
         if (this.deferSync(task, e)) return;
-        if (task.stage === 'done') this.store.updateTask(task.id, { blocked: redact(String(e)) });
+        if (task.stage === 'done') {
+          const blocked = redact(String(e));
+          // A terminal Task re-fails identically every cycle; the first record is the evidence.
+          if (task.blocked === blocked) continue;
+          this.store.updateTask(task.id, { blocked });
+        }
         this.store.event('sync', String(e), { taskId: task.id, projectId: task.projectId });
       }
     }

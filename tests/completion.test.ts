@@ -583,6 +583,26 @@ for (const invalid of [
   });
 }
 
+test('a done Task that stays blocked for the same reason records it once, not every sync cycle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-legacy-repeat-'));
+  const f = fixture('.', root, join(root, 'state.sqlite'));
+  legacyCompletion(f);
+  f.patch({ tests: [] });
+  f.reopen();
+  const engine = f.engine();
+  try {
+    for (let i = 0; i < 5; i++) await engine.sync();
+    assert.ok(f.task().blocked);
+    const recorded = f.store
+      .events()
+      .filter((e) => e.type === 'sync' && e.taskId === f.task().id);
+    assert.equal(recorded.length, 1);
+  } finally {
+    await engine.stop();
+    f.store.close();
+  }
+});
+
 test('a completed and synchronized Task leaves the GitHub polling loop until something blocks it', async () => {
   const f = fixture();
   const engine = f.engine();
