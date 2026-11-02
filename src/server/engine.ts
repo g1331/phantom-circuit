@@ -1029,7 +1029,7 @@ export class Engine {
           {
             name: 'revise_task',
             description:
-              'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. Cannot revise an active or completed task.',
+              'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. A running Dev/Review is stopped first (its worktree is kept) and later resumes from the revision. Cannot revise a completed task.',
             inputSchema: jsonSchema(reviseInput),
           },
           {
@@ -1082,8 +1082,17 @@ export class Engine {
             const old = this.store.task(input.taskId);
             if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
               throw new Fault('任务不在可修改范围');
-            if (this.store.activeRuns().some((r) => r.taskId === old.id))
-              throw new Fault('任务运行中，请先暂停并等待其停止');
+            // The PM's own Run may be bound to this Task; only delivery work is in the way.
+            const working = () =>
+              this.store.activeRuns().filter((r) => r.taskId === old.id && r.role !== 'pm');
+            if (working().length) {
+              // A user-authorized revision supersedes in-flight work: stop it, keeping the worktree.
+              this.store.updateTask(old.id, { control: 'paused', pausedByUser: false });
+              for (const r of working()) this.active.get(r.id)?.abort.abort();
+              for (let i = 0; i < 240 && working().length; i++)
+                await new Promise((resolve) => setTimeout(resolve, 250));
+              if (working().length) throw new Fault('任务运行中，请先暂停并等待其停止');
+            }
             if (
               this.store
                 .list('clarification')
