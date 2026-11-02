@@ -957,6 +957,8 @@ export class Workspaces {
         // A full suite plus browser checks overran 10 minutes while two Tasks validated in parallel.
         r = await shellCommand(text, task.worktree, signal, 30 * 60_000);
       } catch (e) {
+        // A pause or stop aborts the command; that is not an environment failure.
+        if (signal?.aborted) throw e;
         throw new Fault(`宿主正式验证环境阻塞：${String(e)}`);
       }
       evidence.push({
