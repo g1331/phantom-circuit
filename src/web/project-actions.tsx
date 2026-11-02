@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Clarification, Incident, Project, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
+import { incidentAttention } from '../shared/task-history.ts';
 
 export function ProjectActions({
   state,
@@ -18,7 +19,12 @@ export function ProjectActions({
   const [error, setError] = useState<string | Error>('');
   const incidents =
     state.incidents?.filter(
-      (item) => item.projectId === project.id && item.status !== 'resolved',
+      (item) =>
+        item.projectId === project.id &&
+        incidentAttention(
+          item,
+          state.tasks.find((task) => task.id === item.taskId),
+        ).actionable,
     ) ?? [];
   const clarifications =
     state.clarifications?.filter((item) => item.projectId === project.id) ?? [];
@@ -304,7 +310,10 @@ export function TaskRuntimeBadges({
   const { t } = useLocale();
   const incident = state.incidents?.some(
     (item) =>
-      item.status !== 'resolved' &&
+      incidentAttention(
+        item,
+        state.tasks.find((task) => task.id === item.taskId),
+      ).actionable &&
       ((taskId && item.taskId === taskId) || (runId && item.runId === runId)),
   );
   const recovery = state.recoveryItems?.some(

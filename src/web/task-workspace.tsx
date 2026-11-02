@@ -5,6 +5,7 @@ import { PriorityBadge, ClaimOrder } from './task-priority.tsx';
 import { TaskRuntimeBadges } from './project-actions.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { Empty } from './ui.tsx';
+import { taskAttention } from '../shared/task-history.ts';
 
 export const profileKeys = {
   backend: 'profile.backend',
@@ -26,8 +27,9 @@ const stages = Object.keys(stageLabels) as Stage[];
 
 /** Card tone: what needs the user's eye first. */
 function tone(task: Task) {
-  if (task.blocked) return 'blocked';
-  if (task.control === 'paused') return 'paused';
+  const attention = taskAttention(task);
+  if (attention.blocked) return 'blocked';
+  if (attention.paused) return 'paused';
   if (task.stage === 'done') return 'done';
   if (['developing', 'reviewing', 'merging'].includes(task.stage)) return 'moving';
   return 'idle';
@@ -77,7 +79,10 @@ export function TaskWorkspace({
         (filters.stage === 'active'
           ? !['done', 'cancelled'].includes(task.stage)
           : task.stage === filters.stage)) &&
-      (filters.control === 'all' || task.control === filters.control) &&
+      (filters.control === 'all' ||
+        (filters.control === 'paused'
+          ? taskAttention(task).paused
+          : !taskAttention(task).paused)) &&
       `${task.title} ${task.spec}`.toLowerCase().includes(filters.query.toLowerCase()),
   );
   const repoName = (task: Task) => repos.find((repo) => repo.id === task.repoId)?.name;
@@ -173,10 +178,12 @@ export function TaskWorkspace({
                         </span>
                       )}
                     </span>
-                    {task.control === 'paused' && !task.blocked && (
+                    {taskAttention(task).paused && !taskAttention(task).blocked && (
                       <em>{t('tasks.pausedControl')}</em>
                     )}
-                    {task.blocked && <em>{host(task.blocked, task.blockedDescriptor)}</em>}
+                    {taskAttention(task).blocked && (
+                      <em>{host(task.blocked!, task.blockedDescriptor)}</em>
+                    )}
                   </button>
                 ))}
                 {!column.length && <p className="muted">{t('tasks.columnEmpty')}</p>}
@@ -195,7 +202,7 @@ export function TaskWorkspace({
               <span className={`task-icon ${task.stage}`}>
                 {task.stage === 'done' ? (
                   <Check size={17} />
-                ) : task.blocked ? (
+                ) : taskAttention(task).blocked ? (
                   <Pause size={17} />
                 ) : (
                   <Circle size={16} />
@@ -207,13 +214,15 @@ export function TaskWorkspace({
                 <TaskRuntimeBadges state={state} taskId={task.id} />
                 <span>
                   {repoName(task)} <i>·</i> {t(profileKeys[task.profile])}{' '}
-                  {task.blocked && <em>· {host(task.blocked, task.blockedDescriptor)}</em>}
+                  {taskAttention(task).blocked && (
+                    <em>· {host(task.blocked!, task.blockedDescriptor)}</em>
+                  )}
                 </span>
               </div>
               <TaskRefs task={task} />
               <span className={`stage ${task.stage}`}>
                 {t(`stage.${task.stage}`)}
-                {task.control === 'paused' && <> · {t('tasks.pausedControl')}</>}
+                {taskAttention(task).paused && <> · {t('tasks.pausedControl')}</>}
               </span>
               <ArrowUpRight size={14} />
             </button>
