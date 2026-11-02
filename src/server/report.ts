@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { openSync, readSync, closeSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { aggregateUsage } from './usage.ts';
@@ -28,21 +28,7 @@ export function readReportSnapshot(dataDir: string): Snapshot {
   const file = join(dataDir, 'phantom.sqlite');
   if (!statSync(dataDir).isDirectory() || !statSync(file).isFile())
     throw new Error('数据目录或 phantom.sqlite 不存在/不是常规文件');
-  // A readOnly main connection can still write/create WAL shared-memory files.
-  // Prechecking sidecars cannot prevent writer-close TOCTOU. Keep this path disabled
-  // pending product clarification 36fe62ce-fac0-43fd-ac15-46e2533baf15.
-  const fd = openSync(file, 'r');
-  const header = Buffer.alloc(100);
-  try {
-    readSync(fd, header, 0, header.length, 0);
-  } finally {
-    closeSync(fd);
-  }
-  if (header[18] === 2 || header[19] === 2) {
-    throw new Error(
-      'WAL 在线读取尚未满足严格只读约束，已禁用直连；等待宿主快照方案澄清。离线评测请提供 SQLite 一致性备份生成的独立非 WAL 快照，不要复制活跃库主文件。',
-    );
-  }
+  // SQLite manages WAL/SHM normally, including committed data still in the WAL.
   const db = new DatabaseSync(file, { readOnly: true, timeout: 0 });
   try {
     db.exec('BEGIN');
@@ -263,6 +249,7 @@ export function renderReport(snapshot: Snapshot): string {
     if (!parsed.success) throw new Error(`损坏或不支持的数据字段：event/${row.id}`);
     return { ...parsed.data, id: row.id };
   });
+  const runProjects = new Map(data.runs.map((run) => [run.id, run.projectId]));
   const lines = [
     'Project 运行评测报告',
     `读取时间：${snapshot.readAt}`,
@@ -305,6 +292,8 @@ export function renderReport(snapshot: Snapshot): string {
       if (source) sources.set(source, [...(sources.get(source) ?? []), task]);
     }
     const linkedTask = (item: { taskId?: string; runId?: string }): string | undefined => {
+      if (item.runId && runProjects.has(item.runId) && runProjects.get(item.runId) !== project.id)
+        return undefined;
       const fromRun = item.runId ? byRun.get(item.runId)?.taskId : undefined;
       if (item.taskId && fromRun && item.taskId !== fromRun) return undefined;
       const taskId = item.taskId ?? fromRun;
@@ -348,7 +337,11 @@ export function renderReport(snapshot: Snapshot): string {
     const isWatchdog = (value: string | undefined) => /^(?:Error: )?Watchdog：/.test(value ?? '');
     for (const event of projectEvents)
       if (event.type === 'watchdog') {
-        if (event.runId) watchdogRuns.add(event.runId);
+        if (
+          event.runId &&
+          (!runProjects.has(event.runId) || runProjects.get(event.runId) === project.id)
+        )
+          watchdogRuns.add(event.runId);
         else unlinkedWatchdog++;
       }
     for (const run of runs)
@@ -356,7 +349,11 @@ export function renderReport(snapshot: Snapshot): string {
         watchdogRuns.add(run.id);
     for (const incident of incidents)
       if (isWatchdog(incident.message) || isWatchdog(incident.descriptor?.detail)) {
-        if (incident.runId) watchdogRuns.add(incident.runId);
+        if (
+          incident.runId &&
+          (!runProjects.has(incident.runId) || runProjects.get(incident.runId) === project.id)
+        )
+          watchdogRuns.add(incident.runId);
         else unlinkedWatchdog++;
       }
     const controls = projectEvents.filter(

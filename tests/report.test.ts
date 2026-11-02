@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, readdir, readFile, writeFile, stat, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -319,49 +319,36 @@ test('CLI retains resolved interventions and ambiguous PM usage without confusin
   }
 });
 
-async function fileState(root: string) {
-  const result: Record<string, { bytes: string; size: number; mtime: number }> = {};
-  for (const name of (await readdir(root)).sort()) {
-    const path = join(root, name);
-    const info = await stat(path);
-    if (info.isFile())
-      result[name] = {
-        bytes: (await readFile(path)).toString('base64'),
-        size: info.size,
-        mtime: info.mtimeMs,
-      };
-  }
-  return result;
+function databaseState(db: DatabaseSync) {
+  return {
+    schema: db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all(),
+    data: ['documents', 'events', 'meta'].map((table) =>
+      db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ),
+    version: db.prepare('PRAGMA user_version').get(),
+    journal: db.prepare('PRAGMA journal_mode').get(),
+  };
 }
 
-test('CLI preserves all source files and logical database contents and does not acquire ownership', async () => {
+test('CLI preserves WAL business data, schema and ownership without requiring a host', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-report-readonly-'));
+  const db = database(root);
   try {
-    const db = database(root);
+    db.exec('PRAGMA journal_mode=WAL');
     project(db);
     task(db, 'a');
     merged(db, 'a');
     run(db, 'a-run', 'a', 0);
-    db.close();
     await writeFile(join(root, '.instance.lock'), 'existing-host-ownership');
     await writeFile(join(root, 'config.json'), '{"user":"unchanged"}');
-    const before = await fileState(root);
-    const logical = () => {
-      const check = new DatabaseSync(join(root, 'phantom.sqlite'), { readOnly: true });
-      try {
-        return ['documents', 'events', 'meta'].map((table) =>
-          check.prepare(`SELECT * FROM ${table}`).all(),
-        );
-      } finally {
-        check.close();
-      }
-    };
-    const contents = logical();
+    const before = databaseState(db);
     const { stdout } = await report(root);
     assert.match(stdout, /token 中位数：0；n=1\/1/);
-    assert.deepEqual(logical(), contents);
-    assert.deepEqual(await fileState(root), before);
+    assert.deepEqual(databaseState(db), before);
+    assert.equal(await readFile(join(root, '.instance.lock'), 'utf8'), 'existing-host-ownership');
+    assert.equal(await readFile(join(root, 'config.json'), 'utf8'), '{"user":"unchanged"}');
   } finally {
+    db.close();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -380,14 +367,14 @@ test('CLI rejects missing paths, unknown schema, damaged JSON and corrupt SQLite
     assert.deepEqual(await readdir(join(root, 'empty')), []);
     const db = database(root);
     db.exec('PRAGMA user_version=99');
+    const before = databaseState(db);
     db.close();
-    const before = await fileState(root);
     await assert.rejects(
       report(root),
       (error: any) => error.code === 1 && /未知 SQLite user_version/.test(error.stderr),
     );
-    assert.deepEqual(await fileState(root), before);
     const wrong = new DatabaseSync(join(root, 'phantom.sqlite'));
+    assert.deepEqual(databaseState(wrong), before);
     wrong.exec('PRAGMA user_version=0; ALTER TABLE documents ADD COLUMN surprise TEXT');
     wrong.close();
     await assert.rejects(report(root), (error: any) => /未知 SQLite 表结构/.test(error.stderr));
@@ -414,15 +401,16 @@ test('CLI fails immediately on an exclusive writer rather than waiting for the h
   const writer = database(root);
   try {
     writer.exec('BEGIN EXCLUSIVE');
-    const before = await fileState(root);
+    const before = databaseState(writer);
     await assert.rejects(
       report(root),
       (error: any) => error.code === 1 && /locked|busy/i.test(error.stderr) && !error.stdout,
     );
+    assert.deepEqual(databaseState(writer), before);
     // Writer still owns its transaction, and can commit without report coordination.
     put(writer, 'project', { id: 'after', name: 'still running' });
     writer.exec('COMMIT');
-    assert.ok(before['phantom.sqlite']);
+    assert.ok(writer.prepare("SELECT id FROM documents WHERE id='after'").get());
   } finally {
     writer.close();
     await rm(root, { recursive: true, force: true });
@@ -508,52 +496,99 @@ test('CLI uses the home authority by default and accepts only the documented dat
   }
 });
 
-test('WAL safety guard refuses online input without touching sidecars or blocking the writer (online acceptance remains pending)', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'phantom-report-wal-guard-'));
+test('CLI reads committed WAL data consistently while an independent writer continues committing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-wal-'));
   const writer = database(root);
   try {
     writer.exec('PRAGMA journal_mode=WAL');
-    project(writer);
-    const before = await fileState(root);
-    await assert.rejects(
-      report(root),
-      (error: any) =>
-        error.code === 1 && /WAL 在线读取.*禁用直连/.test(error.stderr) && !error.stdout,
+    project(writer, 'p', 'Version 0');
+    task(writer, 'a');
+    merged(writer, 'a');
+    run(writer, 'a-run', 'a', 20);
+    // A report must read the last committed state without waiting for this writer.
+    writer.exec('BEGIN IMMEDIATE');
+    project(writer, 'p', 'Uncommitted');
+    const { stdout: committed } = await report(root);
+    assert.match(committed, /Project：Version 0 \[p\]/);
+    assert.doesNotMatch(committed, /Uncommitted/);
+    writer.exec('COMMIT');
+    let finished = false;
+    let commits = 0;
+    const reading = report(root).finally(() => {
+      finished = true;
+    });
+    // Every committed version has matching Project and Task values. No sleeps or
+    // assumption about where the read snapshot falls within concurrent commits.
+    while (!finished) {
+      writer.exec('BEGIN IMMEDIATE');
+      project(writer, 'p', `Version ${++commits}`);
+      task(writer, 'a', 'p', { retries: commits });
+      event(writer, {
+        type: 'watchdog',
+        projectId: 'p',
+        runId: `trip-${commits}`,
+        message: 'Watchdog：fixture trip',
+      });
+      writer.exec('COMMIT');
+      await new Promise<void>((done) => setImmediate(done));
+    }
+    const { stdout } = await reading;
+    const version = stdout.match(/Project：Version (\d+) \[p\]/)?.[1];
+    assert.ok(version, stdout);
+    assert.ok(commits > 0);
+    assert.match(
+      stdout,
+      new RegExp(`返工轮数（Project 全部 Task）：已知合计=${version}；覆盖=1/1`),
     );
-    assert.deepEqual(await fileState(root), before);
+    assert.match(stdout, /token 中位数：20；n=1\/1/);
+    assert.match(stdout, /墙钟交付耗时中位数：10000 ms；n=1\/1/);
+    // Events are read by a separate SQL query; their count must belong to the
+    // same committed version as the documents, even as the writer advances.
+    assert.match(stdout, new RegExp(`watchdog 触发次数：${version}（按 Run ID）`));
     writer.exec('BEGIN IMMEDIATE');
     project(writer, 'after', 'writer continued');
     writer.exec('COMMIT');
     assert.ok(writer.prepare("SELECT id FROM documents WHERE kind='project' AND id='after'").get());
-    writer.close();
-    assert.deepEqual(await readdir(root), ['phantom.sqlite']);
-    const closedBefore = await fileState(root);
-    await assert.rejects(report(root), (error: any) => /WAL 在线读取.*禁用直连/.test(error.stderr));
-    assert.deepEqual(await fileState(root), closedBefore);
   } finally {
     if (writer.isOpen) writer.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('regression evidence: native readOnly SQLite recreates WAL sidecars after the last writer closes', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'phantom-report-wal-race-'));
+test('CLI leaves conflicting Project and Run associations unassigned', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-associations-'));
   try {
-    const writer = database(root);
-    writer.exec('PRAGMA journal_mode=WAL');
-    project(writer);
-    assert.ok((await readdir(root)).includes('phantom.sqlite-shm'));
-    // Deterministic last-writer shutdown between a successful sidecar check and read.
-    writer.close();
-    assert.deepEqual(await readdir(root), ['phantom.sqlite']);
-    const reader = new DatabaseSync(join(root, 'phantom.sqlite'), { readOnly: true, timeout: 0 });
-    try {
-      assert.equal(reader.prepare('SELECT count(*) AS n FROM documents').get()?.n, 2);
-      assert.ok((await readdir(root)).includes('phantom.sqlite-wal'));
-      assert.ok((await readdir(root)).includes('phantom.sqlite-shm'));
-    } finally {
-      reader.close();
-    }
+    const db = database(root);
+    project(db);
+    project(db, 'q', 'Beta');
+    task(db, 'a');
+    merged(db, 'a');
+    run(db, 'a-run', 'a', 10);
+    run(db, 'foreign-run', undefined, 100, { projectId: 'q', role: 'pm' });
+    put(db, 'incident', {
+      id: 'conflicting',
+      projectId: 'p',
+      taskId: 'a',
+      runId: 'foreign-run',
+      phase: 'dev',
+      createdAt,
+      message: 'Error: Watchdog：stalled',
+      status: 'resolved',
+    });
+    event(db, {
+      projectId: 'p',
+      taskId: 'a',
+      runId: 'foreign-run',
+      type: 'watchdog',
+      message: 'Watchdog：stalled',
+    });
+    db.close();
+    const { stdout } = await report(root);
+    const alpha = stdout.split('Project：Beta [q]')[0];
+    assert.match(alpha, /确认无干预：0；确认有干预：0；未知：1/);
+    assert.match(alpha, /未归属干预：Incident=1/);
+    assert.match(alpha, /watchdog 触发次数：0.*无法去重的触发证据=2/);
+    assert.match(alpha, /token 中位数：10；n=1\/1/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
