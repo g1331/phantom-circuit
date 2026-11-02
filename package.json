@@ -7,8 +7,9 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "tsx watch --clear-screen=false src/server/main.ts --pretty-logs",
-    "debug": "tsx watch --clear-screen=false --inspect=127.0.0.1:9229 src/server/main.ts --pretty-logs --log-level=debug",
+    "dev": "tsx scripts/dev.ts",
+    "debug": "tsx scripts/dev.ts --debug",
+    "dev:server": "tsx watch --clear-screen=false src/server/main.ts --pretty-logs",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "start": "tsx src/server/main.ts",

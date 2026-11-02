@@ -703,7 +703,9 @@ export function createApp(
     app.get('/', async (_req, reply) =>
       reply
         .type('text/plain')
-        .send('Run npm run build, then restart. For development: npm run dev:web.'),
+        .send(
+          'Run npm run build, then restart. For development: npm run dev, then open http://127.0.0.1:5173.',
+        ),
     );
   return app;
 }

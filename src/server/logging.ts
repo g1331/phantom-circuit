@@ -41,7 +41,7 @@ export function startupOptions() {
   });
   if (values.help) {
     console.log(
-      'Phantom Circuit\n\nUsage: npm start -- [--pretty-logs] [--log-level=info] [--data-dir=path]\n\nLog levels: trace, debug, info, warn, error, fatal, silent.\nPHANTOM_LOG_LEVEL sets the default level (info).\n--data-dir selects a separate workspace without adopting checkout-local data.\nUse npm run dev for automatic restart, npm run debug for the Node inspector,\nand npm run dev:web in a second terminal for frontend hot updates.',
+      'Phantom Circuit\n\nUsage: npm start -- [--pretty-logs] [--log-level=info] [--data-dir=path]\n\nLog levels: trace, debug, info, warn, error, fatal, silent.\nPHANTOM_LOG_LEVEL sets the default level (info).\n--data-dir selects a separate workspace without adopting checkout-local data.\nUse npm run dev for automatic restart with frontend hot updates on port 5173,\nand npm run debug to add the Node inspector.',
     );
     process.exit(0);
   }

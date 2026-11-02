@@ -16,21 +16,17 @@ Open **http://127.0.0.1:4317**. Create a project, connect a repository and expli
 
 ### Develop and debug
 
-After `npm ci`, start the backend in one terminal:
+After `npm ci`, start the backend and the frontend dev server together:
 
 ```powershell
 npm run dev
 ```
 
-This runs the backend on **http://127.0.0.1:4317**, prints readable timestamped logs and restarts when backend source files change. Start the frontend in a second terminal:
-
-```powershell
-npm run dev:web
-```
+The backend runs on **http://127.0.0.1:4317**, prints readable timestamped logs and restarts when backend source files change. Ctrl+C stops both. `npm run dev:server` and `npm run dev:web` start either side alone.
 
 Open **http://127.0.0.1:5173** for frontend hot updates. Vite proxies API requests to backend port 4317. Browser developer tools (F12) show frontend console messages and network requests. `npm run build` is needed to update the frontend served directly by the backend; Vite development uses source files.
 
-For backend breakpoints, use `npm run debug` in place of `npm run dev`. It also watches source files, enables debug-level logs and exposes the Node inspector on **127.0.0.1:9229**. Open `chrome://inspect` or `edge://inspect`, add `localhost:9229` under Configure if necessary, then inspect the Node target. The Sources panel provides TypeScript source maps and breakpoints. Reattach after a backend restart. Use Ctrl+C in each terminal to stop development servers. Restarting interrupts active Runs; the usual recovery rules apply.
+For backend breakpoints, use `npm run debug` in place of `npm run dev`. It also starts the frontend dev server, watches source files, enables debug-level logs and exposes the Node inspector on **127.0.0.1:9229**. Open `chrome://inspect` or `edge://inspect`, add `localhost:9229` under Configure if necessary, then inspect the Node target. The Sources panel provides TypeScript source maps and breakpoints. Reattach after a backend restart. Use Ctrl+C to stop development servers. Restarting interrupts active Runs; the usual recovery rules apply.
 
 `npm start` prints structured JSON logs at `info` level. Development commands use `pino-pretty` for readable output. Logs include startup/shutdown, request IDs, route patterns, HTTP status and duration, Run start/end and operational errors; debug logging also includes request starts and Run phase updates. Request bodies, headers, query values, model replies and task specifications are omitted. Errors use the existing credential redaction rules. Detailed model/tool output remains in the conversation and activity UI.
 
