@@ -593,9 +593,7 @@ test('a done Task that stays blocked for the same reason records it once, not ev
   try {
     for (let i = 0; i < 5; i++) await engine.sync();
     assert.ok(f.task().blocked);
-    const recorded = f.store
-      .events()
-      .filter((e) => e.type === 'sync' && e.taskId === f.task().id);
+    const recorded = f.store.events().filter((e) => e.type === 'sync' && e.taskId === f.task().id);
     assert.equal(recorded.length, 1);
   } finally {
     await engine.stop();
