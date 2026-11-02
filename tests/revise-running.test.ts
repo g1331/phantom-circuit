@@ -52,6 +52,17 @@ test('a user-authorized revision preempts the running Dev instead of being refus
     assert.equal(store.task(task.id).control, 'active');
     assert.equal(store.task(task.id).pausedByUser, false);
     assert.equal(devRun()?.status, 'paused');
+    const controls = store.taskEvents(task.id).filter((e) => e.control);
+    assert.deepEqual(
+      controls.map((e) => [e.control?.source, e.control?.action]),
+      [
+        ['pm', 'pause'],
+        ['pm', 'resume'],
+      ],
+    );
+    assert.ok(
+      controls.every((e) => e.runId === store.list('run').find((r) => r.role === 'pm')?.id),
+    );
     assert.equal(store.list('incident').length, 0, 'a preempted Dev is not a delivery failure');
   } finally {
     await engine.stop();

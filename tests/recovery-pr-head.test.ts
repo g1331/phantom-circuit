@@ -85,6 +85,25 @@ test('recovery accepts local work that moved past the published PR head', async 
   try {
     await f.engine.start();
     assert.equal(prMoved(f.store), false);
+    const recovery = f.store.list('recovery').find((item) => item.taskId === f.taskId)!;
+    const controls = f.store.taskEvents(f.taskId).filter((event) => event.control);
+    assert.deepEqual(
+      controls.map((event) => event.control),
+      [
+        { action: 'pause', source: 'host', reason: 'startup_interrupted' },
+        {
+          action: 'resume',
+          source: 'host',
+          reason: 'startup_recovery',
+          recoveryItemId: recovery.id,
+        },
+      ],
+    );
+    assert.ok(controls.every((event) => event.runId === recovery.oldRunId));
+    assert.equal(f.store.task(f.taskId).control, 'active');
+    assert.equal(f.store.task(f.taskId).pausedByUser, false);
+    assert.equal(f.store.task(f.taskId).devPhase, 'finalize');
+    assert.equal(f.store.task(f.taskId).retries, 0);
   } finally {
     await f.engine.stop();
     f.store.close();
@@ -97,6 +116,17 @@ test('recovery still stops when someone else pushed to the PR branch', async () 
   try {
     await f.engine.start();
     assert.equal(prMoved(f.store), true);
+    assert.deepEqual(
+      f.store
+        .taskEvents(f.taskId)
+        .filter((event) => event.control)
+        .map((event) => event.control),
+      [{ action: 'pause', source: 'host', reason: 'startup_interrupted' }],
+    );
+    assert.equal(f.store.task(f.taskId).control, 'paused');
+    assert.equal(f.store.task(f.taskId).pausedByUser, false);
+    assert.equal(f.store.task(f.taskId).devPhase, 'finalize');
+    assert.equal(f.store.task(f.taskId).retries, 0);
   } finally {
     await f.engine.stop();
     f.store.close();

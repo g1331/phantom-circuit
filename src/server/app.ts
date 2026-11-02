@@ -25,7 +25,13 @@ import {
   renderHostMessage,
   requestHostLocale,
 } from '../shared/host-messages.ts';
-import type { AgentKind, ClarificationAnswer, ProfileMode, ProfileName } from '../shared/types.ts';
+import type {
+  AgentKind,
+  ClarificationAnswer,
+  ProfileMode,
+  ProfileName,
+  TaskControlContext,
+} from '../shared/types.ts';
 import type { AgentBackend } from './agent-backend.ts';
 import { commandSchema, limit, profileSchema, profileSetSchema } from './schemas.ts';
 
@@ -34,15 +40,25 @@ type RuntimeEngineContract = Engine & {
     projectId: string,
     clarificationId: string,
     answers: ClarificationAnswer[],
+    context?: TaskControlContext,
   ): Promise<unknown>;
-  cancelClarification(projectId: string, clarificationId: string): Promise<unknown>;
-  resumeRecovery(projectId: string, recoveryId?: string): Promise<unknown>;
+  cancelClarification(
+    projectId: string,
+    clarificationId: string,
+    context?: TaskControlContext,
+  ): Promise<unknown>;
+  resumeRecovery(
+    projectId: string,
+    recoveryId?: string,
+    context?: TaskControlContext,
+  ): Promise<unknown>;
   cancelRecovery(projectId: string, recoveryId: string): Promise<unknown>;
   resolveIncident(
     projectId: string,
     incidentId: string,
     action: 'resolved' | 'paused' | 'waiting_user',
     guidance?: string,
+    context?: TaskControlContext,
   ): Promise<unknown>;
 };
 
@@ -535,13 +551,19 @@ export function createApp(
     const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
     projectEntity('clarification', projectId, id);
     const { answers } = answerSchema.parse(req.body);
-    return asRuntimeEngine(engine).answerClarification(projectId, id, answers);
+    return asRuntimeEngine(engine).answerClarification(projectId, id, answers, {
+      source: 'user',
+      reason: 'clarification_answered',
+    });
   });
   app.post('/api/projects/:projectId/clarifications/:id/cancel', async (req) => {
     const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
     projectEntity('clarification', projectId, id);
     if (req.body !== undefined && req.body !== null) z.object({}).strict().parse(req.body);
-    return asRuntimeEngine(engine).cancelClarification(projectId, id);
+    return asRuntimeEngine(engine).cancelClarification(projectId, id, {
+      source: 'user',
+      reason: 'clarification_cancelled',
+    });
   });
   app.post('/api/projects/:projectId/recovery/resume', async (req) => {
     const { projectId } = z.object({ projectId: z.string() }).parse(req.params);
@@ -550,7 +572,10 @@ export function createApp(
       .strict()
       .parse(req.body ?? {});
     if (body.id) projectEntity('recovery', projectId, body.id);
-    return asRuntimeEngine(engine).resumeRecovery(projectId, body.id);
+    return asRuntimeEngine(engine).resumeRecovery(projectId, body.id, {
+      source: 'user',
+      reason: 'http_recovery',
+    });
   });
   app.post('/api/projects/:projectId/recovery/:id/cancel', async (req) => {
     const { projectId, id } = z.object({ projectId: z.string(), id: z.string() }).parse(req.params);
@@ -568,7 +593,10 @@ export function createApp(
       })
       .strict()
       .parse(req.body);
-    return asRuntimeEngine(engine).resolveIncident(projectId, id, body.action, body.guidance);
+    return asRuntimeEngine(engine).resolveIncident(projectId, id, body.action, body.guidance, {
+      source: 'user',
+      reason: 'http_incident',
+    });
   });
   app.get('/api/tasks/:id/usage', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
@@ -642,8 +670,9 @@ export function createApp(
     const { id, action } = z
       .object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel']) })
       .parse(req.params);
-    if (action === 'resume') await engine.resume(id);
-    else engine.control(id, action);
+    const context = { source: 'user' as const, reason: 'http_task_control' };
+    if (action === 'resume') await engine.resume(id, undefined, context);
+    else engine.control(id, action, context);
     return store.task(id);
   });
   app.patch('/api/settings', async (req) => {

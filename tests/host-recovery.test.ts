@@ -196,6 +196,11 @@ test('host index lock failure preserves implementation and retry budget, resume 
     assert.equal(failed.retries, 0);
     assert.equal(failed.devPhase, 'finalize');
     assert.match(failed.blocked!, /宿主提交环境阻塞/);
+    assert.deepEqual(f.store.taskEvents(f.task.id).findLast((e) => e.control)?.control, {
+      action: 'pause',
+      source: 'host',
+      reason: 'task_blocked',
+    });
     assert.equal(
       await readFile(join(f.task.worktree!, 'implementation.txt'), 'utf8'),
       'implemented\n',

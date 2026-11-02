@@ -437,6 +437,14 @@ export interface RecoveryItem {
   createdAt: string;
   updatedAt: string;
 }
+/** Trusted host calling context; absent on legacy or unattributed calls. Never agent/HTTP input. */
+export interface TaskControlContext {
+  source: 'user' | 'host' | 'pm';
+  reason: string;
+  incidentId?: string;
+  recoveryItemId?: string;
+  runId?: string;
+}
 export interface Event {
   id: number;
   at: string;
@@ -446,6 +454,7 @@ export interface Event {
   runId?: string;
   message: string;
   descriptor?: MessageDescriptor;
+  control?: Omit<TaskControlContext, 'runId'> & { action: 'pause' | 'resume' | 'cancel' };
 }
 /** One operation attempt, as it stood at a moment that mattered. */
 export interface OperationAttempt {

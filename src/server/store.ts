@@ -40,6 +40,7 @@ import type {
   Project,
   Repo,
   Task,
+  TaskControlContext,
   Run,
   Message,
   Settings,
@@ -652,7 +653,7 @@ export class Store {
   event(
     type: string,
     message: string,
-    refs: Partial<Pick<Event, 'projectId' | 'taskId' | 'runId'>> = {},
+    refs: Partial<Pick<Event, 'projectId' | 'taskId' | 'runId' | 'control'>> = {},
     descriptor?: MessageDescriptor,
   ) {
     const event = {
@@ -1983,18 +1984,55 @@ export class Store {
       return run;
     });
   }
-  control(key: string, action: 'pause' | 'resume' | 'cancel') {
-    const t = this.task(key);
-    if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束');
-    if (action === 'cancel') this.updateTask(key, { stage: 'cancelled', control: 'paused' });
-    else
-      this.updateTask(key, {
-        control: action === 'pause' ? 'paused' : 'active',
-        pausedByUser: action === 'pause' ? true : false,
-        blocked: action === 'resume' ? undefined : t.blocked,
-        blockedDescriptor: action === 'resume' ? undefined : t.blockedDescriptor,
-      });
-    this.event('task', `任务 ${action}`, { projectId: t.projectId, taskId: key });
+  control(key: string, action: 'pause' | 'resume' | 'cancel', context?: TaskControlContext) {
+    return this.transaction(() => {
+      const t = this.task(key);
+      if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束');
+      if (action === 'cancel') this.updateTask(key, { stage: 'cancelled', control: 'paused' });
+      else
+        this.updateTask(key, {
+          control: action === 'pause' ? 'paused' : 'active',
+          pausedByUser: action === 'pause' ? true : false,
+          blocked: action === 'resume' ? undefined : t.blocked,
+          blockedDescriptor: action === 'resume' ? undefined : t.blockedDescriptor,
+        });
+      this.taskControlEvent(t, action, context);
+    });
+  }
+  /** Direct host/PM state patches retain their existing semantics, with atomic transition evidence. */
+  updateTaskControl(
+    key: string,
+    patch: Partial<Task>,
+    action: 'pause' | 'resume' | 'cancel',
+    context?: TaskControlContext,
+  ) {
+    return this.transaction(() => {
+      const previous = this.task(key);
+      const next = this.updateTask(key, patch);
+      if (
+        previous.control !== next.control ||
+        (action === 'cancel' && previous.stage !== next.stage)
+      )
+        this.taskControlEvent(next, action, context);
+      return next;
+    });
+  }
+  private taskControlEvent(
+    task: Task,
+    action: 'pause' | 'resume' | 'cancel',
+    context?: TaskControlContext,
+  ) {
+    const refs: Partial<Pick<Event, 'runId' | 'control'>> = {};
+    if (context) {
+      const { runId, ...provenance } = context;
+      refs.runId = runId;
+      refs.control = { ...provenance, action };
+    }
+    this.event('task', `任务 ${action}`, {
+      projectId: task.projectId,
+      taskId: task.id,
+      ...refs,
+    });
   }
   resumeRecovery(key: string) {
     const item = this.get('recovery', key);
@@ -2165,12 +2203,17 @@ export class Store {
       const preserveTask =
         !!task && (task.pausedByUser === true || ['done', 'cancelled'].includes(task.stage));
       if (task && !preserveTask)
-        this.updateTask(task.id, {
-          control: 'paused',
-          pausedByUser: false,
-          blocked: `运行中断：${reason}`,
-          blockedDescriptor: { code: 'run_interrupted', params: { runId: r.id }, detail: reason },
-        });
+        this.updateTaskControl(
+          task.id,
+          {
+            control: 'paused',
+            pausedByUser: false,
+            blocked: `运行中断：${reason}`,
+            blockedDescriptor: { code: 'run_interrupted', params: { runId: r.id }, detail: reason },
+          },
+          'pause',
+          { source: 'host', reason: 'startup_interrupted', runId: r.id },
+        );
       const at = now();
       const item: RecoveryItem = {
         id: id(),
