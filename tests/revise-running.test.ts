@@ -59,3 +59,45 @@ test('a user-authorized revision preempts the running Dev instead of being refus
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('revise_task with an explicit empty documentIds removes stale document attachments', async () => {
+  const { root, store, project, task, github } = await devFixture('phantom-revise-docs-');
+  github.reviseIssue = async () => {};
+  const docs = [{ id: 'old', path: 'docs/adr/0007-old.md', version: 1, content: '# Old' }];
+  store.updateTask(task.id, { documentChanges: docs as never });
+  const calls: Record<string, unknown>[] = [
+    { taskId: task.id, spec: 'Keep docs', acceptance: ['A'], guidance: 'omitted keeps them' },
+    { taskId: task.id, spec: 'Drop docs', acceptance: ['B'], guidance: 'drop', documentIds: [] },
+  ];
+  const seen: (number | undefined)[] = [];
+  class Model extends Codex {
+    handler?: Parameters<Codex['thread']>[0]['toolHandler'];
+    override async start() {}
+    override async stop() {}
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      this.handler = options.toolHandler;
+      return 'pm';
+    }
+    override async turn() {
+      await this.handler!('revise_task', calls.shift()!);
+      seen.push(store.task(task.id).documentChanges?.length);
+      return 'revised';
+    }
+  }
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(join(root, 'ws'), store),
+    root,
+    () => new Model(),
+  );
+  try {
+    for (const text of ['first', 'second'])
+      await engine.chat(store.addMessage(project.id, 'user', text, 'implement'));
+    assert.deepEqual(seen, [1, 0]);
+  } finally {
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

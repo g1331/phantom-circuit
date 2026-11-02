@@ -113,9 +113,9 @@ const reviseInput = z
     acceptance: z.array(z.string().min(1)).min(1),
     documentIds: z
       .array(z.string())
-      .default([])
+      .optional()
       .describe(
-        'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference.',
+        'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference. Omit to keep the current attachments; [] removes them.',
       ),
     guidance: z.string().min(1),
   })
@@ -1108,11 +1108,9 @@ export class Engine {
                 code: 'clarification_gate',
                 params: { sourceMessageId: old.sourceMessageId },
               });
-            const documentChanges = this.acceptedDocumentChanges(
-              projectId,
-              old.repoId,
-              input.documentIds,
-            );
+            const documentChanges = input.documentIds
+              ? this.acceptedDocumentChanges(projectId, old.repoId, input.documentIds)
+              : old.documentChanges;
             let revised = this.store.updateTask(old.id, {
               spec: input.spec,
               acceptance: input.acceptance,
@@ -1124,7 +1122,7 @@ export class Engine {
               tests: [],
               mergeApproval: undefined,
               retries: 0,
-              ...(input.documentIds.length ? { documentChanges } : {}),
+              documentChanges,
               feedback: [...old.feedback, input.guidance],
             });
             try {
