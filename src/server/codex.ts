@@ -48,6 +48,34 @@ interface QueuedFollowUp {
   reject: (error: Error) => void;
 }
 
+/**
+ * User-level Codex extensions that must not reach project agents: personal memories, plugins,
+ * hooks, browser/computer control and configured MCP servers (several can write to external
+ * services and would bypass host authority). `-c features.x=false` tolerates unknown names
+ * across Codex versions, unlike `--disable`.
+ */
+const isolatedFeatures = [
+  'memories',
+  'plugins',
+  'remote_plugin',
+  'apps',
+  'hooks',
+  'browser_use',
+  'browser_use_external',
+  'in_app_browser',
+  'computer_use',
+];
+export function isolationArgs(mcpServers: string[]) {
+  const unsafe = mcpServers.find((name) => !/^[A-Za-z0-9_-]+$/.test(name));
+  if (unsafe) throw new Fault(`无法隔离 Codex MCP 服务器：${unsafe}`, 409);
+  return [
+    ...isolatedFeatures.map((feature) => `features.${feature}=false`),
+    'memories.use_memories=false',
+    'memories.generate_memories=false',
+    ...mcpServers.map((name) => `mcp_servers.${name}.enabled=false`),
+  ].flatMap((override) => ['-c', override]);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -315,6 +343,24 @@ export class Codex extends EventEmitter implements AgentBackend {
       binary = process.execPath;
       args = [entry, ...args];
     }
+    const prefix = binary === process.execPath ? [args[0]] : [];
+    let mcpServers: string[] = [];
+    if (this.launch === spawn) {
+      const listed = await command(
+        binary,
+        [...prefix, 'mcp', 'list', '--json'],
+        undefined,
+        undefined,
+        15000,
+        true,
+        signal,
+      ).catch(() => undefined);
+      const parsed: unknown = listed ? JSON.parse(listed.stdout || 'null') : undefined;
+      if (!Array.isArray(parsed) || !parsed.every((s) => isRecord(s) && typeof s.name === 'string'))
+        throw new Fault('无法读取 Codex MCP 配置，已拒绝启动以免用户级服务器进入项目', 503);
+      mcpServers = parsed.map((s) => s.name as string);
+    }
+    args.push(...isolationArgs(mcpServers));
     if (this.launch === spawn) {
       const versionArgs = binary === process.execPath ? [args[0], '--version'] : ['--version'];
       this.version = (
