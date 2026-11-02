@@ -6,6 +6,154 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
+import type { Snapshot, Task } from '../src/shared/types.ts';
+
+test('state retains original historical evidence while scheduling excludes only settled known gaps', async () => {
+  const store = new Store(':memory:');
+  const ws = new Workspaces('/test', store);
+  const app = createApp(
+    store,
+    new Engine(store, new GitHub(store), ws, '/test'),
+    new Previews(store, ws),
+  );
+  const project = store.createProject('History', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'repo',
+    path: '/test',
+    github: 'example/history',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const source = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  const reason =
+    '历史 Task 完成同步缺少固定 revision 的测试、双轴 Review 或 PM 验收证据，需要 PM 核对';
+  const cases: { name: string; patch: Partial<Task>; historical: boolean }[] = [
+    { name: 'settled current policy history', patch: {}, historical: true },
+    {
+      name: 'settled original policy history',
+      patch: { reviewPolicyVersion: undefined },
+      historical: true,
+    },
+    { name: 'original plain reason', patch: { blocked: reason }, historical: true },
+    {
+      name: 'known generic block descriptor',
+      patch: { blockedDescriptor: { code: 'task_blocked' } },
+      historical: true,
+    },
+    {
+      name: 'known generic pause descriptor',
+      patch: { blockedDescriptor: { code: 'incident_paused' } },
+      historical: true,
+    },
+    {
+      name: 'new evidence failure with identical prose',
+      patch: { blockedDescriptor: { code: 'completion_evidence_invalid' } },
+      historical: false,
+    },
+    {
+      name: 'unknown specific diagnostic',
+      patch: { blockedDescriptor: { code: 'future_specific_failure' } },
+      historical: false,
+    },
+    { name: 'normal done', patch: { blocked: undefined, control: 'active' }, historical: false },
+    { name: 'unfinished', patch: { stage: 'merging' }, historical: false },
+    { name: 'actual user pause', patch: { pausedByUser: true }, historical: false },
+    { name: 'pending handoff', patch: { completionDeliveryPending: true }, historical: false },
+    { name: 'unknown handoff', patch: { completionDeliveryPending: undefined }, historical: false },
+    {
+      name: 'different evidence diagnostic',
+      patch: { blocked: `${reason}；另外的失败` },
+      historical: false,
+    },
+    {
+      name: 'GitHub drift',
+      patch: { blocked: 'GitHub 需求发生变化，PM 正在核对' },
+      historical: false,
+    },
+    { name: 'network failure', patch: { blocked: 'Error: HTTP 502' }, historical: false },
+    {
+      name: 'current revision validation failure',
+      patch: {
+        stage: 'merging',
+        blocked: '固定 revision 测试失败',
+        tests: [
+          { command: 'npm test', head: 'new-head', exitCode: 1, output: 'failed', at: 'now' },
+        ],
+      },
+      historical: false,
+    },
+  ];
+  const records = cases.map(({ name, patch, historical }) => {
+    const task = store.createTask({
+      projectId: project.id,
+      repoId: repo.id,
+      sourceMessageId: source.id,
+      title: name,
+      spec: 'Build',
+      acceptance: ['Works'],
+      dependencies: [],
+      kind: 'backend',
+      complexity: 'normal',
+      priority: 0,
+    });
+    return {
+      historical,
+      task: store.updateTask(task.id, {
+        stage: 'done',
+        control: 'paused',
+        pausedByUser: false,
+        completionDeliveryPending: false,
+        blocked: `Error: ${reason}`,
+        prUrl: 'https://github.com/example/history/pull/7',
+        feedback: ['Delivered externally'],
+        ...patch,
+      }),
+    };
+  });
+  try {
+    const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+    const headers = {
+      host: '127.0.0.1:4317',
+      cookie: String(init.headers['set-cookie']).split(';')[0],
+    };
+    const snapshot = (await app.inject({ url: '/api/state', headers })).json<Snapshot>();
+    const schedule = (
+      await app.inject({ url: `/api/projects/${project.id}/scheduling`, headers })
+    ).json();
+    for (const { task, historical } of records) {
+      assert.deepEqual(
+        snapshot.tasks.find((item) => item.id === task.id),
+        JSON.parse(JSON.stringify(task)),
+        'API preserves all raw blockers, evidence, delivery references and timestamps',
+      );
+      const reasons = schedule.tasks.find(
+        (item: { taskId: string }) => item.taskId === task.id,
+      ).reasons;
+      assert.equal(
+        reasons.some((r: { code: string }) => r.code === 'blocked'),
+        !historical && !!task.blocked,
+        task.title,
+      );
+      assert.equal(
+        reasons.some((r: { code: string }) => r.code === 'paused'),
+        !historical && task.control === 'paused',
+        task.title,
+      );
+      assert.ok(reasons.some((r: { code: string }) => r.code === 'stage'));
+    }
+    assert.equal(
+      schedule.candidates.length,
+      0,
+      'classification never makes completed tasks claimable',
+    );
+    const again = (await app.inject({ url: '/api/state', headers })).json<Snapshot>();
+    assert.deepEqual(again, snapshot, 'read-only HTTP refresh does not mutate history');
+  } finally {
+    await app.close();
+    store.close();
+  }
+});
 
 test('local API requires a same-site session and explicit write token', async () => {
   const store = new Store(':memory:');

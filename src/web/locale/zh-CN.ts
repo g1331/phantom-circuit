@@ -2,6 +2,10 @@ import type { Resource } from './core.ts';
 
 import { runtimeZh } from './runtime.ts';
 export const zhCN = {
+  'panel.loading': '正在加载面板…',
+  'panel.failed': '面板加载失败。',
+  'panel.retry': '重试加载',
+  'tasks.historicalCompletion': '历史完成记录，旧验收证据不完整',
   ...runtimeZh,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': '对话目录',

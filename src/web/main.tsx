@@ -17,18 +17,17 @@ import { api, session, LocalRequestError, LocalUiError, HostRequestError } from 
 import { ErrorText } from './error-text.tsx';
 import { PMComposer, type PMComposerHandle, type PMSubmission } from './pm-composer.tsx';
 import { PMModelControl } from './pm-model-control.tsx';
-import { ProviderSettings } from './providers.tsx';
+import { DeferredSettings, DeferredTaskDetail } from './deferred-panels.tsx';
 import { ProjectActions } from './project-actions.tsx';
 import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversation.tsx';
 import { LocaleProvider, useLocale } from './locale/provider.tsx';
 import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
 import { TaskWorkspace, type TaskFilters } from './task-workspace.tsx';
-import { TaskDetail } from './task-detail.tsx';
 import { RunList } from './run-list.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { Modal } from './ui.tsx';
-import { CommandsForm, ProjectForm, RepoForm, SettingsForm } from './forms.tsx';
+import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
 import './style.css';
 
 function App() {
@@ -607,13 +606,8 @@ function App() {
           wide
           onClose={() => setModal(null)}
         >
-          {modal === 'settings' && (
-            <details className="settings-group provider-group">
-              <summary>{t('ui.providerManagement')}</summary>
-              <ProviderSettings />
-            </details>
-          )}
-          <SettingsForm
+          <DeferredSettings
+            showProviders={modal === 'settings'}
             key={`${modal}-${project?.id}`}
             initial={
               modal === 'project-settings' && project
@@ -685,7 +679,8 @@ function App() {
           wide
           onClose={() => setTaskDetail(undefined)}
         >
-          <TaskDetail
+          <DeferredTaskDetail
+            key={detail.id}
             task={detail}
             state={state!}
             schedule={currentSchedule}

@@ -21,6 +21,7 @@ import { profileProtocol } from '../tests/profile-protocol.ts';
 import { checkLocale } from './locale-browser-check.ts';
 import { checkUsability } from './usability-browser-check.ts';
 import { checkRuntimeUI } from './runtime-browser-check.ts';
+import { checkMaintenance } from './maintenance-browser-check.ts';
 
 const artifacts = resolve('test-results');
 const port = Number(process.env.PHANTOM_BROWSER_PORT ?? 4318);
@@ -1144,6 +1145,7 @@ try {
   await checkLocale(page, artifacts);
   await checkUsability();
   await checkRuntimeUI();
+  await checkMaintenance();
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, board/list/stage/control filters, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',
