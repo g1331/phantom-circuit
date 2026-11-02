@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { Codex } from '../src/server/codex.ts';
+import { Codex, isolationArgs } from '../src/server/codex.ts';
 
 async function streamingFixture(work: (codex: Codex) => Promise<void>) {
   let exited!: Promise<void>;
@@ -269,6 +269,8 @@ test('custom Codex launch uses argument overrides and a child-only key binding; 
     );
     assert.ok(launch.args.includes('model_providers.fixture-provider.wire_api="responses"'));
     assert.ok(launch.args.includes(`model_providers.fixture-provider.env_key="${child.keys[0]}"`));
+    for (const isolated of ['features.memories=false', 'memories.generate_memories=false'])
+      assert.ok(launch.args.includes(isolated), `user-level ${isolated} must not reach agents`);
     assert.equal(launch.env[child.keys[0]], secret);
     assert.ok(!launch.args.join(' ').includes(secret));
     const options = {
@@ -446,4 +448,11 @@ test('Codex uses turn/steer preconditions, queues followUps FIFO, and normalizes
     await codex.request('fixture/exit').catch(() => {});
     await codex.stop();
   }
+});
+
+test('every user-configured MCP server is disabled for agents, and an unrepresentable name refuses launch', () => {
+  const args = isolationArgs(['github', 'dida365', 'wireshark-mcp']);
+  for (const name of ['github', 'dida365', 'wireshark-mcp'])
+    assert.ok(args.includes(`mcp_servers.${name}.enabled=false`));
+  assert.throws(() => isolationArgs(['bad.name']), /MCP/);
 });
