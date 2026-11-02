@@ -71,6 +71,24 @@ function conflictEventAgrees(message: string, head: string, sourceHead: string) 
   return !named || (named.includes(head) && named.includes(sourceHead));
 }
 
+const networkBlip =
+  /unable to access|SSL_ERROR|Could not resolve host|Failed to connect|Connection (?:reset|timed out)|RPC failed|early EOF|remote end hung up|HTTP 50[234]/i;
+/** Read-only remote calls (fetch, ls-remote) retry a connection blip; writes never retry here. */
+export async function retryNetworkRead<T>(
+  args: string[],
+  run: () => Promise<T>,
+  delaysMs = [2000, 8000],
+): Promise<T> {
+  const retryable = args[0] === 'fetch' || args[0] === 'ls-remote';
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!retryable || attempt >= delaysMs.length || !networkBlip.test(String(error))) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+    }
+  }
+}
 export type BaselineResult =
   | { status: 'clean' }
   | { status: 'conflicted'; merge: NonNullable<Task['pendingMerge']> }
@@ -121,7 +139,9 @@ export class Workspaces {
     }
   }
   async git(cwd: string, args: string[], signal?: AbortSignal) {
-    return (await command('git', args, cwd, undefined, 120000, true, signal)).stdout.trim();
+    return retryNetworkRead(args, async () =>
+      (await command('git', args, cwd, undefined, 120000, true, signal)).stdout.trim(),
+    );
   }
   async inspect(path: string, slug: string) {
     const canonical = await realpath(path);
