@@ -60,6 +60,56 @@ test('a user-authorized revision preempts the running Dev instead of being refus
   }
 });
 
+test('revise_task completes engineering naming before a branch exists, and refuses it after', async () => {
+  const { root, store, project, task, github } = await devFixture('phantom-revise-naming-');
+  github.reviseIssue = async () => {};
+  // A Task created before the host refused partial naming tuples.
+  store.updateTask(task.id, { changeType: 'feat', scope: 'task-control' } as never);
+  const naming = { changeType: 'feat', scope: 'task-control', summaryEn: 'record control actors' };
+  const results: unknown[] = [];
+  class Model extends Codex {
+    handler?: Parameters<Codex['thread']>[0]['toolHandler'];
+    override async start() {}
+    override async stop() {}
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      this.handler = options.toolHandler;
+      return 'pm';
+    }
+    override async turn() {
+      results.push(
+        await this.handler!('revise_task', {
+          taskId: task.id,
+          spec: 'S',
+          acceptance: ['A'],
+          guidance: 'complete naming',
+          ...naming,
+        }).catch((error: unknown) => String(error)),
+      );
+      return 'revised';
+    }
+  }
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(join(root, 'ws'), store),
+    root,
+    () => new Model(),
+  );
+  try {
+    await engine.chat(store.addMessage(project.id, 'user', 'fix naming', 'implement'));
+    assert.equal(store.task(task.id).summaryEn, 'record control actors');
+    store.updateTask(task.id, { branch: 'phantom/feat/task-control-x' });
+    naming.summaryEn = 'something else';
+    await engine.chat(store.addMessage(project.id, 'user', 'rename', 'implement'));
+    assert.match(String(results[1]), /分支/);
+    assert.equal(store.task(task.id).summaryEn, 'record control actors');
+  } finally {
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('revise_task with an explicit empty documentIds removes stale document attachments', async () => {
   const { root, store, project, task, github } = await devFixture('phantom-revise-docs-');
   github.reviseIssue = async () => {};
