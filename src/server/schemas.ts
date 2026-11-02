@@ -50,7 +50,12 @@ export const taskInput = creationPriorityInput
     dependencies: z.array(z.string()).max(100),
     kind: z.enum(['backend', 'frontend', 'fullstack']),
     complexity: z.enum(['normal', 'complex']),
-    documentIds: z.array(z.string()).default([]),
+    documentIds: z
+      .array(z.string())
+      .default([])
+      .describe(
+        'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference.',
+      ),
     changeType: z.string().trim().min(1).max(100).optional(),
     scope: z.string().max(10000).optional(),
     summaryEn: z.string().max(10000).optional(),

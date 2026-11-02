@@ -94,6 +94,16 @@ async function lifecycle(
     feedback: 0,
   };
   const withoutSchema: string[] = [];
+  // OpenAI strict structured output rejects any schema whose `required` omits a property.
+  const notStrict: string[] = [];
+  const checkStrict = (label: string, schema: unknown) => {
+    const { properties = {}, required = [] } = schema as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    for (const key of Object.keys(properties))
+      if (!required.includes(key)) notStrict.push(`${label}.${key}`);
+  };
   const axes: string[] = [];
   let pmCalls = 0;
   let issue: any = { body: '', state: 'open' };
@@ -174,6 +184,7 @@ async function lifecycle(
         return 'Implemented in the task worktree; host must commit and validate.';
       }
       if (this.role === 'review') {
+        if (outputSchema) checkStrict('review', outputSchema);
         const matched = /Axis: (primary|secondary)/.exec(prompt);
         if (matched) this.axis = matched[1];
         const attempt = ++turns.review[this.axis as (typeof REVIEW_AXES)[number]];
@@ -220,6 +231,7 @@ async function lifecycle(
         pmCalls++;
         const attempt = ++turns.feedback;
         if (!outputSchema) withoutSchema.push('feedback');
+        else checkStrict('feedback', outputSchema);
         return respond(
           'feedback',
           prompt,
@@ -255,6 +267,7 @@ async function lifecycle(
     events: () => store.events(),
     turns,
     withoutSchema,
+    notStrict,
     axes,
     pmCalls: () => pmCalls,
     close: () => store.close(),
@@ -285,6 +298,7 @@ for (const [name, wrap] of shapes)
         JSON.stringify({ blocked: task.blocked, events: run.events().slice(0, 5) }),
       );
       assert.deepEqual(run.withoutSchema, [], 'structured turns must still carry the JSON schema');
+      assert.deepEqual(run.notStrict, [], 'structured output schemas must be strict-mode valid');
       assert.equal(run.turns.review.primary, 1, 'a host-submitted review needs one turn');
       assert.equal(run.turns.review.secondary, 0, 'a normal task needs no secondary review');
       assert.equal(run.turns.feedback, 1, 'the feedback verdict must be parsed on the first reply');

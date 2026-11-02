@@ -112,7 +112,12 @@ const reviseInput = z
     taskId: z.string(),
     spec: z.string().min(1).max(30000),
     acceptance: z.array(z.string().min(1)).min(1),
-    documentIds: z.array(z.string()).default([]),
+    documentIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference. Omit to keep the current attachments; [] removes them.',
+      ),
     guidance: z.string().min(1),
   })
   .strict();
@@ -484,16 +489,18 @@ export class Engine {
     subject: string,
     onTurn?: (id: string) => void,
     accepted?: () => T | undefined,
+    // The schema the model is asked for, when it must be narrower than what the host parses.
+    wire: z.ZodType = schema,
   ): Promise<T> {
     const ask = (text: string) =>
-      codex.turn(thread, text, profile, signal, jsonSchema(schema), onTurn);
+      codex.turn(thread, text, profile, signal, jsonSchema(wire), onTurn);
     const reply = await ask(prompt);
     const hostResult = accepted?.();
     if (hostResult !== undefined) return hostResult;
     const value = parseStructuredReply(schema, reply);
     if (value !== undefined) return value;
     const retry = await ask(
-      `The previous reply did not contain the required JSON. Reply with ONLY one JSON object matching this JSON Schema — no prose, no explanation and no tool use: ${JSON.stringify(jsonSchema(schema))}`,
+      `The previous reply did not contain the required JSON. Reply with ONLY one JSON object matching this JSON Schema — no prose, no explanation and no tool use: ${JSON.stringify(jsonSchema(wire))}`,
     );
     const retriedHostResult = accepted?.();
     if (retriedHostResult !== undefined) return retriedHostResult;
@@ -1025,7 +1032,7 @@ export class Engine {
           {
             name: 'revise_task',
             description:
-              'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. Cannot revise an active or completed task.',
+              'Revise an existing task after explicit user implementation/feedback changes its product requirements. Re-publish acceptance criteria and invalidate old evidence. A running Dev/Review is stopped first (its worktree is kept) and later resumes from the revision. Cannot revise a completed task.',
             inputSchema: jsonSchema(reviseInput),
           },
           {
@@ -1078,8 +1085,17 @@ export class Engine {
             const old = this.store.task(input.taskId);
             if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
               throw new Fault('任务不在可修改范围');
-            if (this.store.activeRuns().some((r) => r.taskId === old.id))
-              throw new Fault('任务运行中，请先暂停并等待其停止');
+            // The PM's own Run may be bound to this Task; only delivery work is in the way.
+            const working = () =>
+              this.store.activeRuns().filter((r) => r.taskId === old.id && r.role !== 'pm');
+            if (working().length) {
+              // A user-authorized revision supersedes in-flight work: stop it, keeping the worktree.
+              this.store.updateTask(old.id, { control: 'paused', pausedByUser: false });
+              for (const r of working()) this.active.get(r.id)?.abort.abort();
+              for (let i = 0; i < 240 && working().length; i++)
+                await new Promise((resolve) => setTimeout(resolve, 250));
+              if (working().length) throw new Fault('任务运行中，请先暂停并等待其停止');
+            }
             if (
               this.store
                 .list('clarification')
@@ -1093,11 +1109,9 @@ export class Engine {
                 code: 'clarification_gate',
                 params: { sourceMessageId: old.sourceMessageId },
               });
-            const documentChanges = this.acceptedDocumentChanges(
-              projectId,
-              old.repoId,
-              input.documentIds,
-            );
+            const documentChanges = input.documentIds
+              ? this.acceptedDocumentChanges(projectId, old.repoId, input.documentIds)
+              : old.documentChanges;
             let revised = this.store.updateTask(old.id, {
               spec: input.spec,
               acceptance: input.acceptance,
@@ -1109,7 +1123,7 @@ export class Engine {
               tests: [],
               mergeApproval: undefined,
               retries: 0,
-              ...(input.documentIds.length ? { documentChanges } : {}),
+              documentChanges,
               feedback: [...old.feedback, input.guidance],
             });
             try {
@@ -2009,6 +2023,30 @@ export class Engine {
         });
       const profile = this.agentProfile(run);
       let submitted: z.infer<typeof reviewSchema> | undefined;
+      // The model supplies only the verdict, by tool or JSON reply. Revision, tests and identity
+      // are host-owned evidence attached from the current pinned Task; echoed copies must match.
+      const pin = <T extends { head?: string; base?: string; tests?: unknown[] }>(input: T) => {
+        const current = this.store.task(task.id);
+        if (
+          (input.head && input.head !== current.head) ||
+          (input.base && input.base !== current.base) ||
+          (input.tests && JSON.stringify(input.tests) !== JSON.stringify(current.tests)) ||
+          !current.head ||
+          !current.base ||
+          !current.tests.length ||
+          current.tests.some((test) => test.exitCode !== 0 || test.head !== current.head)
+        )
+          throw new Fault('Review 提交缺少当前 revision 的完整测试证据', 409, {
+            code: 'review_evidence_invalid',
+            params: { taskId: task.id },
+          });
+        return {
+          ...input,
+          head: current.head,
+          base: current.base,
+          tests: structuredClone(current.tests),
+        };
+      };
       const thread = await c.thread({
         cwd: path,
         profile,
@@ -2024,29 +2062,8 @@ export class Engine {
         ],
         toolHandler: async (name: string, args: unknown) => {
           if (name !== 'submit_review') throw new Fault('Review 没有此操作权限', 403);
-          const input = submitReviewCallInput.parse(args);
+          submitted = pin(submitReviewCallInput.parse(args));
           const current = this.store.task(task.id);
-          if (
-            (input.head && input.head !== current.head) ||
-            (input.base && input.base !== current.base) ||
-            (input.tests && JSON.stringify(input.tests) !== JSON.stringify(current.tests)) ||
-            !current.head ||
-            !current.base ||
-            !current.tests.length ||
-            current.tests.some((test) => test.exitCode !== 0 || test.head !== current.head)
-          )
-            throw new Fault('Review 提交缺少当前 revision 的完整测试证据', 409, {
-              code: 'review_evidence_invalid',
-              params: { taskId: task.id },
-            });
-          // The model supplies only the verdict. Revision, tests and identity are host-owned
-          // evidence and are attached from the current pinned Task/Run below.
-          submitted = {
-            ...input,
-            head: current.head,
-            base: current.base,
-            tests: structuredClone(current.tests),
-          };
           return {
             accepted: true,
             head: current.head,
@@ -2060,8 +2077,10 @@ export class Engine {
       this.saveThread(run, thread);
       const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
       let result: z.infer<typeof reviewSchema> | undefined = submitted;
-      if (!result)
-        result = await this.structuredTurn(
+      if (!result) {
+        // Strict structured output needs every property required, so the model is asked only
+        // for its own fields; the lenient parse still accepts replies that echo evidence.
+        const reply = await this.structuredTurn(
           c,
           thread,
           prompt,
@@ -2071,7 +2090,10 @@ export class Engine {
           '评审回合',
           this.onTurn(run),
           () => submitted as z.infer<typeof reviewSchema> | undefined,
+          submitReviewInput,
         );
+        result = submitted ?? pin(reply);
+      }
       if (!result) throw new Fault('Review 未返回 verdict', 409);
       const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
       if (policy2) {
