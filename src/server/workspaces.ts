@@ -970,7 +970,13 @@ export class Workspaces {
       });
       this.store.updateTask(task.id, { tests: [...evidence] });
       // External test runners only expose text for nested process/OS failures.
-      const all = r.stderr + '\n' + r.stdout;
+      // Test titles are not process failures: this repo's own tests are named after the markers,
+      // so any ordinary failure was being classified as an environment block.
+      const output = r.stderr + '\n' + r.stdout;
+      const all = output
+        .split(/\r?\n/)
+        .filter((line) => !/^\s*(?:[✔✖]|(?:not )?ok \d+ - )/.test(line))
+        .join('\n');
       const marker =
         r.code !== 0
           ? /\bError: (?:(?:spawn|listen|kill|open|mkdir|write|unlink|rename|rmdir) [^\r\n]*? ?)?(?:EPERM|EACCES|ENOSPC|EBUSY|EIO)\b|\bError: spawn [^\r\n]+ ENOENT\b|\bcode:\s*['"](?:EPERM|EACCES|ENOSPC|EBUSY|EIO)['"]|(?:^|\n)[ \t]*(?:Reason|Error): Access is denied\.|Permission denied|No space left on device|(?:cannot|unable to) (?:create|lock).*?(?:index\.lock|ref)|command not found|is not recognized as|无法将.*识别为|拒绝访问|UV_HANDLE_CLOSING|uv_async closing/i.exec(
@@ -983,7 +989,7 @@ export class Workspaces {
         const end = all.indexOf('\n', marker.index + marker[0].length);
         const line = all.slice(start + 1, end < 0 ? undefined : end).trim();
         throw new Fault(
-          `宿主正式验证环境阻塞（命中：${redact(line).slice(0, 500)}）：${redact(all).slice(-16000)}`,
+          `宿主正式验证环境阻塞（命中：${redact(line).slice(0, 500)}）：${redact(output).slice(-16000)}`,
         );
       }
       if (r.code !== 0) break;

@@ -252,7 +252,7 @@ async function lifecycle(
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new StructuredModel());
   try {
     await engine.start();
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 1200; i++) {
       const current = store.task(task.id);
       if (current.stage === 'done' || (current.blocked && !store.activeRuns().length)) break;
       await engine.tick();
