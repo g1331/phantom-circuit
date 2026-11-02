@@ -19,6 +19,7 @@ import { EventEmitter } from 'node:events';
 import { redact, bounded } from './redaction.ts';
 export { redact } from './redaction.ts';
 import { aggregateCosts, costForUsage, normalizeUsage, type UsageMode } from './usage.ts';
+import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
   AccountAllowance,
@@ -709,7 +710,12 @@ export class Store {
       typeof inputOrProject === 'string'
         ? { projectId: inputOrProject, runId, phase: phase!, message: message ?? '', evidence }
         : inputOrProject;
-    const parsed = incidentInput.parse(input);
+    // Bound host-made text before validation; the limits below are for storage, not a reason to lose the Incident.
+    const parsed = incidentInput.parse({
+      ...input,
+      message: input.message.slice(0, 16000),
+      ...(input.evidence !== undefined ? { evidence: input.evidence.slice(0, 32000) } : {}),
+    });
     this.project(parsed.projectId);
     if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
       throw new Fault('Incident 任务不属于当前项目', 403);
@@ -1310,6 +1316,14 @@ export class Store {
         : priorityValues[priorityInput.priority];
     if (this.repo(input.repoId).projectId !== input.projectId)
       throw new Fault('任务仓库不属于当前项目');
+    // The branch name needs the complete tuple; a partial one would only fail after the claim.
+    try {
+      engineeringMetadata(input);
+    } catch (error) {
+      throw new Fault(
+        `${(error as Error).message}（changeType、scope、summaryEn 必须同时提供或都不提供）`,
+      );
+    }
     const source = this.get('message', input.sourceMessageId);
     if (
       !source ||

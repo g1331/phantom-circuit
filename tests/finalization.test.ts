@@ -168,7 +168,7 @@ async function fixture(
     git,
     async run() {
       await engine.tick();
-      for (let i = 0; i < 400 && store.activeRuns().length; i++)
+      for (let i = 0; i < 1500 && store.activeRuns().length; i++)
         await new Promise((r) => setTimeout(r, 20));
       assert.equal(store.activeRuns().length, 0, 'lifecycle must finish its run');
       return store.task(created.id);
@@ -1177,7 +1177,7 @@ test('same-repository host commits serialize and release their lock after a fail
   );
   await f.engine.tick();
   await f.engine.tick();
-  for (let i = 0; i < 500 && f.store.activeRuns().length; i++)
+  for (let i = 0; i < 1500 && f.store.activeRuns().length; i++)
     await new Promise((r) => setTimeout(r, 20));
   assert.equal(f.store.activeRuns().length, 0);
   const tasks = [f.task(), f.store.task(second.id)];

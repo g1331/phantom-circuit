@@ -22,6 +22,7 @@ import {
   resolveIncidentInput,
 } from './schemas.ts';
 import { MessageImages } from './images.ts';
+import { engineeringMetadata } from './task-naming.ts';
 import {
   pmContext,
   readProjectRecords,
@@ -119,6 +120,10 @@ const reviseInput = z
         'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference. Omit to keep the current attachments; [] removes them.',
       ),
     guidance: z.string().min(1),
+    // Naming decides the branch, so it can only be completed before a branch exists.
+    changeType: taskInput.shape.changeType,
+    scope: taskInput.shape.scope,
+    summaryEn: taskInput.shape.summaryEn,
   })
   .strict();
 const requestClarificationInput = z
@@ -1085,6 +1090,21 @@ export class Engine {
             const old = this.store.task(input.taskId);
             if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
               throw new Fault('任务不在可修改范围');
+            const naming = {
+              changeType: input.changeType,
+              scope: input.scope,
+              summaryEn: input.summaryEn,
+            };
+            const renaming = Object.values(naming).some((value) => value !== undefined);
+            if (renaming) {
+              if (old.branch)
+                throw new Fault('任务分支已按原命名创建，不能再修改 changeType、scope、summaryEn');
+              try {
+                engineeringMetadata(naming);
+              } catch (error) {
+                throw new Fault((error as Error).message);
+              }
+            }
             // The PM's own Run may be bound to this Task; only delivery work is in the way.
             const working = () =>
               this.store.activeRuns().filter((r) => r.taskId === old.id && r.role !== 'pm');
@@ -1125,6 +1145,7 @@ export class Engine {
               retries: 0,
               documentChanges,
               feedback: [...old.feedback, input.guidance],
+              ...(renaming ? naming : {}),
             });
             try {
               if (revised.issue) await this.github.reviseIssue(revised);

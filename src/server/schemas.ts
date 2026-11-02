@@ -56,9 +56,21 @@ export const taskInput = creationPriorityInput
       .describe(
         'Accepted documents this Task must write into the repository verbatim at their paths; the host checks them before validation. Never attach a document only for reference.',
       ),
-    changeType: z.string().trim().min(1).max(100).optional(),
-    scope: z.string().max(10000).optional(),
-    summaryEn: z.string().max(10000).optional(),
+    changeType: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        'Engineering naming; give changeType, scope and summaryEn together or omit all three. One of feat, fix, refactor, docs, test, chore.',
+      ),
+    scope: z.string().max(10000).optional().describe('Lowercase ASCII kebab-case, at most 40.'),
+    summaryEn: z
+      .string()
+      .max(10000)
+      .optional()
+      .describe('English commit subject, at most 160 characters.'),
     cleanup: z
       .object({
         requested: z.boolean().optional(),

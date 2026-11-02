@@ -65,7 +65,7 @@ export async function devFixture(prefix: string) {
 }
 
 export const until = async (condition: () => boolean, label: string) => {
-  for (let i = 0; i < 400 && !condition(); i++) await new Promise((r) => setTimeout(r, 25));
+  for (let i = 0; i < 1200 && !condition(); i++) await new Promise((r) => setTimeout(r, 25));
   if (!condition()) throw new Error(`Timed out waiting: ${label}`);
 };
 

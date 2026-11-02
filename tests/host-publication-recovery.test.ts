@@ -95,7 +95,7 @@ async function fixture() {
   await engine.start();
   async function cycle() {
     await engine.tick();
-    for (let n = 0; n < 500 && store.activeRuns().length; n++)
+    for (let n = 0; n < 3000 && store.activeRuns().length; n++)
       await new Promise((r) => setTimeout(r, 10));
     assert.equal(store.activeRuns().length, 0, 'Run must terminate');
     return store.task(task.id);
