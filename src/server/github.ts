@@ -143,6 +143,10 @@ export function isTransientGitHubError(error: unknown): boolean {
 }
 export class GitHub {
   private operations = new Map<string, Promise<unknown>>();
+  /** Status field per GitHub Project; the board's options rarely change while the host runs. */
+  private statusFields = new Map<string, { id: string; options: { id: string; name: string }[] }>();
+  /** Last option this host wrote per Project item, so unchanged stages cost no API call. */
+  private writtenStatus = new Map<string, string>();
   constructor(private store: Store) {}
   /**
    * Process boundary for every `gh` invocation. Tests replace this one method with a local fake
@@ -904,12 +908,16 @@ export class GitHub {
     if (!repo.authorized) return;
     const p = this.store.project(repo.projectId);
     if (!p.githubProjectId || !task.projectItemId) return;
-    const data = await this.gql(
-      'query($id:ID!){node(id:$id){... on ProjectV2{fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}',
-      { id: p.githubProjectId },
-    );
-    const field = data.node.fields.nodes.find((f: any) => f.name === 'Status');
-    if (!field) return;
+    let field = this.statusFields.get(p.githubProjectId);
+    if (!field) {
+      const data = await this.gql(
+        'query($id:ID!){node(id:$id){... on ProjectV2{fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}',
+        { id: p.githubProjectId },
+      );
+      field = data.node.fields.nodes.find((f: any) => f.name === 'Status');
+      if (!field) return;
+      this.statusFields.set(p.githubProjectId, field);
+    }
     const names =
       task.stage === 'done'
         ? ['Done', '已完成']
@@ -917,10 +925,20 @@ export class GitHub {
           ? ['Todo', '待办']
           : ['In Progress', 'In progress', '进行中'];
     const option = field.options.find((o: any) => names.includes(o.name));
-    if (!option) throw new Fault('Project Status 选项缺失，请配置 Todo / In Progress / Done');
+    if (!option) {
+      this.statusFields.delete(p.githubProjectId);
+      throw new Fault('Project Status 选项缺失，请配置 Todo / In Progress / Done');
+    }
+    // shortcut: a manual board edit is not re-asserted until the stage changes or the host restarts.
+    if (this.writtenStatus.get(task.projectItemId) === option.id) return;
     await this.gql(
       'mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}',
       { p: p.githubProjectId, i: task.projectItemId, f: field.id, o: option.id },
-    );
+    ).catch((error: unknown) => {
+      // A renamed or recreated field invalidates the cached ids; read it again next time.
+      this.statusFields.delete(p.githubProjectId!);
+      throw error;
+    });
+    this.writtenStatus.set(task.projectItemId, option.id);
   }
 }

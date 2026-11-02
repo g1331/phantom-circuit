@@ -582,3 +582,31 @@ for (const invalid of [
     }
   });
 }
+
+test('a completed and synchronized Task leaves the GitHub polling loop until something blocks it', async () => {
+  const f = fixture();
+  const engine = f.engine();
+  const original = engine.github.pull.bind(engine.github);
+  let pulls = 0;
+  engine.github.pull = async (task) => {
+    pulls++;
+    return original(task);
+  };
+  try {
+    await engine.sync();
+    await engine.sync();
+    assert.equal(f.task().stage, 'done');
+    assert.equal(f.task().blocked, undefined);
+    const settled = { pulls, statuses: f.statuses.length };
+    for (let i = 0; i < 5; i++) await engine.sync();
+    assert.equal(pulls, settled.pulls, 'a settled done Task is not fetched again');
+    assert.equal(f.statuses.length, settled.statuses, 'its Project status is not rewritten');
+    f.patch({ blocked: 'Project unavailable' });
+    await engine.sync();
+    assert.equal(pulls, settled.pulls + 1, 'a blocked done Task is reconciled again');
+    assert.equal(f.task().blocked, undefined);
+  } finally {
+    await engine.stop();
+    f.store.close();
+  }
+});

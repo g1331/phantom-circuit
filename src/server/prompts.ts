@@ -3,23 +3,33 @@ import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
 import type { Role, Task } from '../shared/types.ts';
 export const SKILL_REVISION = '3cca18b368ae95cdbdebbff572ccafa662551015';
 const root = resolve('.agents/skills');
-const names: Record<Role, string[]> = {
-  // Skills are reference context only. Host policy and the current Task decide the workflow;
-  // there is no mandatory standards/spec ceremony hidden in the prompt.
+/**
+ * Skills are an optional method library, not a workflow. Each role sees a catalog (name, purpose,
+ * absolute path) and reads a body only when the Task calls for it; host policy decides the process.
+ * `implement` is omitted: its commit and review steps contradict host-owned finalization.
+ */
+const catalog: Record<Role, string[]> = {
   pm: ['domain-modeling'],
-  dev: ['implement', 'tdd', 'codebase-design', 'diagnosing-bugs', 'resolving-merge-conflicts'],
+  dev: ['tdd', 'codebase-design', 'diagnosing-bugs'],
   review: ['codebase-design'],
 };
-export async function instructions(role: Role) {
+async function skill(name: string) {
+  const file = join(root, name, 'SKILL.md');
+  const body = await readFile(file, 'utf8');
+  const description = /^description:\s*"?(.*?)"?\s*$/m.exec(body)?.[1] ?? '';
+  return { file, body, description };
+}
+export async function instructions(role: Role, options: { conflict?: boolean } = {}) {
   const base = await readFile(resolve(`prompts/${role}.md`), 'utf8');
-  const skills = await Promise.all(
-    names[role].map(async (name) => {
-      const file = join(root, name, 'SKILL.md');
-      return `\n## Skill: ${name}\nSource: ${file}\n${await readFile(file, 'utf8')}`;
-    }),
-  );
-  // Resolve referenced skill files at their absolute source directory. Nothing is installed into a user's global config.
-  return `${base}\n\nSkill baseline: ${SKILL_REVISION}. Referenced files live beside each source above.\n${skills.join('\n')}`;
+  const entries = await Promise.all(catalog[role].map(skill));
+  const list = catalog[role]
+    .map((name, i) => `- ${name} — ${entries[i].description} — ${entries[i].file}`)
+    .join('\n');
+  // A live merge conflict is the one case where the method is always needed, so it is inlined.
+  const merge = options.conflict
+    ? `\n\n## Skill: resolving-merge-conflicts\n${(await skill('resolving-merge-conflicts')).body}`
+    : '';
+  return `${base}\n\n## Skill library (pinned ${SKILL_REVISION})\nOptional methods, not a mandatory workflow. Pick what fits this Task and read the full SKILL.md with your file-reading tool before applying it. The host rules above override any skill step about committing, pushing, pull requests, code review commands or subagents.\n${list}${merge}`;
 }
 export async function domainContext(paths: string[]) {
   const docs: string[] = [];

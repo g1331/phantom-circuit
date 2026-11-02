@@ -239,3 +239,67 @@ test('completed operation cache cannot hide subsequent external Issue edits', as
     f.store.close();
   }
 });
+
+test('Project status sync reads the field once and writes only when the status changes', async () => {
+  const s = new Store(':memory:');
+  const p = s.createProject('Board', '');
+  const repo = s.createRepo({
+    projectId: p.id,
+    name: 'r',
+    path: '.',
+    github: 'example/r',
+    authorized: true,
+    defaultBranch: 'main',
+  });
+  s.put('project', p.id, { ...s.project(p.id), githubProjectId: 'PVT_1' });
+  const m = s.addMessage(p.id, 'user', 'Implement', 'implement');
+  const task = s.createTask({
+    projectId: p.id,
+    repoId: repo.id,
+    sourceMessageId: m.id,
+    title: 'T',
+    spec: 'S',
+    acceptance: ['A'],
+    dependencies: [],
+    kind: 'backend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  s.updateTask(task.id, { projectItemId: 'ITEM_1', stage: 'developing' });
+  const calls: string[] = [];
+  class Board extends GitHub {
+    override async gql<T = any>(query: string, variables: any = {}): Promise<T> {
+      if (query.startsWith('mutation')) {
+        calls.push(`write:${variables.o}`);
+        return {} as T;
+      }
+      calls.push('read');
+      return {
+        node: {
+          fields: {
+            nodes: [
+              {
+                id: 'F',
+                name: 'Status',
+                options: [
+                  { id: 'todo', name: 'Todo' },
+                  { id: 'doing', name: 'In Progress' },
+                  { id: 'done', name: 'Done' },
+                ],
+              },
+            ],
+          },
+        },
+      } as T;
+    }
+  }
+  const gh = new Board(s);
+  await gh.syncStatus(s.task(task.id));
+  await gh.syncStatus(s.task(task.id));
+  s.updateTask(task.id, { stage: 'reviewing' });
+  await gh.syncStatus(s.task(task.id));
+  s.updateTask(task.id, { stage: 'done' });
+  await gh.syncStatus(s.task(task.id));
+  assert.deepEqual(calls, ['read', 'write:doing', 'write:done']);
+  s.close();
+});

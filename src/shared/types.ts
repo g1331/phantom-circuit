@@ -176,6 +176,8 @@ export interface Task {
   projectItemId?: string;
   issueBody?: string;
   completionDeliveryPending?: boolean;
+  /** Set once a done Task's Issue, Project status and delivery are confirmed; ends polling. */
+  completionSyncedAt?: string;
   pr?: number;
   prUrl?: string;
   head?: string;

@@ -59,7 +59,7 @@ Use **Check Codex role configurations** in the Codex model section for an explic
 
 `%USERPROFILE%\.phantom` is the Windows data root (`~/.phantom` on other hosts). It contains `config.json`, `phantom.sqlite`, managed `workspaces/`, image `messages/`, protected credentials, `agents/omp/sessions/` and backups. On first startup the host checks checkout-local data, creates a consistent SQLite backup and adopts authoritative referenced files. Existing dirty or paused worktrees retain explicitly recorded legacy paths; newly created worktrees use the home root. Preserve the old directory and `migration.json` rollback information until you have verified your migrated projects.
 
-On startup, unfinished Runs become interrupted and durable recovery items are reconciled before new claims. Each Project selects automatic continuation (default) or manual continuation; user-paused work remains paused. Incidents preserve redacted failure evidence and trigger one PM assessment, while product Clarifications retain their source intent and answers. Queue sends a later PM turn; Steer addresses the current one. Unknown external outcomes require evidence before retry: OMP currently cannot prove a lost steering acknowledgement through RPC history, so those requests remain uncertain. Do not delete the database as a recovery shortcut.
+On startup, unfinished Runs become interrupted and durable recovery items are reconciled before new claims. Each Project selects automatic continuation (default) or manual continuation; user-paused work remains paused. A host watchdog stops a Run that emits no events for 20 minutes or repeats the same command result five times without file edits; that stop is an ordinary failure with an Incident. Incidents preserve redacted failure evidence and trigger one PM assessment, while product Clarifications retain their source intent and answers. Queue sends a later PM turn; Steer addresses the current one. Unknown external outcomes require evidence before retry: OMP currently cannot prove a lost steering acknowledgement through RPC history, so those requests remain uncertain. Do not delete the database as a recovery shortcut.
 
 The UI supports Chinese and English, system/light/dark appearance, a collapsible project sidebar, board/list Task views, role configuration, recovery actions and resource statistics. Completed PM work processes fold while questions and final answers remain visible. Use the right-side turn rail to preview and jump through conversation history; narrow windows provide a conversation outline instead. PNG/JPEG/WebP attachments have no application-imposed count or file-byte cap; image decoding retains a 25-million-pixel limit, and model backends can reject unsupported inputs. Reported Run tokens, account allowance and estimated cost are separate; absent fields remain unknown, and official account access is not billed using public API prices. Completed worktrees are removed only after verified handoff and safety checks; cleanup failures remain visible maintenance outcomes.
 
@@ -69,7 +69,7 @@ Set the repository's startup command, port and validation commands in its config
 
 ## Engineering skills
 
-The 14 bundled Matt Pocock skills and referenced files are pinned in `.agents/skills/manifest.json`. Project adaptations in `prompts/` use a combined independent review and risk-based escalation; upstream skill files are preserved. The host owns scheduling and external effects. To restore the exact bundled revision:
+The 14 bundled Matt Pocock skills and referenced files are pinned in `.agents/skills/manifest.json`. Project adaptations in `prompts/` use a combined independent review and risk-based escalation; upstream skill files are preserved. Role prompts list the relevant skills as a catalog (name, description, path) that agents read on demand; only merge-conflict guidance is inlined, and only when a conflict exists. The host owns scheduling and external effects. To restore the exact bundled revision:
 
 ```powershell
 npm run skills:install
@@ -91,7 +91,7 @@ Browser checks use a fresh headless Edge profile on Windows and a separate in-me
 
 `npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 
-`npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt, bundled skill context and registered host tools, using a temporary project without repositories or GitHub writes.
+`npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt, skill catalog and registered host tools, using a temporary project without repositories or GitHub writes.
 
 Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner.
 
