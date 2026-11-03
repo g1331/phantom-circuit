@@ -1842,8 +1842,10 @@ export class Engine {
         taskId: task.id,
       });
   }
-  private rework(task: Task, reason: string) {
-    const retries = task.retries + 1;
+  /** `spend: false` is host resynchronisation (a moved base), not a product rework round. */
+  private rework(task: Task, reason: string, spend = true) {
+    const retries = task.retries + (spend ? 1 : 0);
+    const exhausted = spend && retries >= 3;
     this.store.updateTaskControl(
       task.id,
       {
@@ -1856,18 +1858,18 @@ export class Engine {
         tests: task.tests.every((t) => t.exitCode === 0) ? task.tests : [],
         mergeApproval: undefined,
         feedback: [...task.feedback, redact(reason)],
-        control: retries >= 3 ? 'paused' : 'active',
+        control: exhausted ? 'paused' : 'active',
         pausedByUser: false,
-        blocked: retries >= 3 ? '连续三轮未完成，PM 正在重评' : undefined,
+        blocked: exhausted ? '连续三轮未完成，PM 正在重评' : undefined,
         blockedDescriptor:
-          retries >= 3
+          exhausted
             ? diagnosticDescriptor('retries_exhausted', '连续三轮未完成，PM 正在重评')
             : undefined,
       },
-      retries >= 3 ? 'pause' : 'resume',
+      exhausted ? 'pause' : 'resume',
       { source: 'host', reason: 'rework' },
     );
-    if (retries >= 3)
+    if (exhausted)
       void this.track(
         this.incidentForTask(this.store.task(task.id), reason, 'retries').catch((error) =>
           this.store.event('incident', String(error), {
@@ -2475,7 +2477,7 @@ export class Engine {
       return;
     }
     if (pr.head.sha !== task.head || pr.base.sha !== task.base) {
-      this.rework(task, '远端 PR 或基线发生变化，重新同步、验证与评审');
+      this.rework(task, '远端 PR 或基线发生变化，重新同步、验证与评审', false);
       return;
     }
     const checks = await this.github.checks(task);
