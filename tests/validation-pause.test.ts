@@ -48,6 +48,7 @@ test('pausing a Task during host validation is not reported as an environment bl
   } finally {
     await engine.stop();
     store.close();
-    await rm(root, { recursive: true, force: true });
+    // Windows releases a killed validation process's cwd handle shortly after taskkill returns.
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });
