@@ -858,7 +858,12 @@ export async function checkUsability() {
       await page.keyboard.press('Escape');
       await languageMenu.waitFor({ state: 'hidden' });
       assert.equal(await modal.isVisible(), true, 'closing the language menu preserves its dialog');
-      const header = await modal.locator('header').boundingBox();
+      // Relative to the dialog: a centered dialog moves as lazy content loads or its entrance animation ends.
+      const headerOffset = async () => {
+        const [box, frame] = [await modal.locator('header').boundingBox(), await modal.boundingBox()];
+        return box && frame ? box.y - frame.y : undefined;
+      };
+      const header = await headerOffset();
       const firstField = modal.locator('.modal-body .form label').first();
       if (await firstField.count()) {
         const label = await firstField.boundingBox();
@@ -871,9 +876,9 @@ export async function checkUsability() {
       await modal.locator('.modal-body').evaluate((element) => {
         element.scrollTop = element.scrollHeight;
       });
-      const scrolledHeader = await modal.locator('header').boundingBox();
+      const scrolledHeader = await headerOffset();
       assert.ok(
-        header && scrolledHeader && Math.abs(header.y - scrolledHeader.y) < 1,
+        header !== undefined && scrolledHeader !== undefined && Math.abs(header - scrolledHeader) < 1,
         'modal header and close control stay visible while its body scrolls',
       );
       assert.equal(
