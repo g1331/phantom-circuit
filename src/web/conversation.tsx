@@ -97,7 +97,41 @@ export function ConversationFlow({
     () => presentation(messages, activities, runs),
     [messages, activities, runs],
   );
-  return items.map((item) => {
+  const { t } = useLocale();
+  // A liaison turn bound to a Task that answers no user message (a Dev's technical question) is the
+  // team talking internally; it folds into one line so the client conversation stays the user's.
+  const internal = useMemo(() => {
+    const ids = new Set<string>();
+    for (const run of runs)
+      if (
+        run.role === 'pm' &&
+        run.taskId &&
+        !run.incidentId &&
+        messages.some((m) => m.runId === run.id && m.role === 'assistant' && !m.sourceMessageId)
+      )
+        ids.add(run.id);
+    return ids;
+  }, [messages, runs]);
+  const runOf = (item: Item) => (item.kind === 'message' ? item.message.runId : item.runId);
+  const groups: Item[][] = [];
+  for (const item of items) {
+    const inside = internal.has(runOf(item) ?? '');
+    const last = groups.at(-1);
+    if (inside && last && internal.has(runOf(last[0]!) ?? '')) last.push(item);
+    else groups.push([item]);
+  }
+  return groups.map((group) => {
+    const head = group[0]!;
+    if (!internal.has(runOf(head) ?? '')) return render(head);
+    const turns = new Set(group.map(runOf)).size;
+    return (
+      <details key={`internal:${runOf(head)}`} className="team-internal">
+        <summary>{t('chat.internal', { count: turns })}</summary>
+        {group.map(render)}
+      </details>
+    );
+  });
+  function render(item: Item) {
     if (item.kind === 'message') return renderMessage(item.message);
     const first = item.entries[0]!;
     const key = 'activity' in first ? first.activity.id : first.message.id;
@@ -124,7 +158,7 @@ export function ConversationFlow({
         )}
       </ActivityGroup>
     );
-  });
+  }
 }
 
 /** Preserve the visible reading anchor when content above it changes height. */

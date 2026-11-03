@@ -6,6 +6,7 @@ import { Codex } from '../src/server/codex.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { devFixture, hang } from './dev-fixture.ts';
+import { command } from '../src/server/process.ts';
 
 type Handler = NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
 
@@ -66,7 +67,7 @@ async function scenario(prefix: string, oncall: (tool: Handler) => Promise<void>
     store.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   };
-  return { store, task, devPrompts, reviewed: () => reviewed, run, close };
+  return { root, store, task, devPrompts, reviewed: () => reviewed, run, close };
 }
 
 test('on-call retries an environmental validation failure after a passing rerun, without a rework round', async () => {
@@ -114,6 +115,30 @@ test('on-call asks the user in product terms and pauses the task', async () => {
     assert.equal(s.store.task(s.task.id).control, 'paused');
     assert.ok(s.store.list('message').some((m) => m.role === 'assistant' && m.content.includes(question)));
     assert.equal(s.devPrompts.length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('on-call resyncs a trunk failure once the trunk moved, without spending a rework round', async () => {
+  let unchanged: unknown;
+  let root = '';
+  const s = await scenario('phantom-oncall-resync-', async (tool) => {
+    unchanged = await tool('settle', { action: 'resync', diagnosis: 'trunk' }).catch((e) => e);
+    // The trunk fix lands while on-call is diagnosing.
+    const source = join(root, 'source');
+    await writeFile(join(source, 'fix.txt'), 'trunk fix\n');
+    await command('git', ['add', '.'], source);
+    await command('git', ['commit', '-m', 'Trunk fix'], source);
+    await command('git', ['push', 'origin', 'main'], source);
+    await tool('settle', { action: 'resync', diagnosis: '主干上的测试本身失败，主干已修复。' });
+  });
+  root = s.root;
+  try {
+    await s.run(() => s.devPrompts.length >= 2);
+    assert.match(String(unchanged), /主干/, 'resync needs a trunk that moved');
+    assert.equal(s.store.task(s.task.id).retries, 0);
+    assert.match(s.devPrompts[1], /同步主干后重新验证/);
   } finally {
     await s.close();
   }
