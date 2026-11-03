@@ -1852,7 +1852,8 @@ export class Engine {
         retries,
         reviews: [],
         reviewClarificationId: undefined,
-        tests: [],
+        // Passing evidence stays: it is bound to its head and is reused only if the head is unchanged.
+        tests: task.tests.every((t) => t.exitCode === 0) ? task.tests : [],
         mergeApproval: undefined,
         feedback: [...task.feedback, redact(reason)],
         control: retries >= 3 ? 'paused' : 'active',
@@ -1972,7 +1973,16 @@ export class Engine {
         return;
       }
       const previous = this.store.task(task.id);
-      if (previous.tests.length || previous.reviews.length) {
+      const { build, test } = this.store.repo(task.repoId).commands;
+      const commands = [build, test].filter(Boolean);
+      // A rework round that changed nothing (an evidence or wording gap) keeps the head; running the
+      // same checks again only re-rolls flaky ones and sends a clean revision back to the Dev.
+      const reusable =
+        previous.tests.length === commands.length &&
+        previous.tests.every(
+          (t, i) => t.head === head && t.exitCode === 0 && t.command === commands[i],
+        );
+      if (!reusable && (previous.tests.length || previous.reviews.length)) {
         this.store.updateTask(task.id, {
           revisionHistory: [
             ...(previous.revisionHistory ?? []),
@@ -1987,8 +1997,11 @@ export class Engine {
           reviewClarificationId: undefined,
         });
       }
-      await this.workspaces.install(this.store.task(task.id), signal);
-      const tests = await this.workspaces.verify(this.store.task(task.id), signal);
+      let tests = previous.tests;
+      if (!reusable) {
+        await this.workspaces.install(this.store.task(task.id), signal);
+        tests = await this.workspaces.verify(this.store.task(task.id), signal);
+      }
       task = this.store.updateTask(task.id, { tests, head, base });
       const ensureActive = () => {
         const latest = this.store.task(task.id);
