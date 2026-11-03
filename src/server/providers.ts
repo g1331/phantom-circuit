@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { Store, Fault, now, redact } from './store.ts';
-import { command } from './process.ts';
+import { command, systemTool } from './process.ts';
 import {
   officialProvider,
   type AccountAllowance,
@@ -155,10 +155,10 @@ export class Providers {
     try {
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       if (process.platform === 'win32') {
-        const identity = await command('whoami.exe', ['/user', '/fo', 'csv', '/nh']);
+        const identity = await command(systemTool('whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
         const sid = identity.stdout.match(/S-1-\d+(?:-\d+)+/)?.[0];
         if (!sid) throw new Error('No host identity');
-        await command('icacls.exe', [
+        await command(systemTool('icacls.exe'), [
           this.directory,
           '/inheritance:r',
           '/grant:r',

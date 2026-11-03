@@ -19,7 +19,7 @@ import {
 import type { Dirent, Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { command } from './process.ts';
+import { command, systemTool } from './process.ts';
 
 /**
  * The host used to keep its data beside the checkout.  New hosts keep it in the
@@ -943,7 +943,7 @@ export async function protectPrivateDirectory(path: string) {
     return;
   }
   const identity = await command(
-    'whoami.exe',
+    systemTool('whoami.exe'),
     ['/user', '/fo', 'csv', '/nh'],
     undefined,
     undefined,
@@ -953,7 +953,7 @@ export async function protectPrivateDirectory(path: string) {
   const sid = identity.stdout.match(/S-1-\d+(?:-\d+)+/)?.[0];
   if (!sid || identity.code !== 0) throw new Error('无法确认宿主账户 SID');
   const acl = await command(
-    'icacls.exe',
+    systemTool('icacls.exe'),
     [path, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '/T', '/C'],
     undefined,
     undefined,
@@ -962,7 +962,7 @@ export async function protectPrivateDirectory(path: string) {
   );
   if (acl.code !== 0) throw new Error('无法限制秘密与会话目录 ACL');
   const files = await command(
-    'icacls.exe',
+    systemTool('icacls.exe'),
     [path, '/grant:r', `*${sid}:F`, '/T', '/C'],
     undefined,
     undefined,

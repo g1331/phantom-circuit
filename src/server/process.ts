@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { win32 } from 'node:path';
 import { Fault, redact } from './store.ts';
+
+/** A Windows system tool by absolute path: Git's Unix tools on PATH can shadow `whoami.exe`. */
+export const systemTool = (name: string) =>
+  win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name);
 
 export async function terminate(child: ChildProcess) {
   if (!child.pid || child.exitCode !== null) return;
@@ -131,9 +136,20 @@ export async function listeners(): Promise<{ port: number; pid: number; command:
     );
     const parsed: unknown = r.stdout.trim() ? JSON.parse(r.stdout) : [];
     for (const row of Array.isArray(parsed) ? parsed : [parsed])
-      rows.push({ port: Number(row.port), pid: Number(row.pid), command: String(row.command ?? '') });
+      rows.push({
+        port: Number(row.port),
+        pid: Number(row.pid),
+        command: String(row.command ?? ''),
+      });
   } else {
-    const r = await command('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'], undefined, undefined, 30000, false);
+    const r = await command(
+      'lsof',
+      ['-nP', '-iTCP', '-sTCP:LISTEN'],
+      undefined,
+      undefined,
+      30000,
+      false,
+    );
     for (const line of r.stdout.split('\n').slice(1)) {
       const cols = line.trim().split(/\s+/);
       const port = Number(/:(\d+)$/.exec(cols[8] ?? '')?.[1]);
