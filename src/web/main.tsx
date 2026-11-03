@@ -31,7 +31,6 @@ import { Modal } from './ui.tsx';
 import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
 import { TeamRoom } from './team-room.tsx';
 import './style.css';
-import './team-room.css';
 
 function App() {
   const { t, number } = useLocale();
