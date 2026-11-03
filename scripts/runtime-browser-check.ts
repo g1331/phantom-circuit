@@ -1,4 +1,4 @@
-import { choosePreference } from './browser-preferences.ts';
+import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
@@ -367,7 +367,7 @@ export async function checkRuntimeUI() {
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('Software default agent').selectOption('codex');
     await dialog.getByText('Effective agent: Codex', { exact: true }).waitFor();
-    await dialog.locator('summary').filter({ hasText: 'OMP role models' }).click();
+    await settingsPage(dialog, 'models', 'omp');
     await dialog
       .getByLabel('Project PM OMP model', { exact: true })
       .selectOption(JSON.stringify(['fixture', 'omp-fixture']));
@@ -385,10 +385,9 @@ export async function checkRuntimeUI() {
       .click();
     await page.locator('#project-context').waitFor({ state: 'hidden' });
     await dialog.getByLabel('Project agent', { exact: true }).selectOption('omp');
-    await dialog.locator('.role-modes-group > summary').click();
-    await dialog.getByLabel('Project PM assignment mode').selectOption('pinned');
     await dialog.getByLabel('Interruption recovery policy').selectOption('manual');
-    await dialog.locator('summary').filter({ hasText: 'Secondary review model' }).click();
+    await settingsPage(dialog, 'models', 'omp');
+    await dialog.getByLabel('Project PM assignment mode').selectOption('pinned');
     await dialog.getByLabel('Set OMP secondary review model').check();
     await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
@@ -426,7 +425,7 @@ export async function checkRuntimeUI() {
       'runtime edits cannot alter historical run evidence',
     );
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
-    await dialog.locator('.provider-group > summary').click();
+    await settingsPage(dialog, 'providers');
     await dialog.getByLabel('Select provider', { exact: true }).selectOption(provider.id);
     const prices = dialog.getByRole('region', { name: 'Custom model prices' });
     await prices.getByLabel('Priced model ID').fill('existing-token-rate');

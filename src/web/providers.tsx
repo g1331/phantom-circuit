@@ -78,6 +78,13 @@ function ProviderDetail({
   const [error, setError] = useState<string | Error | { key: StaticTranslationKey }>('');
   const [busy, setBusy] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  // Deleting takes a second click: roles that use this provider stop working.
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (!confirming) return;
+    const timer = setTimeout(() => setConfirming(false), 5000);
+    return () => clearTimeout(timer);
+  }, [confirming]);
   const generation = useRef(0);
   const alive = useRef(true);
   const official = provider?.kind === 'codex';
@@ -138,9 +145,10 @@ function ProviderDetail({
   return (
     <div className="provider-detail">
       {official ? (
-        <p> {t('ui.usesTheExistingOfficialCodexLoginNo')} </p>
+        <p className="settings-hint"> {t('ui.usesTheExistingOfficialCodexLoginNo')} </p>
       ) : (
-        <>
+        <section className="settings-block">
+          <h3>{t('provider.connection')}</h3>
           <label>
             {t('ui.providerName')}{' '}
             <input
@@ -171,7 +179,9 @@ function ProviderDetail({
           </label>
           {provider && (
             <div className="provider-secret">
-              <span>API key：{provider.hasKey ? t('ui.saved2') : t('ui.notSaved')}</span>
+              <span className={`key-state ${provider.hasKey ? 'is-saved' : 'is-missing'}`}>
+                API key：{provider.hasKey ? t('ui.saved2') : t('ui.notSaved')}
+              </span>
               {shown ? (
                 <>
                   <output aria-label={t('ui.revealedApiKey')}>{shown}</output>
@@ -195,7 +205,7 @@ function ProviderDetail({
           <div className="provider-actions">
             <button
               type="button"
-              className="secondary-button"
+              className="primary-button"
               disabled={busy || !name.trim() || !baseUrl || (!provider && !replacement)}
               onClick={() =>
                 void run(async () => {
@@ -215,44 +225,51 @@ function ProviderDetail({
             {provider && (
               <button
                 type="button"
-                className="secondary-button"
+                className="danger-button"
                 disabled={busy}
-                onClick={() =>
+                title={t('provider.deleteHint')}
+                onClick={() => {
+                  if (!confirming) return setConfirming(true);
+                  setConfirming(false);
                   void run(async () => {
                     await api(`/providers/${provider.id}`, {}, 'DELETE');
                     setReplacement('');
                     await saved('codex');
-                  })
-                }
+                  });
+                }}
               >
-                {t('ui.deleteProvider')}{' '}
+                {confirming ? t('provider.confirmDelete') : t('ui.deleteProvider')}
               </button>
             )}
           </div>
-        </>
+          {confirming && <p className="settings-hint warning">{t('provider.deleteHint')}</p>}
+        </section>
       )}
       {provider && (
-        <>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                const result = await api<ModelDiscovery>(`/providers/${provider.id}/models`, {});
-                if (alive.current) setDiscovery(result);
-              })
-            }
-          >
-            {busy ? t('ui.working') : t('ui.fetchModels')}
-          </button>
-          <p role="status">
-            {discovery
-              ? discovery.ok
-                ? t('provider.connected', { count: discovery.models.length })
-                : discovery.error
-              : t('ui.modelsHaveNotBeenFetched')}
-          </p>
+        <section className="settings-block">
+          <h3>{t('provider.models')}</h3>
+          <div className="runtime-summary">
+            <p role="status">
+              {discovery
+                ? discovery.ok
+                  ? t('provider.connected', { count: discovery.models.length })
+                  : discovery.error
+                : t('ui.modelsHaveNotBeenFetched')}
+            </p>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  const result = await api<ModelDiscovery>(`/providers/${provider.id}/models`, {});
+                  if (alive.current) setDiscovery(result);
+                })
+              }
+            >
+              {busy ? t('ui.working') : t('ui.fetchModels')}
+            </button>
+          </div>
           {discovery?.ok && (
             <label>
               {t('ui.availableModels')}{' '}
@@ -279,7 +296,7 @@ function ProviderDetail({
               placeholder={t('ui.enterManuallyIfTheUpstreamDoesNot')}
             />
           </label>
-        </>
+        </section>
       )}
       {provider?.kind === 'custom' && <ModelPrices provider={provider} />}
       {error && (

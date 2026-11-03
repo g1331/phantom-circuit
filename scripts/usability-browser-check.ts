@@ -1,4 +1,4 @@
-import { choosePreference } from './browser-preferences.ts';
+import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { checkTyping } from './composer-browser-check.ts';
 import { chromium } from 'playwright';
@@ -849,22 +849,17 @@ export async function checkUsability() {
     async function captureModal(name: string, width: number, theme: string) {
       const modal = page.locator('.modal');
       await modal.waitFor();
-      await modal.locator('.language-control').click();
-      const languageMenu = modal.locator('.preference-menu:popover-open');
-      await languageMenu.waitFor();
-      await languageMenu.locator('[aria-checked="true"]').click();
-      await modal.locator('.language-control').click();
-      await languageMenu.waitFor();
-      await page.keyboard.press('Escape');
-      await languageMenu.waitFor({ state: 'hidden' });
-      assert.equal(await modal.isVisible(), true, 'closing the language menu preserves its dialog');
       // Relative to the dialog: a centered dialog moves as lazy content loads or its entrance animation ends.
       const headerOffset = async () => {
-        const [box, frame] = [await modal.locator('header').boundingBox(), await modal.boundingBox()];
+        const [box, frame] = [
+          await modal.locator('header').boundingBox(),
+          await modal.boundingBox(),
+        ];
         return box && frame ? box.y - frame.y : undefined;
       };
       const header = await headerOffset();
-      const firstField = modal.locator('.modal-body .form label').first();
+      // Settings start with their page list; other dialogs with their first field.
+      const firstField = modal.locator('.modal-body :is(.settings-nav, .form label)').first();
       if (await firstField.count()) {
         const label = await firstField.boundingBox();
         const title = await modal.locator('header h2').boundingBox();
@@ -878,7 +873,9 @@ export async function checkUsability() {
       });
       const scrolledHeader = await headerOffset();
       assert.ok(
-        header !== undefined && scrolledHeader !== undefined && Math.abs(header - scrolledHeader) < 1,
+        header !== undefined &&
+          scrolledHeader !== undefined &&
+          Math.abs(header - scrolledHeader) < 1,
         'modal header and close control stay visible while its body scrolls',
       );
       assert.equal(
@@ -935,7 +932,7 @@ export async function checkUsability() {
         await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
         await captureModal('global-settings', width, theme);
         await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
-        await page.locator('.provider-group > summary').click();
+        await settingsPage(page.locator('.modal'), 'providers');
         await page.getByLabel('Select provider', { exact: true }).selectOption('ui-provider');
         await captureModal('provider-settings', width, theme);
       }

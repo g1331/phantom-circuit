@@ -11,6 +11,7 @@ import type {
 } from '../shared/types.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
+import { unset } from './ui.tsx';
 
 const tokenFields = {
   inputTokens: 'usage.input',
@@ -126,6 +127,8 @@ function UsageValues({
 export function RunRecord({ run, cost }: { run: Run; cost?: CostEstimate }) {
   const { t, date, duration, number } = useLocale();
   const identity = run.modelIdentity ?? run.model;
+  const shown = (value?: string) =>
+    value === undefined ? t('usage.unknown') : unset(value) ? t('runtime.unconfigured') : value;
   return (
     <details className="run-record">
       <summary>{t('usage.run')}</summary>
@@ -136,15 +139,15 @@ export function RunRecord({ run, cost }: { run: Run; cost?: CostEstimate }) {
         </div>
         <div>
           <dt>{t('ui.model')}</dt>
-          <dd>{identity?.model ?? run.profileConfig?.model ?? t('usage.unknown')}</dd>
+          <dd>{shown(identity?.model ?? run.profileConfig?.model)}</dd>
         </div>
         <div>
           <dt>{t('runtime.provider')}</dt>
-          <dd>{identity?.providerId ?? run.provider?.id ?? t('usage.unknown')}</dd>
+          <dd>{shown(identity?.providerId ?? run.provider?.id)}</dd>
         </div>
         <div>
           <dt>{t('ui.reasoningEffort')}</dt>
-          <dd>{identity?.effort ?? run.profileConfig?.effort ?? t('usage.unknown')}</dd>
+          <dd>{shown(identity?.effort ?? run.profileConfig?.effort)}</dd>
         </div>
         <div>
           <dt>{t('usage.version')}</dt>

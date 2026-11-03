@@ -4,7 +4,7 @@ import { TaskRuntimeBadges } from './project-actions.tsx';
 import { RunRecord } from './usage-panel.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { isRunning } from './sidebar.tsx';
-import { Empty } from './ui.tsx';
+import { Empty, unset } from './ui.tsx';
 
 type Run = Snapshot['runs'][number];
 
@@ -39,22 +39,7 @@ export function RunList({ state, runs, tasks }: { state: Snapshot; runs: Run[]; 
             <span className={`status-dot ${isRunning(r.status) ? 'live' : ''}`} />
             <div>
               <strong>
-                {r.role.toUpperCase()}{' '}
-                <span>
-                  {r.agentKind === 'omp'
-                    ? (r.modelIdentity?.providerId ??
-                      r.profileConfig?.providerId ??
-                      t('usage.unknown'))
-                    : r.provider?.kind === 'custom'
-                      ? r.provider.name
-                      : t('ui.officialCodexLogin')}{' '}
-                  ·{' '}
-                  {r.modelIdentity?.model ??
-                    r.model?.model ??
-                    r.profileConfig?.model ??
-                    t('ui.modelNotRecorded')}{' '}
-                  / {r.profileConfig?.effort ?? t('ui.unknownEffort')}
-                </span>
+                {t(`team.role.${r.role}`)} <RunModel run={r} />
               </strong>
               <p>
                 {tasks.find((task) => task.id === r.taskId)?.title ??
@@ -71,5 +56,24 @@ export function RunList({ state, runs, tasks }: { state: Snapshot; runs: Run[]; 
           </div>
         ))}
     </div>
+  );
+}
+
+/** Which model ran: a Run that started before anyone configured one says so plainly. */
+function RunModel({ run: r }: { run: Run }) {
+  const { t } = useLocale();
+  const model = r.modelIdentity?.model ?? r.model?.model ?? r.profileConfig?.model;
+  if (model && unset(model)) return <span>{t('runtime.unconfigured')}</span>;
+  const provider =
+    r.agentKind === 'omp'
+      ? (r.modelIdentity?.providerId ?? r.profileConfig?.providerId ?? t('usage.unknown'))
+      : r.provider?.kind === 'custom'
+        ? r.provider.name
+        : t('ui.officialCodexLogin');
+  return (
+    <span>
+      {provider} · {model ?? t('ui.modelNotRecorded')} /{' '}
+      {r.profileConfig?.effort ?? t('ui.unknownEffort')}
+    </span>
   );
 }

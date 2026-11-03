@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AgentKind, Profile, ProfileName, Project, Settings } from '../shared/types.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
+import { unset } from './ui.tsx';
 
 export type RuntimeConfig = Pick<
   Project,
@@ -15,6 +16,7 @@ export const profileNames: ProfileName[] = [
   'fullstack',
   'complex',
 ];
+export const agentName = (agent: AgentKind) => (agent === 'omp' ? 'OMP' : 'Codex');
 type AgentModel = { id: string; provider?: string; reasoningEfforts?: string[] };
 
 export function RolePicker({
@@ -31,27 +33,31 @@ export function RolePicker({
   const { t } = useLocale();
   return (
     <div className="role-picker" role="group" aria-label={t('runtime.roleSelection')}>
-      {profileNames.map((role) => (
-        <button
-          key={role}
-          type="button"
-          aria-pressed={selected === role}
-          onClick={() => select(role)}
-        >
-          <strong>{t(`profile.${role}`)}</strong>
-          <span title={profiles?.[role]?.model}>
-            {profiles?.[role]?.model || t('usage.unknown')}
-          </span>
-          {modes && (
-            <small>{t(modes[role] === 'inherit' ? 'runtime.inherited' : 'runtime.pinned')}</small>
-          )}
-        </button>
-      ))}
+      {profileNames.map((role) => {
+        const model = profiles?.[role]?.model;
+        return (
+          <button
+            key={role}
+            type="button"
+            aria-pressed={selected === role}
+            onClick={() => select(role)}
+          >
+            <strong>{t(`profile.${role}`)}</strong>
+            <span title={model} className={unset(model) ? 'is-unset' : undefined}>
+              {unset(model) ? t('runtime.unconfigured') : model}
+            </span>
+            {modes && (
+              <small>{t(modes[role] === 'inherit' ? 'runtime.inherited' : 'runtime.pinned')}</small>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-export function RuntimeFields({
+/** Which agent runs the team, and how interrupted work comes back. */
+export function AgentFields({
   settings,
   change,
   project,
@@ -71,12 +77,8 @@ export function RuntimeFields({
       : (settings.defaultAgent ?? 'omp');
   const [probe, setProbe] = useState<{ agent: AgentKind; ok: boolean; error?: string }>();
   const [checking, setChecking] = useState(false);
-  const ompDetails = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    if (ompDetails.current) ompDetails.current.open = agent === 'omp';
-  }, [agent]);
   return (
-    <section className="runtime-settings" aria-label={t('runtime.title')}>
+    <section className="runtime-settings settings-block" aria-label={t('runtime.title')}>
       <h3>{t('runtime.title')}</h3>
       <div className="runtime-primary">
         {project ? (
@@ -139,7 +141,7 @@ export function RuntimeFields({
         )}
       </div>
       <div className="runtime-summary">
-        <p role="status">{t('runtime.effective', { agent: agent === 'omp' ? 'OMP' : 'Codex' })}</p>
+        <p role="status">{t('runtime.effective', { agent: agentName(agent) })}</p>
         <button
           className="secondary-button"
           type="button"
@@ -161,127 +163,131 @@ export function RuntimeFields({
               .finally(() => setChecking(false));
           }}
         >
-          {t('runtime.probe')}
+          {checking ? t('settings.checking') : t('runtime.probe')}
         </button>
       </div>
       {probe?.agent === agent && (
-        <p role={probe.ok ? 'status' : 'alert'}>
+        <p role={probe.ok ? 'status' : 'alert'} className={probe.ok ? 'check-ok' : 'check-failed'}>
           {t(probe.ok ? 'runtime.probeOk' : 'runtime.unavailable')} {probe.error}
         </p>
       )}
-      {project && (
-        <details className="settings-group role-modes-group">
-          <summary title={t('runtime.assignmentModesHint')}>{t('runtime.assignmentModes')}</summary>
-          <div className="role-modes">
-            {profileNames.map((role) => (
-              <label key={role}>
-                {t('runtime.mode', { role: t(`profile.${role}`) })}
-                <select
-                  value={runtime.profileModes?.[role] ?? 'pinned'}
-                  onChange={(event) =>
-                    changeRuntime({
-                      ...runtime,
-                      profileModes: {
-                        ...Object.fromEntries(
-                          profileNames.map((name) => [
-                            name,
-                            runtime.profileModes?.[name] ?? 'pinned',
-                          ]),
-                        ),
-                        [role]: event.target.value,
-                      } as NonNullable<Project['profileModes']>,
-                    })
-                  }
-                >
-                  <option value="inherit">{t('runtime.inherited')}</option>
-                  <option value="pinned">{t('runtime.pinned')}</option>
-                </select>
-              </label>
-            ))}
-          </div>
-        </details>
-      )}
-      <details className="settings-group" ref={ompDetails}>
-        <summary>{t('runtime.ompProfiles')}</summary>
-        <OmpProfiles
-          profiles={settings.ompProfiles}
-          modes={project ? runtime.profileModes : undefined}
-          change={(profiles) => change({ ...settings, ompProfiles: profiles })}
-        />
-      </details>
-      <details className="settings-group">
-        <summary>{t('runtime.secondary')}</summary>
-        <p className="muted">{t('runtime.secondaryHint')}</p>
-        {(['omp', 'codex'] as const).map((kind) => {
-          const profile =
-            settings.secondaryReviewProfiles?.[kind] ??
-            (kind === agent ? settings.secondaryReviewProfile : undefined);
-          const update = (value?: Profile) => {
-            const profiles = { ...settings.secondaryReviewProfiles };
-            if (value) profiles[kind] = value;
-            else delete profiles[kind];
-            change({
-              ...settings,
-              secondaryReviewProfile: undefined,
-              secondaryReviewProfiles: profiles,
-            });
-          };
-          return (
-            <fieldset className="assignment" key={kind}>
-              <legend>
-                {kind === 'omp' ? 'OMP' : 'Codex'} · {t('runtime.secondary')}
-              </legend>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={!!profile}
-                  onChange={(event) =>
-                    update(
-                      event.target.checked
-                        ? {
-                            ...((kind === 'omp'
-                              ? settings.ompProfiles?.review
-                              : settings.profiles.review) ?? {
-                              providerId: '',
-                              model: '',
-                              effort: '',
-                            }),
-                          }
-                        : undefined,
-                    )
-                  }
-                />
-                {t('runtime.secondaryFor', { agent: kind === 'omp' ? 'OMP' : 'Codex' })}
-              </label>
-              {profile && (
-                <div className="assignment-fields">
-                  {(['providerId', 'model', 'effort'] as const).map((field) => (
-                    <label key={field}>
-                      {t(
-                        field === 'providerId'
-                          ? 'runtime.provider'
-                          : field === 'model'
-                            ? 'ui.model'
-                            : 'ui.reasoningEffort',
-                      )}
-                      <input
-                        aria-label={`${kind} ${t('runtime.secondary')} ${t(field === 'providerId' ? 'runtime.provider' : field === 'model' ? 'ui.model' : 'ui.reasoningEffort')}`}
-                        value={profile[field]}
-                        onChange={(event) => update({ ...profile, [field]: event.target.value })}
-                      />
-                    </label>
-                  ))}
-                </div>
-              )}
-            </fieldset>
-          );
-        })}
-      </details>
     </section>
   );
 }
 
-function OmpProfiles({
+/** A project role either follows the global assignment or keeps its own. */
+export function RoleModes({
+  runtime,
+  changeRuntime,
+}: {
+  runtime: RuntimeConfig;
+  changeRuntime: (runtime: RuntimeConfig) => void;
+}) {
+  const { t } = useLocale();
+  return (
+    <section className="settings-block role-modes-group">
+      <h3>{t('runtime.assignmentModes')}</h3>
+      <p className="settings-hint">{t('runtime.assignmentModesHint')}</p>
+      <div className="role-modes">
+        {profileNames.map((role) => (
+          <label key={role}>
+            {t('runtime.mode', { role: t(`profile.${role}`) })}
+            <select
+              value={runtime.profileModes?.[role] ?? 'pinned'}
+              onChange={(event) =>
+                changeRuntime({
+                  ...runtime,
+                  profileModes: {
+                    ...Object.fromEntries(
+                      profileNames.map((name) => [name, runtime.profileModes?.[name] ?? 'pinned']),
+                    ),
+                    [role]: event.target.value,
+                  } as NonNullable<Project['profileModes']>,
+                })
+              }
+            >
+              <option value="inherit">{t('runtime.inherited')}</option>
+              <option value="pinned">{t('runtime.pinned')}</option>
+            </select>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** The second, different-model review for one agent. */
+export function SecondaryReview({
+  kind,
+  agent,
+  settings,
+  change,
+}: {
+  kind: AgentKind;
+  agent: AgentKind;
+  settings: Settings;
+  change: (settings: Settings) => void;
+}) {
+  const { t } = useLocale();
+  const profile =
+    settings.secondaryReviewProfiles?.[kind] ??
+    (kind === agent ? settings.secondaryReviewProfile : undefined);
+  const update = (value?: Profile) => {
+    const profiles = { ...settings.secondaryReviewProfiles };
+    if (value) profiles[kind] = value;
+    else delete profiles[kind];
+    change({ ...settings, secondaryReviewProfile: undefined, secondaryReviewProfiles: profiles });
+  };
+  const label = (field: keyof Profile) =>
+    t(
+      field === 'providerId'
+        ? 'runtime.provider'
+        : field === 'model'
+          ? 'ui.model'
+          : 'ui.reasoningEffort',
+    );
+  return (
+    <section className="settings-block">
+      <h3>{t('runtime.secondary')}</h3>
+      <p className="settings-hint">{t('runtime.secondaryHint')}</p>
+      <label className="checkbox-label">
+        <input
+          type="checkbox"
+          checked={!!profile}
+          onChange={(event) =>
+            update(
+              event.target.checked
+                ? {
+                    ...((kind === 'omp'
+                      ? settings.ompProfiles?.review
+                      : settings.profiles.review) ?? { providerId: '', model: '', effort: '' }),
+                  }
+                : undefined,
+            )
+          }
+        />
+        {t('runtime.secondaryFor', { agent: agentName(kind) })}
+      </label>
+      {profile && (
+        <div className="assignment-fields">
+          {(['providerId', 'model', 'effort'] as const).map((field) => (
+            <label key={field}>
+              {label(field)}
+              <input
+                aria-label={`${kind} ${t('runtime.secondary')} ${label(field)}`}
+                value={unset(profile[field]) ? '' : profile[field]}
+                placeholder={t('runtime.unconfigured')}
+                onChange={(event) => update({ ...profile, [field]: event.target.value })}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function OmpProfiles({
   profiles,
   modes,
   change,
@@ -326,90 +332,92 @@ function OmpProfiles({
   const selected = discovery?.models.find(
     (model) => model.id === profile?.model && (model.provider ?? '') === profile?.providerId,
   );
+  const roleName = t(`profile.${role}`);
   return (
     <div className="omp-profiles">
       <RolePicker selected={role} select={setRole} profiles={profiles} modes={modes} />
-      <button
-        className="text-button"
-        type="button"
-        onClick={() => setRevision((value) => value + 1)}
-      >
-        {t('runtime.refreshModels')}
-      </button>
       {discovery && !discovery.available && (
-        <p role="alert">
+        <p role="alert" className="check-failed">
           {t('runtime.unavailable')} {discovery.error}
         </p>
       )}
-      <div className="role-panel">
-        <fieldset className="assignment" key={role}>
-          <legend>OMP · {t(`profile.${role}`)}</legend>
-          <div className="assignment-fields">
-            <label>
-              {t('runtime.model', { role: t(`profile.${role}`) })}
+      <fieldset className="assignment" key={role}>
+        <legend>{roleName}</legend>
+        <div className="assignment-fields two">
+          <label>
+            {t('runtime.model', { role: roleName })}
+            <select
+              value={JSON.stringify([profile?.providerId ?? '', profile?.model ?? ''])}
+              aria-label={t('runtime.model', { role: roleName })}
+              onChange={(event) => {
+                const [providerId, model] = JSON.parse(event.target.value) as string[];
+                const item = discovery?.models.find(
+                  (item) => item.id === model && (item.provider ?? '') === providerId,
+                );
+                update(role, {
+                  providerId,
+                  model,
+                  effort: item?.reasoningEfforts?.[0] ?? profile?.effort ?? '',
+                });
+              }}
+            >
+              {!selected && (
+                <option value={JSON.stringify([profile?.providerId ?? '', profile?.model ?? ''])}>
+                  {unset(profile?.model) ? t('runtime.unconfigured') : profile!.model}
+                </option>
+              )}
+              {discovery?.models.map((model) => (
+                <option
+                  key={`${model.provider}/${model.id}`}
+                  value={JSON.stringify([model.provider ?? '', model.id])}
+                >
+                  {model.provider} / {model.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('runtime.effort', { role: roleName })}
+            {selected?.reasoningEfforts?.length ? (
               <select
-                value={JSON.stringify([profile?.providerId ?? '', profile?.model ?? ''])}
-                aria-label={t('runtime.model', { role: t(`profile.${role}`) })}
-                onChange={(event) => {
-                  const [providerId, model] = JSON.parse(event.target.value) as string[];
-                  const item = discovery?.models.find(
-                    (item) => item.id === model && (item.provider ?? '') === providerId,
-                  );
-                  update(role, {
-                    providerId,
-                    model,
-                    effort: item?.reasoningEfforts?.[0] ?? profile?.effort ?? '',
-                  });
-                }}
+                value={profile?.effort ?? ''}
+                aria-label={t('runtime.effort', { role: roleName })}
+                onChange={(event) => update(role, { ...profile!, effort: event.target.value })}
               >
-                {!selected && (
-                  <option value={JSON.stringify([profile?.providerId ?? '', profile?.model ?? ''])}>
-                    {profile?.model || t('usage.unknown')}
+                {!selected.reasoningEfforts.includes(profile?.effort ?? '') && (
+                  <option value={profile?.effort ?? ''}>
+                    {unset(profile?.effort) ? t('runtime.unconfigured') : profile!.effort}
                   </option>
                 )}
-                {discovery?.models.map((model) => (
-                  <option
-                    key={`${model.provider}/${model.id}`}
-                    value={JSON.stringify([model.provider ?? '', model.id])}
-                  >
-                    {model.provider} / {model.id}
-                  </option>
+                {selected.reasoningEfforts.map((effort) => (
+                  <option key={effort}>{effort}</option>
                 ))}
               </select>
-            </label>
-            <label>
-              {t('runtime.effort', { role: t(`profile.${role}`) })}
-              {selected?.reasoningEfforts?.length ? (
-                <select
-                  value={profile?.effort ?? ''}
-                  aria-label={t('runtime.effort', { role: t(`profile.${role}`) })}
-                  onChange={(event) => update(role, { ...profile!, effort: event.target.value })}
-                >
-                  {!selected.reasoningEfforts.includes(profile?.effort ?? '') && (
-                    <option value={profile?.effort ?? ''}>
-                      {profile?.effort || t('usage.unknown')}
-                    </option>
-                  )}
-                  {selected.reasoningEfforts.map((effort) => (
-                    <option key={effort}>{effort}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={profile?.effort ?? ''}
-                  aria-label={t('runtime.effort', { role: t(`profile.${role}`) })}
-                  onChange={(event) =>
-                    update(role, {
-                      ...(profile ?? { providerId: '', model: '' }),
-                      effort: event.target.value,
-                    })
-                  }
-                />
-              )}
-            </label>
-          </div>
-        </fieldset>
-      </div>
+            ) : (
+              <input
+                value={unset(profile?.effort) ? '' : profile!.effort}
+                placeholder={t('runtime.unconfigured')}
+                aria-label={t('runtime.effort', { role: roleName })}
+                onChange={(event) =>
+                  update(role, {
+                    ...(profile ?? { providerId: '', model: '' }),
+                    effort: event.target.value,
+                  })
+                }
+              />
+            )}
+          </label>
+        </div>
+        <div className="assignment-actions">
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => setRevision((value) => value + 1)}
+          >
+            {t('runtime.refreshModels')}
+          </button>
+        </div>
+      </fieldset>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
@@ -14,6 +15,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     await page.locator('.context-trigger').click();
     await page.locator('#project-context').getByRole('button', { name: '项目模型设置' }).click();
     await page.locator('#project-context').waitFor({ state: 'hidden' });
+    await settingsPage(page.locator('.modal'), 'models', 'codex');
   }
   const project = store.list('project')[0];
   const profiles = structuredClone(project.profiles);
@@ -32,11 +34,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   });
   const original = project.profiles.pm.effort;
   await page.getByRole('button', { name: '运行设置', exact: true }).click();
-  const codexGroup = page.locator('details.settings-group').filter({
-    has: page.locator('summary').filter({ hasText: 'Codex 角色模型' }),
-  });
-  if (!(await codexGroup.evaluate((element: HTMLDetailsElement) => element.open)))
-    await codexGroup.locator('summary').click();
+  await settingsPage(page.locator('.modal'), 'models', 'codex');
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor();
@@ -86,7 +84,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   try {
     // Exercise creation through the same authenticated browser interface as Provider management.
     await page.getByRole('button', { name: '运行设置', exact: true }).click();
-    await page.locator('.provider-group > summary').click();
+    await settingsPage(page.locator('.modal'), 'providers');
     const region = page.getByRole('region', { name: 'Provider 管理' });
     await region.getByRole('button', { name: '新增 Provider' }).click();
     await region.getByLabel('Provider 名称', { exact: true }).fill('Profile browser upstream');

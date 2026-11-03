@@ -1,6 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
-import { useLocale, LanguageControl } from './locale/provider.tsx';
+import { useLocale } from './locale/provider.tsx';
+
+/** The host's placeholder for a model nobody has configured yet; it is never shown raw. */
+export const unset = (value?: string) => !value || value === 'config-required';
 
 export function Metric({
   value,
@@ -79,7 +82,6 @@ export function Modal({
             {subtitle && <p>{subtitle}</p>}
           </div>
           <div className="modal-toolbar">
-            <LanguageControl />
             <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
               <X size={19} />
             </button>

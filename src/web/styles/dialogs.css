@@ -94,9 +94,6 @@
   grid-template-columns: 1fr 1fr;
   gap: var(--section-gap);
 }
-.profile-table {
-  border-top: 1px solid var(--line);
-}
 .assignment-form {
   border: 0;
   padding: 0;
@@ -152,127 +149,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.profile-row {
-  display: grid;
-  grid-template-columns: 100px minmax(0, 1fr) 88px;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-  align-items: center;
-}
-.profile-row label {
-  font-size: 11px;
-}
-.profile-row input,
-.profile-row select {
-  padding: 8px;
-  font-size: 11px;
-}
-.health-section {
-  padding: 10px 0;
-}
-.health-result {
-  font-size: 11px;
-  line-height: 1.9;
-  color: var(--muted);
-  padding-top: 14px;
-  overflow-wrap: anywhere;
-}
-@media (max-width: 660px) {
-  .profile-row {
-    grid-template-columns: 68px minmax(0, 1fr) 68px;
-    gap: 6px;
-  }
-  .profile-row input,
-  .profile-row select {
-    font-size: 11px;
-    padding: 8px 4px;
-  }
-  .form-columns {
-    gap: 12px;
-  }
-}
-.provider-settings {
-  margin: 0;
-  display: grid;
-  gap: var(--section-gap);
-  min-width: 0;
-}
-.provider-detail {
-  display: grid;
-  gap: var(--section-gap);
-  min-width: 0;
-}
-.provider-toolbar,
-.provider-actions {
-  display: flex;
-  gap: 12px;
-  align-items: end;
-  flex-wrap: wrap;
-}
-.provider-toolbar label {
-  flex: 1;
-  min-width: 0;
-}
-.provider-secret {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--field-gap);
-  min-width: 0;
-}
-.provider-secret output {
-  flex-basis: 100%;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  font-family: monospace;
-}
-.provider-detail input,
-.provider-toolbar select,
-.provider-detail select {
-  width: 100%;
-  min-width: 0;
-}
-
-.provider-detail > button,
-.model-prices > button {
-  justify-self: start;
-}
-.provider-detail > p {
-  font-size: 12px;
-  line-height: 1.6;
-}
-.runtime-settings,
-.omp-profiles,
-.model-prices {
-  display: grid;
-  gap: var(--section-gap);
-  min-width: 0;
-}
-.runtime-settings {
-  padding: 0;
-}
-.runtime-settings p,
-.usage-panel p,
-.allowance-panel p {
-  font-size: 12px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-.role-modes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.runtime-settings input[type='checkbox'] {
-  width: auto;
-}
-@media (max-width: 600px) {
-  .role-modes,
-  .model-prices .form-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 .modal header {
   align-items: flex-start;
 }
@@ -286,32 +162,292 @@
   gap: 10px;
   flex-shrink: 0;
 }
-.modal-toolbar .language-control {
+
+/* Settings: a page list beside the page, a fixed frame so switching pages never resizes it. */
+.modal:has(.settings-layout) {
+  width: min(940px, calc(100vw - 32px));
+  height: min(800px, 90dvh);
+}
+.modal:has(.settings-layout) .modal-content {
+  height: 100%;
+}
+.modal-body:has(> .settings-layout) {
+  flex: 1;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: 32px;
+  min-height: 100%;
+}
+.settings-layout [hidden] {
+  display: none !important;
+}
+.settings-nav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: grid;
+  gap: 2px;
+  padding: var(--section-gap) 0;
+}
+.settings-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--control-height);
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+}
+.settings-nav button:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+.settings-nav button[aria-selected='true'] {
+  background: var(--accent-bg);
+  color: var(--text);
+  font-weight: 600;
+}
+.settings-pages {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: var(--section-gap);
+}
+.settings-form {
+  flex: 1;
+  gap: 0;
+}
+.settings-page {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+}
+.settings-block {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+}
+.settings-page > .settings-block:first-child,
+.settings-page > .provider-settings > .provider-toolbar + * > .settings-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.settings-block > h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-hint {
+  margin-top: -6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+.settings-hint.warning {
+  margin-top: 0;
+  color: var(--warning);
+}
+.settings-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+  padding: 14px 0 var(--dialog-padding);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.settings-footer-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.settings-footer-status .settings-hint {
   margin: 0;
 }
-.modal-toolbar .language-control .control-label {
-  display: none;
+.settings-footer .primary-button {
+  min-width: 120px;
 }
-.modal-toolbar .language-control .choice-value {
-  width: 114px;
-  padding: 7px 8px;
+.check-ok {
+  color: var(--success);
 }
-.runtime-primary {
+.check-failed {
+  color: var(--danger);
+}
+
+.health-result {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Which agent's role models are shown; the one in use is marked. */
+.agent-switch {
+  display: inline-flex;
+  gap: 3px;
+  width: fit-content;
+  margin-bottom: 20px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.agent-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+.agent-switch button[aria-pressed='true'] {
+  background: var(--accent-bg);
+  color: var(--text);
+  font-weight: 600;
+}
+.agent-switch small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--success);
+}
+.agent-models > .settings-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.provider-settings {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  margin: 0;
+}
+.provider-detail {
+  display: grid;
+  min-width: 0;
+}
+.provider-detail > .settings-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.provider-toolbar,
+.provider-actions {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.provider-toolbar label {
+  flex: 1;
+  min-width: 0;
+}
+.provider-actions .danger-button {
+  margin-left: auto;
+}
+.provider-secret {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--field-gap) 12px;
+  min-width: 0;
+}
+.provider-secret output {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 12px;
+}
+.provider-secret small {
+  font-size: 11px;
+  color: var(--faint);
+}
+.key-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.key-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 100%;
+  background: var(--faint);
+}
+.key-state.is-saved::before {
+  background: var(--success);
+}
+.key-state.is-missing::before {
+  background: var(--warning);
+}
+.provider-detail input,
+.provider-toolbar select,
+.provider-detail select {
+  width: 100%;
+  min-width: 0;
+}
+.provider-detail p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.model-prices > button {
+  justify-self: start;
+}
+
+.runtime-settings,
+.omp-profiles,
+.model-prices {
+  display: grid;
+  gap: var(--section-gap);
+  min-width: 0;
+}
+.runtime-settings p,
+.usage-panel p,
+.allowance-panel p {
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.runtime-primary,
+.role-modes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--section-gap);
-}
-.runtime-settings {
-  border-bottom: 0;
-  padding-bottom: 0;
 }
 .runtime-primary label {
   display: grid;
   gap: 8px;
   min-width: 0;
 }
-.runtime-primary select {
+.runtime-primary select,
+.role-modes select {
   width: 100%;
+}
+.runtime-settings input[type='checkbox'] {
+  width: auto;
 }
 .runtime-summary {
   display: grid;
@@ -321,25 +457,16 @@
 }
 .runtime-summary p {
   margin: 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 .runtime-summary button {
   grid-column: 2;
   grid-row: 1;
   width: auto;
 }
-.settings-group {
-  border-top: 1px solid var(--line);
-  padding: var(--section-gap) 0;
-  min-width: 0;
-}
-.settings-group > summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-.settings-group[open] > summary {
-  margin-bottom: 16px;
+.assignment-fields.two {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
 }
 .role-picker {
   display: grid;
@@ -358,6 +485,9 @@
   color: var(--muted);
   text-align: left;
 }
+.role-picker button:hover {
+  background: var(--raised);
+}
 .role-picker button[aria-pressed='true'] {
   border-color: var(--accent);
   background: var(--accent-bg);
@@ -373,26 +503,58 @@
   white-space: nowrap;
   font-size: 11px;
 }
+.role-picker .is-unset {
+  color: var(--warning);
+}
 .role-picker small {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--faint);
+}
+.omp-profiles .assignment,
+.role-panel .assignment {
+  padding-bottom: 0;
 }
 .role-panel .assignment {
   margin-top: var(--section-gap);
 }
 @media (max-width: 660px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .settings-nav {
+    z-index: 2;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .settings-nav button {
+    justify-content: center;
+    padding: 7px 6px;
+    font-size: 12px;
+  }
+  .settings-nav button svg {
+    display: none;
+  }
   .runtime-primary,
-  .runtime-summary {
+  .role-modes,
+  .runtime-summary,
+  .model-prices .form-columns,
+  .assignment-fields.two {
     grid-template-columns: minmax(0, 1fr);
   }
   .runtime-summary button {
     grid-column: 1;
     grid-row: auto;
-  }
-  .runtime-summary button {
     justify-self: start;
   }
   .role-picker {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+.provider-detail > .settings-hint {
+  margin: 0 0 20px;
 }
