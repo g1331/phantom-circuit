@@ -1,0 +1,86 @@
+.run-row {
+  display: flex;
+  gap: 12px;
+  padding: var(--surface-padding) var(--page-gutter);
+  border-bottom: 1px solid var(--line);
+  align-items: flex-start;
+}
+.run-row > .status-dot {
+  margin-top: 5px;
+}
+.run-row > div:first-of-type {
+  flex: 1;
+  min-width: 0;
+}
+.run-row strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.run-row strong span {
+  font-size: 11px;
+  color: var(--faint);
+  font-weight: 400;
+  margin-left: 10px;
+}
+.run-row p {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+.run-row em {
+  display: block;
+  color: var(--danger);
+  font-style: normal;
+}
+.run-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.run-meta time {
+  font-size: 11px;
+  color: var(--faint);
+}
+@media (max-width: 850px) {
+  .run-row strong span {
+    display: block;
+    margin: 5px 0 0;
+  }
+}
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.usage-grid dt {
+  color: var(--muted);
+}
+.usage-grid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.run-record {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.run-record summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.usage-panel,
+.allowance-panel {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0 18px;
+  margin-bottom: 18px;
+}
