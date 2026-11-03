@@ -193,6 +193,46 @@ test('CLI includes both delivery boundaries and keeps missing publication or mer
   }
 });
 
+test('CLI attributes full UUID Task mentions next to punctuation and Chinese without matching longer identifiers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-uuid-'));
+  try {
+    const db = database(root);
+    project(db);
+    const first = '5f3b9356-67fb-4f5e-83fd-3fe375d8173a';
+    const second = '881b0561-293c-4afe-a020-59bfd4af5053';
+    task(db, first, 'p', { issue: 73, title: 'UUID 引用' });
+    task(db, second, 'p', { issue: 74, title: '另一个 Task' });
+    merged(db, first);
+    merged(db, second);
+    const contents = [
+      `（${first}）`,
+      `请处理${first}，谢谢`,
+      `Task ${first} 和 ${first}`,
+      `Task ${first} 与 ${second}`,
+      `prefix${first}`,
+      `${first}-suffix`,
+      `_${first}`,
+      first.slice(0, 8),
+    ];
+    for (const [index, content] of contents.entries())
+      put(db, 'message', {
+        id: `uuid-message-${index}`,
+        projectId: 'p',
+        role: 'user',
+        intent: 'feedback',
+        content,
+        createdAt: '2026-01-01T00:00:05Z',
+      });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /Task #73 UUID 引用：.*干预=4（消息4）/);
+    assert.match(stdout, /Task #74 另一个 Task：.*干预=1（消息1）/);
+    assert.match(stdout, /消息未归属=4；消息时间证据不足=0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('CLI counts user Incident evidence once and preserves independent user controls after internal dispositions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-report-incident-sources-'));
   try {
@@ -342,7 +382,7 @@ test('CLI keeps waiting_user time gaps and counts recovery snapshots conservativ
       status: 'waiting_user',
       createdAt,
       assessmentAt: '2026-01-01T00:00:01Z',
-      updatedAt: '2026-01-01T00:00:05Z',
+      updatedAt: '2026-01-01T00:00:11Z',
     });
     event(db, {
       projectId: 'p',
@@ -387,6 +427,64 @@ test('CLI keeps waiting_user time gaps and counts recovery snapshots conservativ
     assert.match(stdout, /Task missing missing：.*干预=无/);
     assert.match(stdout, /无法判定是否另一次暂停/);
     assert.match(stdout, /确认无干预：0；确认有干预：2；未知：2/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI counts final waiting_user within persisted bounds once and retains uncertain historical waits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-waiting-bounds-'));
+  try {
+    const db = database(root);
+    project(db);
+    const cases: [string, string, string | undefined][] = [
+      ['waiting', '2026-01-01T00:00:02Z', '2026-01-01T00:00:05Z'],
+      ['boundary', createdAt, '2026-01-01T00:00:10Z'],
+      ['late-write', '2026-01-01T00:00:02Z', '2026-01-01T00:00:11Z'],
+      ['missing', '2026-01-01T00:00:02Z', undefined],
+      ['invalid', '2026-01-01T00:00:02Z', 'invalid'],
+      ['contradict', '2026-01-01T00:00:05Z', '2026-01-01T00:00:02Z'],
+      ['after', '2026-01-01T00:00:11Z', '2026-01-01T00:00:12Z'],
+      ['before', '2025-12-31T23:59:58Z', '2025-12-31T23:59:59Z'],
+    ];
+    for (const [id, createdAt, updatedAt] of cases) {
+      task(db, id);
+      merged(db, id);
+      put(db, 'incident', {
+        id: `incident-${id}`,
+        projectId: 'p',
+        taskId: id,
+        status: 'waiting_user',
+        phase: 'validation',
+        createdAt,
+        updatedAt,
+      });
+    }
+    // A user disposition and current waiting state represent the same Incident.
+    for (let i = 0; i < 2; i++)
+      event(db, {
+        projectId: 'p',
+        taskId: 'boundary',
+        type: 'task',
+        message: '任务 pause',
+        at: '2026-01-01T00:00:06Z',
+        control: {
+          action: 'pause',
+          source: 'user',
+          reason: 'http_incident',
+          incidentId: 'incident-boundary',
+        },
+      });
+    db.close();
+    const { stdout } = await report(root, ['--explain']);
+    assert.match(stdout, /Task waiting waiting：.*干预=1（事故1）/);
+    assert.match(stdout, /Task boundary boundary：.*干预=1（事故1）/);
+    for (const id of ['late-write', 'missing', 'invalid', 'contradict', 'after', 'before'])
+      assert.match(stdout, new RegExp(`Task ${id.slice(0, 8)} ${id}：.*干预=无`));
+    assert.match(stdout, /Incident 等待用户时间证据不足=4/);
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：6/);
+    assert.match(stdout, /Incident（全部状态，原始 phase）：validation=8/);
+    assert.match(stdout, /Incident.updatedAt 仅为最终状态成立的时间上界/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

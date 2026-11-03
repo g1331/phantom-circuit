@@ -115,6 +115,7 @@ const schemas = {
     runId: id.optional(),
     phase: z.string().optional(),
     createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
     message: z.string().optional(),
     descriptor: descriptor.optional(),
     status: z.string().optional(),
@@ -280,6 +281,29 @@ function mergeEvidence(
   return { merged: true, at: time(pr.merged_at ?? undefined) };
 }
 
+function waitingWindow(
+  incident: z.infer<typeof schemas.incident>,
+  task: ReportTask | undefined,
+  end: number | undefined,
+): 'confirmed' | 'outside' | 'unknown' {
+  const start = time(task?.createdAt);
+  const created = time(incident.createdAt);
+  const updated = time(incident.updatedAt);
+  if (
+    start === undefined ||
+    end === undefined ||
+    created === undefined ||
+    updated === undefined ||
+    end < start ||
+    updated < created
+  )
+    return 'unknown';
+  if (created > end || updated < start) return 'outside';
+  // Store writes updatedAt with every Incident status change. It bounds when
+  // the final state was established, without claiming an exact transition time.
+  return created >= start && updated <= end ? 'confirmed' : 'unknown';
+}
+
 export function renderReport(snapshot: Snapshot, options: { explain?: boolean } = {}): string {
   const data = {
     projects: records(snapshot, 'project', schemas.project),
@@ -307,8 +331,8 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
     '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
     '干预覆盖：Task“无”仅表示未发现已确认干预证据，历史完整性仍为 unknown；无干预率仅为保守下界。',
     'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
-    '干预归因：用户讨论/反馈仅按同 Project 持久关联或完整 Task ID/唯一 #Issue/精确 Issue URL；共享来源不扩散，原始实施请求排除。Task.createdAt 为本地发布边界，createdAt≤证据时间≤实际 merged_at，不用 updatedAt；Clarification 保留发布前来源关联。',
-    '来源计数：消息按 ID；事故仅明确 user/http_incident；当前 waiting_user 无状态转换时间则单列缺口，按 Incident ID；独立用户暂停/恢复/取消按 Event ID，host/pm 不计用户动作。缺时间/来源保留缺口，后续内部处置不抹去用户证据；recovery.pauseProvenance=user 无原动作 ID 时仅作用户暂停记录，已有用户暂停则补充证据、不增加次数，无法判定是否另一次暂停。',
+    '干预归因：用户讨论/反馈仅按同 Project 持久关联或完整 Task ID/唯一 #Issue/精确 Issue URL；共享来源不扩散，原始实施请求排除。Task.createdAt 为本地发布边界，createdAt≤证据时间≤实际 merged_at，消息和 Task 时间缺失不用 updatedAt 补齐；Clarification 保留发布前来源关联。',
+    '来源计数：消息按 ID；事故按 Incident ID，采用明确 user/http_incident 或最终 waiting_user 且 Task.createdAt≤Incident.createdAt≤Incident.updatedAt≤merged_at；Incident.updatedAt 仅为最终状态成立的时间上界，晚于合并或缺失/矛盾时间保留缺口。独立用户暂停/恢复/取消按 Event ID，host/pm 不计用户动作，后续内部处置不抹去用户证据；recovery.pauseProvenance=user 无原动作 ID 时仅作用户暂停记录，已有用户暂停则补充证据、不增加次数，无法判定是否另一次暂停。',
   ];
   if (!options.explain) lines.splice(3, 6, '加 --explain 查看统计口径');
   if (!data.projects.length) lines.push('暂无 Project');
@@ -381,6 +405,17 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
         ),
       }))
       .filter((item) => item.merged);
+    const waitingWindows = new Map(
+      incidents
+        .filter((incident) => incident.status === 'waiting_user')
+        .map((incident) => {
+          const task = byId.get(linkedTask(incident) ?? '');
+          return [
+            incident.id,
+            waitingWindow(incident, task, merged.find((item) => item.task.id === task?.id)?.at),
+          ];
+        }),
+    );
     const messageEvidence = new Map<string, Set<string>>();
     let unassignedMessages = 0;
     let messageTimeGaps = 0;
@@ -420,8 +455,11 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
         if (owner) owners.add(owner);
       }
       const content = message.content ?? '';
-      const identifiers = new Set(content.match(/[\p{L}\p{N}_-]+/gu) ?? []);
-      for (const task of tasks) if (identifiers.has(task.id)) owners.add(task.id);
+      for (const task of tasks) {
+        const literal = task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?<![A-Za-z0-9_-])${literal}(?![A-Za-z0-9_-])`, 'u').test(content))
+          owners.add(task.id);
+      }
       const urls = [
         ...content.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)\b/gi),
       ];
@@ -582,9 +620,7 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
           const parsed = controlSchema.parse(event.control);
           return controlSource(event) === 'user' && parsed.reason === 'http_incident';
         });
-        // Current waiting_user, createdAt and assessmentAt cannot date entry
-        // into that state. The current host has no persisted transition time.
-        if (userHandled) {
+        if (userHandled || waitingWindows.get(incident.id) === 'confirmed') {
           add('事故', incident.id);
           confirmedIncidents.add(incident.id);
         }
@@ -647,7 +683,7 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
       `无干预合并率（保守下界）：${merged.length ? `0/${merged.length} (0%)` : 'N/A'}；确认无干预：0；确认有干预：${intervened}；未知：${merged.length - intervened}`,
       `未归属干预：Incident=${incidents.filter((incident) => !linkedTask(incident)).length}；暂停/恢复/取消=${controls.filter((event) => !controlTask(event)).length}；Clarification=${unassignedClarifications.length}`,
       `消息未归属=${unassignedMessages}；消息时间证据不足=${messageTimeGaps}`,
-      `Incident 等待用户时间证据不足=${incidents.filter((item) => item.status === 'waiting_user' && !confirmedIncidents.has(item.id)).length}（不以当前状态反推合并前干预）；用户处置来源须有持久 control 证据`,
+      `Incident 等待用户时间证据不足=${incidents.filter((item) => waitingWindows.get(item.id) === 'unknown' && !confirmedIncidents.has(item.id)).length}（最后写入晚于合并、缺失或矛盾时间均保留缺口）；明确用户处置另按持久 control 证据`,
       `控制事件来源：${(['user', 'host', 'pm', 'unknown'] as const).map((source) => `${source}=${controls.filter((event) => controlSource(event) === source).length}`).join('；')}；明确用户暂停恢复记录：${recoveries.filter((item) => item.pauseProvenance === 'user').length}`,
       `Incident（全部状态，原始 phase）：${
         [...incidentPhases]

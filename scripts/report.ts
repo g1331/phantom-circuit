@@ -21,9 +21,11 @@ SQLite 正常管理 -wal/-shm；短 deferred 快照后关闭连接再聚合。�
   无干预率：确认无干预 Task / 全部确认合并 Task；零分母 N/A。
   消息：仅 user 的 discuss/feedback，按同 Project 持久 source/Run Task 关联或明确完整 Task ID、
   唯一 #Issue、仓库身份一致的 Issue URL；共享原始来源不扩散，原始实施请求排除，消息 ID 对每 Task 去重。
-  时间窗：Task.createdAt（本地发布边界）≤证据时间≤实际 merged_at；缺失不回退 updatedAt。
-  Incident：明确 user/http_incident 处置按 Incident ID 去重；当前 waiting_user 无进入该状态的持久时间，
-  仅凭状态、创建/评估时间或普通暂停不能反推合并前等待用户，时间缺口单列。
+  时间窗：Task.createdAt（本地发布边界）≤证据时间≤实际 merged_at；消息和 Task 缺失时间不回退 updatedAt。
+  Incident：明确 user/http_incident 处置，或最终 waiting_user 且满足
+  Task.createdAt≤Incident.createdAt≤Incident.updatedAt≤merged_at，均按 Incident ID 去重。
+  Incident.updatedAt 仅为最终状态成立的时间上界；晚于合并、缺失或矛盾时间单列缺口。
+  创建/评估时间或普通暂停本身不能反推合并前等待用户。
   resolved、原因文本和 PM/on-call 内部处置均不推定用户参与；后续内部处置不抹去早先用户证据。
   产品 Clarification 保留含发布前的 Task/原始来源关联；answered/cancelled 仍为证据。
   暂停/恢复/取消事件须有有效 control.action/source/reason 且 action 一致：user 计干预，host/pm 不计。
