@@ -88,6 +88,8 @@ const schemas = {
   repo: scoped.extend({ github: id }),
   task: scoped.extend({
     repoId: id,
+    title: z.string().optional(),
+    issue: z.number().int().positive().optional(),
     stage: id,
     sourceMessageId: id.optional(),
     createdAt: z.string().optional(),
@@ -194,7 +196,29 @@ function median(values: number[]): string {
   return String(values.length % 2 ? values[middle] : values[middle - 1] / 2 + values[middle] / 2);
 }
 
+function duration(milliseconds: number): string {
+  if (milliseconds === 0) return '0秒';
+  if (milliseconds < 1000) return '不足1秒';
+  if (milliseconds < 60_000) return `${milliseconds / 1000}秒`;
+  const minutes = Math.floor(milliseconds / 60_000);
+  return minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}小时${minutes % 60}分`;
+}
+
+function tokens(value: number | string): string {
+  const [integer, fraction] = String(value).split('.');
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
 type ReportTask = z.infer<typeof schemas.task>;
+
+function taskLabel(task: ReportTask): string {
+  const identity =
+    task.issue === undefined ? Array.from(task.id).slice(0, 8).join('') : `#${task.issue}`;
+  const title = Array.from(task.title ?? '');
+  const shortened = title.length > 40 ? title.slice(0, 39).join('') + '…' : title.join('');
+  return shortened ? `${identity} ${shortened}` : identity;
+}
 type ReportRun = z.infer<typeof schemas.run>;
 type Sample = { state: 'complete' | 'unknown' | 'partial'; value?: number };
 
@@ -248,7 +272,7 @@ function mergeEvidence(
   return { merged: true, at: time(pr.merged_at ?? undefined) };
 }
 
-export function renderReport(snapshot: Snapshot): string {
+export function renderReport(snapshot: Snapshot, options: { explain?: boolean } = {}): string {
   const data = {
     projects: records(snapshot, 'project', schemas.project),
     repos: records(snapshot, 'repo', schemas.repo),
@@ -277,6 +301,7 @@ export function renderReport(snapshot: Snapshot): string {
     '暂停/恢复/取消口径：有效 control.action/source/reason 且动作一致才采用来源；user 计干预，host/pm 仅排除该条用户直接操作，关联 Incident 仍计入。',
     '缺失、未知或不一致来源仍为 unknown；后续自动动作不覆盖早先用户/未知证据；兼容 recovery.pauseProvenance=user，不据此证明历史完整。',
   ];
+  if (!options.explain) lines.splice(3, 6, '加 --explain 查看统计口径');
   if (!data.projects.length) lines.push('暂无 Project');
   for (const project of data.projects) {
     const tasks = data.tasks.filter((task) => task.projectId === project.id);
@@ -408,7 +433,7 @@ export function renderReport(snapshot: Snapshot): string {
     let tokenUnknown = 0;
     let tokenPartial = 0;
     let intervened = 0;
-    const details: string[] = [];
+    const details: { at?: number; line: string }[] = [];
     for (const { task, at } of merged) {
       const assignedRuns = taskRuns.get(task.id) ?? [];
       const samples = assignedRuns.map(runTokens);
@@ -459,9 +484,10 @@ export function renderReport(snapshot: Snapshot): string {
             beforeMerge(item.createdAt),
         );
       if (hasIntervention) intervened++;
-      details.push(
-        `  Task ${task.id}：token=${complete ? observed : partial ? `partial(已知=${known.length ? observed : 'N/A'})` : 'unknown'}；墙钟=${wall === undefined ? 'unknown' : `${wall} ms`}；干预=${hasIntervention ? '有' : 'unknown'}；返工=${task.retries ?? 'unknown'}`,
-      );
+      details.push({
+        at,
+        line: `  Task ${taskLabel(task)}：token=${complete ? tokens(observed) : partial ? `partial(已知=${known.length ? tokens(observed) : 'N/A'})` : 'unknown'}；墙钟=${wall === undefined ? 'unknown' : duration(wall)}；干预=${hasIntervention ? '有' : 'unknown'}；返工=${task.retries ?? 'unknown'}`,
+      });
     }
     const unassignedClarifications = clarifications.filter(
       (item) =>
@@ -486,10 +512,14 @@ export function renderReport(snapshot: Snapshot): string {
       `watchdog 触发次数：${watchdogRuns.size}（按 Run ID）；缺少 Run ID、无法去重的触发证据=${unlinkedWatchdog}（不假定彼此独立）`,
       `返工轮数（Project 全部 Task）：${rework(tasks)}`,
       `合并任务返工：${rework(merged.map((item) => item.task))}`,
-      `token 中位数：${median(tokenSamples)}；n=${tokenSamples.length}/${merged.length}；unknown=${tokenUnknown}；partial=${tokenPartial}`,
-      `墙钟交付耗时中位数：${wallSamples.length ? `${median(wallSamples)} ms` : 'N/A'}；n=${wallSamples.length}/${merged.length}；unknown=${merged.length - wallSamples.length}`,
-      `PM 未分配：Run=${unassignedPM.length}；已知 token=${pmKnown.length ? pmKnown.reduce((sum, sample) => sum + sample.value!, 0) : 'N/A'}；usage unknown=${pmSamples.filter((sample) => sample.state === 'unknown').length}；partial=${pmSamples.filter((sample) => sample.state === 'partial').length}；歧义影响 Task=${[...ambiguous].join(',') || '无'}`,
-      ...details,
+      `token 中位数：${tokens(median(tokenSamples))}；n=${tokenSamples.length}/${merged.length}；unknown=${tokenUnknown}；partial=${tokenPartial}`,
+      `墙钟交付耗时中位数：${wallSamples.length ? duration(Number(median(wallSamples))) : 'N/A'}；n=${wallSamples.length}/${merged.length}；unknown=${merged.length - wallSamples.length}`,
+      `PM 未分配：Run=${unassignedPM.length}；已知 token=${pmKnown.length ? tokens(pmKnown.reduce((sum, sample) => sum + sample.value!, 0)) : 'N/A'}；usage unknown=${pmSamples.filter((sample) => sample.state === 'unknown').length}；partial=${pmSamples.filter((sample) => sample.state === 'partial').length}；歧义影响 Task=${[...ambiguous].join(',') || '无'}`,
+      ...details
+        .sort((a, b) =>
+          a.at === b.at ? 0 : a.at === undefined ? 1 : b.at === undefined ? -1 : a.at - b.at,
+        )
+        .map((detail) => detail.line),
     );
   }
   const orphaned = [

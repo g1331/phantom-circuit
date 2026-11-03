@@ -5,10 +5,12 @@ import { readReportSnapshot, renderReport } from '../src/server/report.ts';
 const args = process.argv.slice(2);
 try {
   let dataDir = join(homedir(), '.phantom');
+  let explain = false;
   if (args.length === 1 && args[0] === '--help') {
     console.log(
-      `Usage: npm run report -- [--data-dir <directory>]
+      `Usage: npm run report -- [--data-dir <directory>] [--explain]
 默认数据目录：home .phantom；--data-dir=<directory> 亦可。不回退到 checkout-local 数据。
+--explain 显示报告开头的统计口径说明，可与 --data-dir 组合。
 直接 readOnly 读取 phantom.sqlite；不依赖宿主运行，不迁移、不获取 ownership 锁。
 SQLite 正常管理 -wal/-shm；短 deferred 快照后关闭连接再聚合。数据库忙立即失败，无重试。
 缺失路径/主库、损坏数据或不支持的结构返回非零退出码；不创建主库或目录，不输出半份报告。
@@ -35,15 +37,25 @@ SQLite 正常管理 -wal/-shm；短 deferred 快照后关闭连接再聚合。�
 报告仅输出文本，不请求 GitHub/模型，不写日志、临时副本或持久报表。`,
     );
   } else {
-    if (args.length) {
-      if (args.length === 2 && args[0] === '--data-dir' && args[1] && !args[1].startsWith('--'))
-        dataDir = args[1];
-      else if (args.length === 1 && args[0].startsWith('--data-dir=') && args[0].slice(11))
-        dataDir = args[0].slice(11);
-      else throw new Error('用法：npm run report -- [--data-dir <directory>]');
+    let hasDataDir = false;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '--explain' && !explain) explain = true;
+      else if (
+        arg === '--data-dir' &&
+        !hasDataDir &&
+        args[i + 1] &&
+        !args[i + 1].startsWith('--')
+      ) {
+        dataDir = args[++i];
+        hasDataDir = true;
+      } else if (arg.startsWith('--data-dir=') && arg.slice(11) && !hasDataDir) {
+        dataDir = arg.slice(11);
+        hasDataDir = true;
+      } else throw new Error('用法：npm run report -- [--data-dir <directory>] [--explain]');
     }
     const snapshot = readReportSnapshot(resolve(dataDir));
-    process.stdout.write(renderReport(snapshot));
+    process.stdout.write(renderReport(snapshot, { explain }));
   }
 } catch (error) {
   console.error(`报告失败：${error instanceof Error ? error.message : String(error)}`);
