@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren } from 'lucide-react';
+import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren, Users } from 'lucide-react';
 import type { Role, Snapshot } from '../shared/types.ts';
 import { teamView, type TeamMember, type TeamWork, type WorkStep } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
@@ -33,16 +33,15 @@ function clock(ms: number) {
 function Member({ member, now }: { member: TeamMember; now: number }) {
   const { t } = useLocale();
   const Icon = icons[member.role];
-  const working = member.activity !== 'idle';
   return (
-    <li className={`team-member role-${member.role} ${working ? 'is-working' : 'is-idle'}`}>
+    <li className={`team-member role-${member.role} is-working`}>
       <span className="team-avatar" aria-hidden="true">
         <Icon size={16} />
       </span>
       <span className="team-member-body">
         <span className="team-member-head">
           <strong>{t(`team.role.${member.role}`)}</strong>
-          {working && member.since && (
+          {member.since && (
             <time className="team-clock" dateTime={member.since}>
               {clock(now - Date.parse(member.since))}
             </time>
@@ -50,7 +49,7 @@ function Member({ member, now }: { member: TeamMember; now: number }) {
         </span>
         <span className="team-doing">
           {t(`team.doing.${member.activity}`)}
-          {working && <span className="team-dots" aria-hidden="true" />}
+          <span className="team-dots" aria-hidden="true" />
         </span>
         {member.taskTitle && <span className="team-member-task">{member.taskTitle}</span>}
       </span>
@@ -123,7 +122,7 @@ export function TeamRoom({
 }) {
   const { t, time } = useLocale();
   const view = useMemo(() => teamView(state, projectId), [state, projectId]);
-  const working = view.members.filter((m) => m.activity !== 'idle').length;
+  const working = view.members.length;
   const now = useNow(working > 0);
   const open = view.work.filter((w) => w.step !== 'done' && w.step !== 'cancelled');
   const delivered = view.work.length - open.length;
@@ -182,12 +181,18 @@ export function TeamRoom({
       )}
 
       <section className="team-section team-members-section">
-        <h3>{t('team.members')}</h3>
+        {view.members.length > 0 && <h3>{t('team.members')}</h3>}
         <ul className="team-members">
           {view.members.map((member) => (
             <Member key={member.id} member={member} now={now} />
           ))}
         </ul>
+        {view.members.length === 0 && (
+          // The rail still needs something to click when nobody is working.
+          <span className="team-rail-idle" aria-hidden="true">
+            <Users size={16} />
+          </span>
+        )}
       </section>
 
       <section className="team-section">

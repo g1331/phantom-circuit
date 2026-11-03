@@ -414,7 +414,6 @@ export const en = {
   'team.role.dev': "Developer",
   'team.role.review': "Reviewer",
   'team.role.oncall': "On-call",
-  'team.doing.idle': "Standing by",
   'team.doing.talking': "Talking with you",
   'team.doing.planning': "Planning the work",
   'team.doing.assessing': "Handling an incident",

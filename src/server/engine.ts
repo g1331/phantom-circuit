@@ -1,6 +1,6 @@
 import { Providers } from './providers.ts';
 import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { Store, Fault, now, redact } from './store.ts';
@@ -789,10 +789,13 @@ export class Engine {
       this.store.finishRecovery(item.id, 'cancelled');
       return this.store.get('recovery', item.id);
     }
-    if (oldRun.role === 'oncall' && item.incidentId && task) {
+    // `oncall` Runs predate the Dev handling its own validation failures; both resume as the Dev.
+    const validationDuty =
+      oldRun.role === 'oncall' || (oldRun.role === 'dev' && oldRun.incidentPhase === 'validation');
+    if (validationDuty && item.incidentId && task) {
       const run = this.store.ensureRecoverySuccessor(item.id, {
-        role: 'oncall',
-        profile: oldRun.profile,
+        role: 'dev',
+        profile: task.profile,
         task,
         incidentId: item.incidentId,
         incidentPhase: oldRun.incidentPhase,
@@ -1496,7 +1499,7 @@ export class Engine {
       () =>
         this.pmTurn(
           task.projectId,
-          `Developer needs technical guidance. Answer without asking the human to review code.\n${question}`,
+          `The Developer asks about this Task's scope or acceptance. Answer that only; for a technical choice, tell the Developer to decide it from the code and the ADRs. Never ask the human to review code.\n${question}`,
           undefined,
           task,
           trigger,
@@ -1859,8 +1862,8 @@ export class Engine {
       });
   }
   /**
-   * Opens a validation Incident and hands it to an on-call Run (ADR 0013). Returns false when no
-   * on-call Run can start, so the caller keeps the plain rework path.
+   * Opens a validation Incident and hands it back to the Task's Dev, resumed in its own thread with
+   * host tools (ADR 0013). Returns false when no such Run can start, so the caller keeps plain rework.
    */
   private startOncall(task: Task, failure: string) {
     const detail = redact(failure).slice(-16000);
@@ -1874,7 +1877,7 @@ export class Engine {
     });
     let run: Run;
     try {
-      run = this.store.run('oncall', task.projectId, 'review', task, {
+      run = this.store.run('dev', task.projectId, task.profile, task, {
         incidentId: incident.id,
         incidentPhase: 'validation',
         incidentEvidence: detail,
@@ -1883,12 +1886,12 @@ export class Engine {
     } catch (error) {
       this.store.updateIncident(incident.id, {
         status: 'resolved',
-        message: `值班无法启动，按返工处理：${redact(String(error))}`,
+        message: `开发无法接手验证失败，按返工处理：${redact(String(error))}`,
       });
       return false;
     }
     this.store.claimIncidentAssessment(incident.id, run.id);
-    this.block(task.id, '正式验证未通过，值班正在诊断', {
+    this.block(task.id, '正式验证未通过，开发正在排查', {
       source: 'host',
       reason: 'oncall',
       runId: run.id,
@@ -1906,16 +1909,21 @@ export class Engine {
     try {
       await this.withAgent(run, async (c, signal) => {
         const profile = this.agentProfile(run);
+        const duty = await readFile(resolve('prompts/oncall.md'), 'utf8');
+        const dirty = async () =>
+          !!(await this.workspaces.git(task.worktree!, ['status', '--porcelain'], signal));
         const thread = await c.thread({
           cwd: task.worktree!,
           profile,
-          instructions: await instructions('oncall'),
-          writable: false,
+          threadId: run.resumeThreadId,
+          // The duty travels in the turn: a resumed thread keeps the instructions it started with.
+          instructions: await instructions('dev'),
+          writable: true,
           tools: [
             {
               name: 'rerun_validation',
               description:
-                'Rerun the configured build and test commands on the host for the pinned head. Returns fresh evidence.',
+                'Rerun the configured build and test commands on the host for the pinned head. Returns fresh evidence. Refused while the worktree has uncommitted edits.',
               inputSchema: jsonSchema(z.object({}).strict()),
             },
             {
@@ -1927,12 +1935,15 @@ export class Engine {
             {
               name: 'settle',
               description:
-                'End this on-call shift with one action: retry (needs a passing rerun), rework, resync (trunk moved and carries the fix), or ask_user.',
+                'End this with one action: retry (needs a passing rerun), fixed (you edited the code; the host commits and revalidates), resync (trunk moved and carries the fix), or ask_user.',
               inputSchema: jsonSchema(oncallSettleInput),
             },
           ],
           toolHandler: async (name: string, args: unknown) => {
             if (name === 'rerun_validation') {
+              // A rerun over uncommitted edits would pass them off as evidence for the pinned head.
+              if (await dirty())
+                throw new Fault('工作区有未提交改动：修好后用 settle fixed，由宿主提交并正式验证', 409);
               const tests = await this.workspaces.verify(this.store.task(task.id), signal);
               return tests.map(({ command, exitCode, durationMs, output }) => ({
                 command,
@@ -1948,8 +1959,13 @@ export class Engine {
                   .activeRuns()
                   .map(({ id, role, taskId, status }) => ({ id, role, taskId, status })),
               };
-            if (name !== 'settle') throw new Fault('值班没有此操作权限', 403);
+            if (name !== 'settle') throw new Fault('没有此操作权限', 403);
             const input = oncallSettleInput.parse(args);
+            const edited = await dirty();
+            if (input.action === 'fixed' && !edited)
+              throw new Fault('工作区没有改动，不能 settle fixed', 409);
+            if (input.action !== 'fixed' && edited)
+              throw new Fault('工作区有未提交改动：要么 settle fixed，要么先撤销改动', 409);
             const current = this.store.task(task.id);
             const passing =
               current.tests.length > 0 &&
@@ -1974,24 +1990,24 @@ export class Engine {
             settled = input;
             return { accepted: true };
           },
-          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.oncall } as any) : {}),
+          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.dev } as any) : {}),
         } as any);
         this.saveThread(run, thread);
         await c.turn(
           thread,
-          `${taskPrompt(task)}\nHEAD=${task.head}\nBASE=${task.base}\nConfigured commands: ${JSON.stringify(repo.commands)}\nFailed host validation:\n${detail}\nDiagnose, then call settle exactly once.`,
+          `${duty}\n${taskPrompt(task)}\nHEAD=${task.head}\nBASE=${task.base}\nConfigured commands: ${JSON.stringify(repo.commands)}\nHost validation of your handed-in work failed:\n${detail}\nDiagnose, then call settle exactly once.`,
           profile,
           signal,
           undefined,
           this.onTurn(run),
         );
-        if (!settled) throw new Fault('值班未给出处置', 409);
+        if (!settled) throw new Fault('开发未给出验证失败的处置', 409);
       });
     } catch (error) {
-      // Resuming the Task revalidates the same head, and a new failure opens a fresh on-call shift.
+      // Resuming the Task revalidates the same head, and a new failure opens a fresh Incident.
       const message = this.stopping
-        ? '宿主停止时值班尚未完成；恢复任务会重新验证'
-        : `值班诊断失败：${redact(String(error))}`;
+        ? '宿主停止时验证失败尚未处理完；恢复任务会重新验证'
+        : `验证失败处理中断：${redact(String(error))}`;
       this.store.updateIncident(incidentId, { status: 'waiting_user', message });
       this.block(task.id, message, context);
       return;
@@ -2008,17 +2024,21 @@ export class Engine {
       this.store.updateIncident(incidentId, { status: 'resolved', message: outcome.diagnosis });
       this.rework(
         this.store.task(task.id),
-        `值班诊断：${outcome.diagnosis}
+        `${outcome.diagnosis}
 失败来自主干，主干已更新；同步主干后重新验证，本轮不计返工。`,
         false,
       );
-    } else if (outcome.action === 'rework') {
+    } else if (outcome.action === 'fixed') {
+      // A real defect: it spends a round, and the host commits the Dev's edits and revalidates
+      // without another implementation turn.
       this.store.updateIncident(incidentId, { status: 'resolved', message: outcome.diagnosis });
       this.rework(
         this.store.task(task.id),
-        `值班诊断：${outcome.diagnosis}
+        `正式验证发现缺陷，已修复：${outcome.diagnosis}
 正式验证输出：
 ${detail}`,
+        true,
+        'finalize',
       );
     } else {
       this.resolveIncident(task.projectId, incidentId, 'waiting_user', outcome.question, context);
@@ -2029,15 +2049,23 @@ ${detail}`,
       );
     }
   }
-  /** `spend: false` is host resynchronisation (a moved base), not a product rework round. */
-  private rework(task: Task, reason: string, spend = true) {
+  /**
+   * `spend: false` is host resynchronisation (a moved base), not a product rework round.
+   * `finalize` keeps edits the Dev already made, so the next Run commits them without a Dev turn.
+   */
+  private rework(
+    task: Task,
+    reason: string,
+    spend = true,
+    phase: 'implement' | 'finalize' = 'implement',
+  ) {
     const retries = task.retries + (spend ? 1 : 0);
     const exhausted = spend && retries >= 3;
     this.store.updateTaskControl(
       task.id,
       {
         stage: 'developing',
-        devPhase: 'implement',
+        devPhase: phase,
         retries,
         reviews: [],
         reviewClarificationId: undefined,
@@ -2260,7 +2288,8 @@ ${detail}`,
           tools: [
             {
               name: 'ask_pm',
-              description: 'Ask the project PM a technical question within the current task.',
+              description:
+                'Ask the liaison about the scope or acceptance of this Task. Technical choices are yours: read the code and follow the repository and its ADRs.',
               inputSchema: jsonSchema(z.object({ question: z.string().min(1) }).strict()),
             },
           ],

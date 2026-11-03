@@ -64,9 +64,8 @@ test('the team view shows who is working on what and what waits on the user', as
       [
         ['pm', 'coordinating'],
         ['dev', 'building'],
-        ['review', 'idle'],
-        ['oncall', 'idle'],
       ],
+      'only working members are listed',
     );
     const work = Object.fromEntries(view.work.map((w) => [w.title, w]));
     assert.equal(work['Search page'].attention, 'none');

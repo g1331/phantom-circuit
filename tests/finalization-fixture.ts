@@ -127,8 +127,10 @@ export async function fixture(
       return 'fixture';
     }
     override async turn(_thread: string, prompt: string) {
-      if (this.options!.instructions.includes('On-call')) {
-        await this.options!.toolHandler!('settle', { action: 'rework', diagnosis: 'Product defect.' });
+      if (prompt.includes('## 正式验证失败')) {
+        // The Dev fixes the product defect the host validation found in its own work.
+        await writeFile(join(this.options!.cwd, 'validation-fix.txt'), `fix ${Date.now()}\n`);
+        await this.options!.toolHandler!('settle', { action: 'fixed', diagnosis: 'Product defect.' });
       } else if (this.options!.instructions.includes('Task Developer')) {
         turns++;
         await dev(this.options!.cwd);

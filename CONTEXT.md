@@ -16,7 +16,7 @@ _Avoid_: PM, reviewer
 **Task**: An independently verifiable slice of an explicit implementation request, with acceptance criteria and blocking dependencies.
 _Avoid_: Run, conversation
 
-**On-call**: The team's role that diagnoses a failed host validation and settles it as a retry, a rework or a question for the user.
+**On-call**: Historical role for diagnosing a failed host validation. The Task's Dev now does this in its own thread and settles it as a retry, a fix, a trunk resync or a question for the user.
 _Avoid_: PM, Dev
 
 **Run**: One bounded execution of a PM, Dev, Review or On-call role.
@@ -40,7 +40,7 @@ _Avoid_: Agent backend, Provider
 **PM activity**: A durable, user-visible record of why the PM started acting and which observable step it is performing.
 _Avoid_: Hidden chain of thought, raw log
 
-**Incident**: A durable, actionable record of an unexpected Run or delivery failure that requires On-call or PM assessment, or user-visible escalation.
+**Incident**: A durable, actionable record of an unexpected Run or delivery failure that requires Dev or PM assessment, or user-visible escalation.
 _Avoid_: Event, Review finding
 
 **Clarification**: A request for the user to supply a necessary external fact, access decision or product choice, raised by the PM before Task publication or revision, or by a Review of an affected Task.

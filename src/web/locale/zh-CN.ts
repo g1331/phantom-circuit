@@ -398,7 +398,6 @@ export const zhCN = {
   'team.role.dev': "开发",
   'team.role.review': "评审",
   'team.role.oncall': "值班",
-  'team.doing.idle': "待命",
   'team.doing.talking': "在和你沟通",
   'team.doing.planning': "在拆解需求",
   'team.doing.assessing': "在处理异常",

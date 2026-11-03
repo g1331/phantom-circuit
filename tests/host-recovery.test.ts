@@ -71,19 +71,21 @@ async function fixture() {
   let deliver = true;
   class Agent extends Codex {
     developer = false;
-    oncall?: Parameters<Codex['thread']>[0]['toolHandler'];
+    tool?: Parameters<Codex['thread']>[0]['toolHandler'];
     override async start() {
       starts++;
     }
     override async stop() {}
     override async thread(options: Parameters<Codex['thread']>[0]) {
       this.developer = options.instructions.includes('Task Developer');
-      this.oncall = options.instructions.includes('On-call') ? options.toolHandler : undefined;
+      this.tool = options.toolHandler;
       return 'fixture';
     }
-    override async turn() {
-      if (this.oncall) {
-        await this.oncall('settle', { action: 'rework', diagnosis: 'Product defect.' });
+    override async turn(_thread: string, prompt: string) {
+      if (prompt.includes('## 正式验证失败')) {
+        // The Dev fixes the product defect the host validation found in its own work.
+        await writeFile(join(task.worktree!, 'validation-fix.txt'), `fix ${Date.now()}\n`);
+        await this.tool!('settle', { action: 'fixed', diagnosis: 'Product defect.' });
         return 'Settled';
       }
       if (this.developer) turns++;
@@ -266,7 +268,7 @@ test('host stages resolved conflict files and completes the merge before validat
 });
 
 for (const environment of [false, true]) {
-  test(`${environment ? 'environment failure pauses' : 'assertion failure reworks'} after formal host validation`, async () => {
+  test(`${environment ? 'environment failure pauses' : 'assertion failure is fixed by the Dev as a round'} after formal host validation`, async () => {
     const f = await fixture();
     try {
       f.store.patchRepo(f.repo.id, {
@@ -278,7 +280,8 @@ for (const environment of [false, true]) {
       const result = await f.cycle();
       assert.equal(result.retries, environment ? 0 : 1);
       assert.equal(result.control, environment ? 'paused' : 'active');
-      assert.equal(result.devPhase, environment ? 'finalize' : 'implement');
+      // Both leave edits for the host to commit: the Dev's fix, or the paused handed-in work.
+      assert.equal(result.devPhase, 'finalize');
       if (environment) assert.equal(result.tests[0].exitCode, 1);
       assert.notEqual(await f.ws.git(f.task.worktree!, ['rev-parse', 'HEAD']), f.task.base);
     } finally {

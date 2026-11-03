@@ -5,7 +5,6 @@ import type { Role, Run, Snapshot, Task } from './types.ts';
  * translates. Derived from the host snapshot, so every client reads the same projection.
  */
 export type MemberActivity =
-  | 'idle'
   | 'talking'
   | 'planning'
   | 'assessing'
@@ -20,7 +19,7 @@ export type WorkStep = 'planned' | 'building' | 'reviewing' | 'delivering' | 'do
 export type WorkAttention = 'none' | 'paused' | 'blocked' | 'needs_user';
 
 export interface TeamMember {
-  /** The Run id while working; a stable seat id while idle. */
+  /** The Run id. */
   id: string;
   role: Role;
   activity: MemberActivity;
@@ -72,7 +71,7 @@ function activity(run: Run, task?: Task): MemberActivity {
   // A task-bound liaison turn (a Dev question, feedback, acceptance) is the team talking internally.
   if (run.role === 'pm')
     return run.incidentId ? 'assessing' : task ? 'coordinating' : run.sourceMessageId ? 'talking' : 'planning';
-  if (run.role === 'oncall') return 'diagnosing';
+  if (run.role === 'oncall' || run.incidentPhase === 'validation') return 'diagnosing';
   if (run.role === 'review') return run.secondaryReview ? 'second_review' : 'reviewing';
   if (task?.pendingMerge) return 'merging';
   return task?.devPhase === 'finalize' ? 'checking' : 'building';
@@ -104,9 +103,7 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       ...(run.modelIdentity?.model ? { model: run.modelIdentity.model } : {}),
     };
   });
-  // Every seat stays visible, so an idle team reads as idle rather than empty.
-  for (const role of ['pm', 'dev', 'review', 'oncall'] as const)
-    if (!members.some((m) => m.role === role)) members.push({ id: `seat:${role}`, role, activity: 'idle' });
+  // Only working members are listed: an idle seat costs attention and tells the user nothing.
   const order: Role[] = ['pm', 'dev', 'review', 'oncall'];
   members.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
 

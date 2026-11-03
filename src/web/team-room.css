@@ -15,7 +15,8 @@
 .workspace-grid.with-team {
   grid-template-columns: minmax(0, 1fr) 344px;
 }
-.team-rail-open {
+.team-rail-open,
+.team-rail-idle {
   display: none;
 }
 /* Laptop widths keep the conversation readable: the room narrows to a rail of member avatars. */
@@ -38,6 +39,16 @@
     padding: 6px;
     border-color: transparent;
     background: none;
+  }
+  .team-rail-idle {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    margin: 6px auto;
+    border-radius: 50%;
+    color: var(--faint);
+    background: var(--raised);
   }
   .team-rail-open {
     display: block;
@@ -281,9 +292,6 @@
   border-color: color-mix(in srgb, var(--role) 28%, var(--line));
   background: color-mix(in srgb, var(--role) 7%, var(--panel));
 }
-.team-member.is-idle {
-  opacity: 0.62;
-}
 .team-avatar {
   position: relative;
   flex: none;
@@ -294,10 +302,6 @@
   border-radius: 50%;
   color: var(--role);
   background: color-mix(in srgb, var(--role) 14%, var(--panel));
-}
-.is-idle .team-avatar {
-  color: var(--faint);
-  background: var(--raised);
 }
 /* A working member's avatar carries a turning arc in its role colour. */
 .is-working .team-avatar::after {

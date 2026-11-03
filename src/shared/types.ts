@@ -4,6 +4,7 @@ export type Stage =
   'clarifying' | 'ready' | 'developing' | 'reviewing' | 'merging' | 'done' | 'cancelled';
 export type RunStatus =
   'queued' | 'running' | 'waiting' | 'paused' | 'interrupted' | 'failed' | 'completed';
+/** `oncall` only names historical Runs: a validation failure now goes back to the Task's Dev. */
 export type Role = 'pm' | 'dev' | 'review' | 'oncall';
 export type AgentKind = 'omp' | 'codex';
 export type ProfileName = 'backend' | 'frontend' | 'fullstack' | 'complex' | 'pm' | 'review';
