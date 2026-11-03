@@ -6,13 +6,30 @@ import { zhCN } from '../src/web/locale/zh-CN.ts';
 
 test('locale resources share keys and format observable values', () => {
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zhCN).sort());
+  const pluralCategories = new Set(['zero', 'one', 'two', 'few', 'many', 'other']);
+  const placeholders = (entry: unknown) =>
+    [...new Set(JSON.stringify(entry).match(/\{\w+\}/g) ?? [])].sort();
   for (const key of Object.keys(en) as (keyof typeof en)[]) {
     const source = en[key];
     const translated = zhCN[key];
-    if (typeof source !== 'string')
-      assert.deepEqual(Object.keys(source).sort(), Object.keys(translated).sort());
-    const placeholders = (entry: unknown) =>
-      [...new Set(JSON.stringify(entry).match(/\{\w+\}/g) ?? [])].sort();
+    assert.equal(typeof source, typeof translated, `${key}: resource shape`);
+    if (typeof source !== 'string') {
+      // Locales can select different branches and fall back to other. Legacy
+      // resources may also retain standard branches their locale never selects.
+      for (const entry of [source, translated]) {
+        assert.ok(typeof entry === 'object', `${key}: plural resource`);
+        assert.ok(Object.hasOwn(entry, 'other'), `${key}: missing other branch`);
+        for (const [category, text] of Object.entries(entry)) {
+          assert.ok(pluralCategories.has(category), `${key}: invalid plural category ${category}`);
+          assert.equal(typeof text, 'string', `${key}.${category}: translation text`);
+          assert.deepEqual(
+            placeholders(text),
+            placeholders(source.other),
+            `${key}.${category}: interpolation parameters`,
+          );
+        }
+      }
+    }
     assert.deepEqual(
       placeholders(source),
       placeholders(translated),
@@ -23,7 +40,12 @@ test('locale resources share keys and format observable values', () => {
   const chinese = createLocale('zh-CN');
   assert.equal(english.t('repos.count', { count: 1 }), '1 repository');
   assert.equal(english.t('repos.count', { count: 2 }), '2 repositories');
+  assert.equal(chinese.t('repos.count', { count: 1 }), '1 个仓库');
   assert.equal(chinese.t('repos.count', { count: 2 }), '2 个仓库');
+  assert.equal(english.t('team.working', { count: 1 }), '1 member working');
+  assert.equal(english.t('team.working', { count: 2 }), '2 members working');
+  assert.equal(chinese.t('team.working', { count: 1 }), '1 人在工作');
+  assert.equal(chinese.t('team.working', { count: 2 }), '2 人在工作');
   assert.equal(english.number(1234.5), '1,234.5');
   assert.equal(chinese.number(1234.5), '1,234.5');
   assert.equal(
