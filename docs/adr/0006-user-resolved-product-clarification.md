@@ -1,3 +1,5 @@
 # Keep product clarification user-resolved
 
 The PM resolves repository facts and technical choices itself, but when an implementation request contains a material product ambiguity it creates a durable Clarification linked to the source intent and waits for the user's answer before publishing or revising affected Tasks. The host preserves the original implementation intent across clarification replies and resumes the same PM thread. Clear requirements continue without ceremonial confirmation, and internal request-user-input calls cannot be silently auto-answered because doing so would let the PM invent product behavior.
+
+Primary and Secondary Reviews also use this same Clarification when acceptance depends on facts, access or a product decision only the user can supply. The host atomically records `needs_user`, pauses the Task and binds one Clarification to the asking Run, role, Task, original source intent and fixed head/base; 1–3 questions use the existing answer interface and completion rules. Answers remain user-owned, durable review input: they neither authorize implementation changes nor approve a merge, and PM/model responses cannot substitute for them.

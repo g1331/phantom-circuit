@@ -148,12 +148,59 @@ export const settingsSchema = z
       .optional(),
   })
   .strict();
+export const clarificationQuestionSchema = z
+  .object({
+    id: z.string().trim().min(1).max(100).optional(),
+    question: z.string().trim().min(1).max(2000).optional(),
+    prompt: z.string().trim().min(1).max(2000).optional(),
+    recommendation: z.string().trim().max(2000).optional(),
+    options: z
+      .array(
+        z
+          .object({
+            value: z.string().trim().min(1).max(500),
+            label: z.string().trim().max(500).optional(),
+            description: z.string().trim().max(2000).optional(),
+          })
+          .strict(),
+      )
+      .max(20)
+      .optional(),
+  })
+  .strict()
+  .refine((value) => !!(value.question ?? value.prompt), 'Clarification question is required');
+export const reviewQuestionsSchema = z
+  .array(clarificationQuestionSchema)
+  .max(3)
+  .refine((questions) => {
+    const ids = questions.map((question, index) => question.id ?? `q${index + 1}`);
+    return new Set(ids).size === ids.length;
+  }, 'Clarification question ids must be unique');
+export function validReviewQuestions(value: {
+  verdict?: string;
+  approved: boolean;
+  questions?: unknown[];
+}) {
+  return value.verdict === 'needs_user'
+    ? !value.approved && !!value.questions?.length
+    : !value.questions?.length;
+}
+export const reviewPayloadSchema = z
+  .object({
+    approved: z.boolean(),
+    summary: z.string().trim().min(1),
+    findings: z.array(z.string()),
+    verdict: z.enum(['pass', 'rework', 'escalate', 'needs_user']),
+    questions: reviewQuestionsSchema.optional(),
+  })
+  .strict();
 export const reviewSchema = z
   .object({
     approved: z.boolean(),
     summary: z.string().min(1),
     findings: z.array(z.string()),
-    verdict: z.enum(['pass', 'rework', 'escalate']).optional(),
+    verdict: reviewPayloadSchema.shape.verdict.optional(),
+    questions: reviewQuestionsSchema.optional(),
     model: z
       .object({
         agentKind: z.enum(['omp', 'codex']),
@@ -180,36 +227,34 @@ export const reviewSchema = z
     agentKind: z.enum(['omp', 'codex']).optional(),
     agentVersion: z.string().optional(),
   })
-  .strict();
-export const mergeSchema = z.object({ approved: z.boolean(), reason: z.string().min(1) }).strict();
-export const clarificationQuestionSchema = z
-  .object({
-    id: z.string().trim().min(1).max(100).optional(),
-    question: z.string().trim().min(1).max(2000).optional(),
-    prompt: z.string().trim().min(1).max(2000).optional(),
-    recommendation: z.string().trim().max(2000).optional(),
-    options: z
-      .array(
-        z
-          .object({
-            value: z.string().trim().min(1).max(500),
-            label: z.string().trim().max(500).optional(),
-            description: z.string().trim().max(2000).optional(),
-          })
-          .strict(),
-      )
-      .max(20)
-      .optional(),
-  })
   .strict()
-  .refine((value) => !!(value.question ?? value.prompt), 'Clarification question is required');
+  .refine(validReviewQuestions, 'Invalid review questions or needs_user approval');
+export const mergeSchema = z.object({ approved: z.boolean(), reason: z.string().min(1) }).strict();
 export const clarificationInput = z
   .object({
     projectId: z.string().min(1),
     sourceMessageId: z.string().min(1),
     taskId: z.string().min(1).optional(),
     sourceIntent: z.string().trim().min(1).max(100).optional(),
-    questions: z.array(clarificationQuestionSchema).min(1).max(3),
+    questions: reviewQuestionsSchema.refine((questions) => questions.length > 0),
+    review: z
+      .object({
+        runId: z.string().min(1),
+        axis: z.enum(['primary', 'secondary', 'standards', 'spec']),
+        head: z.string().min(1),
+        base: z.string().min(1),
+        pullRequest: z
+          .object({
+            number: z.number().int().positive(),
+            repository: z.string().min(1),
+            headBranch: z.string().min(1),
+            baseBranch: z.string().min(1),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export const clarificationAnswerInput = z

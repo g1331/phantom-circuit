@@ -40,7 +40,7 @@ _Avoid_: Hidden chain of thought, raw log
 **Incident**: A durable, actionable record of an unexpected Run or delivery failure that requires PM assessment or user-visible escalation.
 _Avoid_: Event, Review finding
 
-**Clarification**: An unresolved product decision that the PM has explicitly asked the user to settle before affected Tasks are published or revised.
+**Clarification**: A request for the user to supply a necessary external fact, access decision or product choice, raised by the PM before Task publication or revision, or by a Review of an affected Task.
 _Avoid_: Technical question, confirmation
 
 **Agent backend**: The execution system that hosts a Project's PM, Dev and Review sessions.

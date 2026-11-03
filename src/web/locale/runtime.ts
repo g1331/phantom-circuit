@@ -1,4 +1,7 @@
 export const runtimeEn = {
+  'review.needsUser': 'Needs user',
+  'review.answerInput':
+    'Answers saved for the next review of this pinned version; review approval is still required.',
   'usage.priceSnapshot': 'Pinned price snapshot',
   'usage.priceVersion': 'Price version',
   'usage.priceSource': 'Price source',
@@ -124,6 +127,8 @@ export const runtimeEn = {
   'prices.saved': 'Model prices saved',
 } as const;
 export const runtimeZh: { [K in keyof typeof runtimeEn]: string } = {
+  'review.needsUser': '需要用户',
+  'review.answerInput': '答案已保存，将作为固定版本复审的输入；仍需评审通过。',
   'usage.priceSnapshot': '固定价格快照',
   'usage.priceVersion': '价格版本',
   'usage.priceSource': '价格来源',

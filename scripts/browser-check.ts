@@ -22,6 +22,7 @@ import { checkLocale } from './locale-browser-check.ts';
 import { checkUsability } from './usability-browser-check.ts';
 import { checkRuntimeUI } from './runtime-browser-check.ts';
 import { checkMaintenance } from './maintenance-browser-check.ts';
+import { checkReviewClarification } from './review-clarification-browser-check.ts';
 
 const artifacts = resolve('test-results');
 const port = Number(process.env.PHANTOM_BROWSER_PORT ?? 4318);
@@ -1145,6 +1146,7 @@ try {
   await checkLocale(page, artifacts);
   await checkUsability();
   await checkRuntimeUI();
+  await checkReviewClarification();
   await checkMaintenance();
   assert.deepEqual(errors, []);
   console.log(

@@ -211,6 +211,7 @@ export interface Task {
   documentChanges?: { path: string; content: string; version: number }[];
   reviewPolicyVersion?: number;
   secondaryReviewRequired?: boolean;
+  reviewClarificationId?: string;
   changeType?: string;
   scope?: string;
   summaryEn?: string;
@@ -230,6 +231,9 @@ export interface ReviewResult {
   summary: string;
   findings: string[];
   verdict?: ReviewVerdict;
+  runId?: string;
+  questions?: ClarificationQuestion[];
+  supersededByRunId?: string;
   model?: ModelIdentity;
   modelIdentity?: ModelIdentity;
   agentKind?: AgentKind;
@@ -297,7 +301,7 @@ export interface Run {
   endedAt?: string;
 }
 
-export type ReviewVerdict = 'pass' | 'rework' | 'escalate';
+export type ReviewVerdict = 'pass' | 'rework' | 'escalate' | 'needs_user';
 export interface ModelIdentity {
   agentKind: AgentKind;
   providerId?: string;
@@ -401,6 +405,14 @@ export interface Clarification {
   sourceMessageId: string;
   taskId?: string;
   sourceIntent: string;
+  review?: {
+    runId: string;
+    axis: ReviewResult['axis'];
+    head: string;
+    base: string;
+    pullRequest?: { number: number; repository: string; headBranch: string; baseBranch: string };
+  };
+  successorRunId?: string;
   questions: ClarificationQuestion[];
   status: 'open' | 'answered' | 'cancelled';
   answers?: ClarificationAnswer[];

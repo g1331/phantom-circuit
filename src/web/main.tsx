@@ -411,6 +411,7 @@ function App() {
                       <div className="conversation-content" ref={conversationContent}>
                         <ProjectActions
                           key={`project-actions:${project.id}`}
+                          onOpenTask={setTaskDetail}
                           state={state}
                           project={project}
                           reload={reload}

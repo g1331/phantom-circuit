@@ -6,6 +6,7 @@ import {
 } from '../shared/priority.ts';
 import {
   clarificationInput,
+  reviewSchema,
   creationPriorityInput,
   incidentInput,
   priorityUpdateInput,
@@ -28,6 +29,7 @@ import type {
   Clarification,
   ClarificationAnswer,
   ClarificationQuestion,
+  ReviewResult,
   CostEstimate,
   Incident,
   ModelIdentity,
@@ -826,6 +828,34 @@ export class Store {
       throw new Fault('Clarification 来源消息不属于当前项目', 403);
     if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
       throw new Fault('Clarification 任务不属于当前项目', 403);
+    if (parsed.review) {
+      const run = this.get('run', parsed.review.runId);
+      const task = parsed.taskId ? this.task(parsed.taskId) : undefined;
+      if (
+        !run ||
+        !task ||
+        run.role !== 'review' ||
+        run.projectId !== parsed.projectId ||
+        run.taskId !== task.id ||
+        run.repoId !== task.repoId ||
+        run.reviewAxis !== parsed.review.axis ||
+        task.sourceMessageId !== parsed.sourceMessageId ||
+        run.revision?.head !== parsed.review.head ||
+        run.revision?.base !== parsed.review.base ||
+        task.head !== parsed.review.head ||
+        task.base !== parsed.review.base
+      )
+        throw new Fault('Review Clarification 绑定不匹配', 409);
+      const pullRequest = parsed.review.pullRequest;
+      if (
+        task.pr !== pullRequest?.number ||
+        (pullRequest &&
+          (pullRequest.repository !== this.repo(task.repoId).github ||
+            pullRequest.headBranch !== task.branch ||
+            pullRequest.baseBranch !== this.repo(task.repoId).defaultBranch))
+      )
+        throw new Fault('Review Clarification PR 绑定不匹配', 409);
+    }
     const sourceIntent = parsed.sourceIntent ?? source.intent;
     if (
       !sourceIntent ||
@@ -836,6 +866,9 @@ export class Store {
       (clarification) =>
         clarification.projectId === parsed.projectId &&
         clarification.sourceMessageId === parsed.sourceMessageId &&
+        (parsed.review
+          ? clarification.review?.runId === parsed.review.runId
+          : !clarification.review) &&
         clarification.status === 'open',
     );
     if (existing) return structuredClone(existing);
@@ -843,6 +876,8 @@ export class Store {
       (clarification) =>
         clarification.projectId === parsed.projectId &&
         clarification.sourceMessageId === parsed.sourceMessageId &&
+        !parsed.review &&
+        !clarification.review &&
         clarification.status === 'cancelled',
     );
     if (cancelled)
@@ -865,6 +900,7 @@ export class Store {
       sourceMessageId: parsed.sourceMessageId,
       ...(parsed.taskId ? { taskId: parsed.taskId } : {}),
       sourceIntent,
+      ...(parsed.review ? { review: parsed.review } : {}),
       questions,
       status: 'open',
       createdAt: at,
@@ -873,6 +909,135 @@ export class Store {
     this.put('clarification', clarification.id, clarification);
     this.event('clarification', '等待用户产品澄清', { projectId: parsed.projectId });
     return structuredClone(clarification);
+  }
+
+  /** One host-accepted review result, its user wait and questions share one durable commit. */
+  recordReviewClarification(runId: string, input: unknown): Clarification {
+    const parsed = reviewSchema.parse(input);
+    if (parsed.verdict !== 'needs_user') throw new Fault('需要 needs_user 判定', 400);
+    return this.transaction(() => {
+      const run = this.get('run', runId);
+      if (!run || run.role !== 'review' || !run.taskId || !run.reviewAxis)
+        throw new Fault('Review Run 绑定无效', 409);
+      const task = this.task(run.taskId);
+      if (
+        run.projectId !== task.projectId ||
+        run.repoId !== task.repoId ||
+        run.sourceMessageId !== task.sourceMessageId ||
+        run.revision?.head !== parsed.head ||
+        run.revision?.base !== parsed.base ||
+        task.head !== parsed.head ||
+        task.base !== parsed.base
+      )
+        throw new Fault('Review revision 绑定不匹配', 409);
+      const existing = this.list('clarification').find((c) => c.review?.runId === runId);
+      if (existing) return existing;
+      if (!['running', 'waiting'].includes(run.status))
+        throw new Fault('Review Run 已结束，不能接受新判定', 409);
+      if (task.control !== 'active' || task.stage !== 'reviewing' || task.reviewClarificationId)
+        throw new Fault('Task 当前不能接受 Review 提问', 409);
+      const clarification = this.createClarification({
+        projectId: task.projectId,
+        taskId: task.id,
+        sourceMessageId: task.sourceMessageId,
+        questions: parsed.questions,
+        review: {
+          runId,
+          axis: run.reviewAxis,
+          head: task.head!,
+          base: task.base!,
+          ...(task.pr
+            ? {
+                pullRequest: {
+                  number: task.pr,
+                  repository: this.repo(task.repoId).github,
+                  headBranch: task.branch!,
+                  baseBranch: this.repo(task.repoId).defaultBranch,
+                },
+              }
+            : {}),
+        },
+      });
+      const review: ReviewResult = {
+        ...parsed,
+        axis: run.reviewAxis,
+        runId,
+        head: task.head!,
+        base: task.base!,
+        questions: clarification.questions,
+        tests: structuredClone(task.tests),
+        model: run.modelIdentity,
+        modelIdentity: run.modelIdentity,
+        agentKind: run.agentKind,
+        agentVersion: run.agentVersion,
+      };
+      this.updateTask(task.id, {
+        reviews: [
+          ...task.reviews.filter((r) => r.axis !== run.reviewAxis || r.supersededByRunId),
+          review,
+        ],
+        reviewClarificationId: clarification.id,
+        control: 'paused',
+        pausedByUser: false,
+        blocked: '评审需要用户补充',
+        blockedDescriptor: {
+          code: 'review_needs_user',
+          params: { clarificationId: clarification.id },
+        },
+      });
+      this.taskControlEvent(task, 'pause', { source: 'host', reason: 'review_needs_user', runId });
+      // A crash after accepting the verdict must not recover the asking Run as unfinished work.
+      this.finishRun(runId, 'completed');
+      return clarification;
+    });
+  }
+
+  /** Called only after Engine verifies the pinned local and remote revision. */
+  claimClarificationReview(clarificationId: string): Run | undefined {
+    return this.transaction(() => {
+      const c = this.get('clarification', clarificationId);
+      if (!c?.review || !c.taskId || c.status !== 'answered' || c.successorRunId) return;
+      const task = this.task(c.taskId);
+      const original = this.get('run', c.review.runId);
+      if (
+        task.projectId !== c.projectId ||
+        task.stage !== 'reviewing' ||
+        task.pausedByUser ||
+        task.sourceMessageId !== c.sourceMessageId ||
+        original?.repoId !== task.repoId ||
+        task.pr !== c.review.pullRequest?.number ||
+        task.reviewClarificationId !== c.id ||
+        task.head !== c.review.head ||
+        task.base !== c.review.base ||
+        (task.blocked && task.blockedDescriptor?.code !== 'review_needs_user') ||
+        (task.control !== 'active' && task.blockedDescriptor?.code !== 'review_needs_user') ||
+        this.activeRuns().some((r) => r.taskId === task.id)
+      )
+        return;
+      const asking = task.reviews.find(
+        (r) => r.runId === c.review!.runId && r.verdict === 'needs_user' && !r.supersededByRunId,
+      );
+      if (!asking) throw new Fault('Review Clarification 原判定丢失', 409);
+      const run = this.run('review', task.projectId, 'review', task, {
+        reviewAxis: c.review.axis,
+        secondaryReview: c.review.axis === 'secondary',
+        revision: { head: c.review.head, base: c.review.base },
+      });
+      this.put('clarification', c.id, { ...c, successorRunId: run.id, updatedAt: now() });
+      this.updateTask(task.id, {
+        reviews: task.reviews.map((r) => (r === asking ? { ...r, supersededByRunId: run.id } : r)),
+        reviewClarificationId: undefined,
+        control: 'active',
+        blocked: undefined,
+        blockedDescriptor: undefined,
+      });
+      this.taskControlEvent(task, 'resume', {
+        source: 'host',
+        reason: 'review_clarification_answered',
+        runId: run.id,
+      });
+      return run;
+    });
   }
 
   answerClarification(
@@ -894,6 +1059,16 @@ export class Store {
       ? rawAnswers.map((answer) => ({ questionId: answer.questionId, value: answer.value }))
       : Object.entries(rawAnswers).map(([questionId, value]) => ({ questionId, value }));
     const questionIds = new Set(clarification.questions.map((question) => question.id));
+    if (
+      answers.some((answer) =>
+        typeof answer.value === 'string'
+          ? !answer.value.trim()
+          : !Array.isArray(answer.value) ||
+            !answer.value.length ||
+            answer.value.some((value) => typeof value !== 'string' || !value.trim()),
+      )
+    )
+      throw new Fault('Clarification 回答不能为空', 400);
     if (answers.some((answer) => !questionIds.has(answer.questionId)))
       throw new Fault('Clarification 问题编号无效', 400);
     const merged = new Map(
@@ -933,6 +1108,7 @@ export class Store {
     return this.list('clarification').find(
       (clarification) =>
         clarification.sourceMessageId === sourceMessageId &&
+        !clarification.review &&
         ['open', 'cancelled'].includes(clarification.status),
     );
   }
@@ -1336,6 +1512,7 @@ export class Store {
     const sourceClarification = this.list('clarification').find(
       (clarification) =>
         clarification.sourceMessageId === input.sourceMessageId &&
+        !clarification.review &&
         ['open', 'cancelled'].includes(clarification.status),
     );
     if (sourceClarification)

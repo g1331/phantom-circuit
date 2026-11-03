@@ -284,6 +284,23 @@ export class Workspaces {
     if ((await this.git(actual, ['branch', '--show-current'])) !== task.branch)
       throw new Fault('工作区分支不匹配');
   }
+  /** A moving default tip does not change the version a user answered about. Never merge it here. */
+  async assertReviewBaseAdvance(task: Task, observedBase: string) {
+    if (!task.base || !/^[a-f0-9]{40,64}$/i.test(observedBase))
+      throw new Fault('Review 远端基线不是有效 commit SHA', 409);
+    const object = await command(
+      'git',
+      ['cat-file', '--batch-check=%(objecttype)'],
+      task.worktree!,
+      `${observedBase}\n`,
+    );
+    if (object.stdout.trim() === `${observedBase} missing`)
+      await this.git(task.worktree!, ['fetch', '--no-tags', 'origin', observedBase]);
+    else if (object.stdout.trim() !== 'commit')
+      throw new Fault('Review 远端基线对象不是 commit，无法核验', 409);
+    if (!(await this.ancestor(task.worktree!, task.base, observedBase)))
+      throw new Fault('Review 远端基线不是固定 base 的向前推进', 409);
+  }
   async finalize(task: Task, signal?: AbortSignal) {
     return this.exclusive(`repo:${task.repoId}`, () => this.commitTask(task, signal));
   }
