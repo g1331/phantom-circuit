@@ -47,6 +47,17 @@ test('a failing suite whose passing test titles mention EPERM is a test failure,
   }
 });
 
+test('validation evidence records the command wall-clock so reviews can check speed targets', async () => {
+  const f = await verifyWith('phantom-classify-duration-', 'setTimeout(() => {}, 300);');
+  try {
+    assert.ok('evidence' in f.result, `classified as: ${(f.result as { error?: string }).error}`);
+    assert.ok((f.result.evidence.at(-1)?.durationMs ?? 0) >= 300);
+  } finally {
+    f.store.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('a real nested process failure is still an environment block', async () => {
   const f = await verifyWith(
     'phantom-classify-real-',

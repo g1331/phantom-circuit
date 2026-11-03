@@ -243,6 +243,8 @@ export interface Evidence {
   output: string;
   head: string;
   at: string;
+  /** Host-measured wall-clock of the whole command; older evidence lacks it. */
+  durationMs?: number;
 }
 export interface Run {
   id: string;
