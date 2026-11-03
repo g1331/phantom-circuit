@@ -12,6 +12,7 @@ const catalog: Record<Role, string[]> = {
   pm: ['domain-modeling'],
   dev: ['tdd', 'codebase-design', 'diagnosing-bugs'],
   review: ['codebase-design'],
+  oncall: ['diagnosing-bugs'],
 };
 async function skill(name: string) {
   const file = join(root, name, 'SKILL.md');

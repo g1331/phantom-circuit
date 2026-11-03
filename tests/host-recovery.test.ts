@@ -71,15 +71,21 @@ async function fixture() {
   let deliver = true;
   class Agent extends Codex {
     developer = false;
+    oncall?: Parameters<Codex['thread']>[0]['toolHandler'];
     override async start() {
       starts++;
     }
     override async stop() {}
     override async thread(options: Parameters<Codex['thread']>[0]) {
       this.developer = options.instructions.includes('Task Developer');
+      this.oncall = options.instructions.includes('On-call') ? options.toolHandler : undefined;
       return 'fixture';
     }
     override async turn() {
+      if (this.oncall) {
+        await this.oncall('settle', { action: 'rework', diagnosis: 'Product defect.' });
+        return 'Settled';
+      }
       if (this.developer) turns++;
       if (deliver) await writeFile(join(task.worktree!, 'implementation.txt'), 'implemented\n');
       return 'Handing off';

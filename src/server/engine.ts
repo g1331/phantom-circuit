@@ -22,7 +22,9 @@ import {
   reviewPayloadSchema,
   validReviewQuestions,
   resolveIncidentInput,
+  oncallSettleInput,
 } from './schemas.ts';
+import { listeners } from './process.ts';
 import { MessageImages } from './images.ts';
 import { engineeringMetadata } from './task-naming.ts';
 import {
@@ -62,6 +64,7 @@ export const ROLE_ALLOWED_TOOLS: Record<Role, string[]> = {
   pm: ['read', 'grep', 'glob'],
   dev: ['read', 'bash', 'edit', 'write', 'grep', 'glob'],
   review: ['read', 'bash', 'grep', 'glob'],
+  oncall: ['read', 'bash', 'grep', 'glob'],
 };
 
 /** A host-initiated stop for a Run that made no progress; reported as a failure, not a pause. */
@@ -784,6 +787,19 @@ export class Engine {
     const task = item.taskId ? this.store.get('task', item.taskId) : undefined;
     if (task && ['done', 'cancelled'].includes(task.stage)) {
       this.store.finishRecovery(item.id, 'cancelled');
+      return this.store.get('recovery', item.id);
+    }
+    if (oldRun.role === 'oncall' && item.incidentId && task) {
+      const run = this.store.ensureRecoverySuccessor(item.id, {
+        role: 'oncall',
+        profile: oldRun.profile,
+        task,
+        incidentId: item.incidentId,
+        incidentPhase: oldRun.incidentPhase,
+        incidentEvidence: oldRun.incidentEvidence,
+      });
+      this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
+      await this.oncall(run, item.incidentId);
       return this.store.get('recovery', item.id);
     }
     if (oldRun.role === 'pm' || item.role === 'pm') {
@@ -1842,6 +1858,156 @@ export class Engine {
         taskId: task.id,
       });
   }
+  /**
+   * Opens a validation Incident and hands it to an on-call Run (ADR 0013). Returns false when no
+   * on-call Run can start, so the caller keeps the plain rework path.
+   */
+  private startOncall(task: Task, failure: string) {
+    const detail = redact(failure).slice(-16000);
+    const incident = this.store.createIncident({
+      projectId: task.projectId,
+      taskId: task.id,
+      phase: 'validation',
+      message: detail,
+      descriptor: diagnosticDescriptor('incident_validation', detail),
+      evidence: JSON.stringify({ taskId: task.id, head: task.head, base: task.base }),
+    });
+    let run: Run;
+    try {
+      run = this.store.run('oncall', task.projectId, 'review', task, {
+        incidentId: incident.id,
+        incidentPhase: 'validation',
+        incidentEvidence: detail,
+        suppressSource: true,
+      });
+    } catch (error) {
+      this.store.updateIncident(incident.id, {
+        status: 'resolved',
+        message: `值班无法启动，按返工处理：${redact(String(error))}`,
+      });
+      return false;
+    }
+    this.store.claimIncidentAssessment(incident.id, run.id);
+    this.block(task.id, '正式验证未通过，值班正在诊断', {
+      source: 'host',
+      reason: 'oncall',
+      runId: run.id,
+      incidentId: incident.id,
+    });
+    void this.track(this.oncall(run, incident.id));
+    return true;
+  }
+  private async oncall(run: Run, incidentId: string) {
+    const task = this.store.task(run.taskId!);
+    const repo = this.store.repo(task.repoId);
+    const detail = run.incidentEvidence ?? this.store.get('incident', incidentId)?.message ?? '';
+    const context: TaskControlContext = { source: 'host', reason: 'oncall', runId: run.id };
+    let settled: z.infer<typeof oncallSettleInput> | undefined;
+    try {
+      await this.withAgent(run, async (c, signal) => {
+        const profile = this.agentProfile(run);
+        const thread = await c.thread({
+          cwd: task.worktree!,
+          profile,
+          instructions: await instructions('oncall'),
+          writable: false,
+          tools: [
+            {
+              name: 'rerun_validation',
+              description:
+                'Rerun the configured build and test commands on the host for the pinned head. Returns fresh evidence.',
+              inputSchema: jsonSchema(z.object({}).strict()),
+            },
+            {
+              name: 'inspect_host',
+              description:
+                'Read-only: listening TCP ports with owning processes, and the host Runs currently active.',
+              inputSchema: jsonSchema(z.object({}).strict()),
+            },
+            {
+              name: 'settle',
+              description:
+                'End this on-call shift with one action: retry (needs a passing rerun), rework, or ask_user.',
+              inputSchema: jsonSchema(oncallSettleInput),
+            },
+          ],
+          toolHandler: async (name: string, args: unknown) => {
+            if (name === 'rerun_validation') {
+              const tests = await this.workspaces.verify(this.store.task(task.id), signal);
+              return tests.map(({ command, exitCode, durationMs, output }) => ({
+                command,
+                exitCode,
+                durationMs,
+                output: output.slice(-6000),
+              }));
+            }
+            if (name === 'inspect_host')
+              return {
+                listeners: await listeners(),
+                runs: this.store
+                  .activeRuns()
+                  .map(({ id, role, taskId, status }) => ({ id, role, taskId, status })),
+              };
+            if (name !== 'settle') throw new Fault('值班没有此操作权限', 403);
+            const input = oncallSettleInput.parse(args);
+            const current = this.store.task(task.id);
+            const passing =
+              current.tests.length > 0 &&
+              current.tests.every((t) => t.exitCode === 0 && t.head === current.head);
+            if (input.action === 'retry' && !passing)
+              throw new Fault('retry 需要先有一次全部通过的 rerun_validation', 409);
+            if (input.action === 'ask_user' && !input.question)
+              throw new Fault('ask_user 必须给出 question', 400);
+            settled = input;
+            return { accepted: true };
+          },
+          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.oncall } as any) : {}),
+        } as any);
+        this.saveThread(run, thread);
+        await c.turn(
+          thread,
+          `${taskPrompt(task)}\nHEAD=${task.head}\nBASE=${task.base}\nConfigured commands: ${JSON.stringify(repo.commands)}\nFailed host validation:\n${detail}\nDiagnose, then call settle exactly once.`,
+          profile,
+          signal,
+          undefined,
+          this.onTurn(run),
+        );
+        if (!settled) throw new Fault('值班未给出处置', 409);
+      });
+    } catch (error) {
+      // Resuming the Task revalidates the same head, and a new failure opens a fresh on-call shift.
+      const message = this.stopping
+        ? '宿主停止时值班尚未完成；恢复任务会重新验证'
+        : `值班诊断失败：${redact(String(error))}`;
+      this.store.updateIncident(incidentId, { status: 'waiting_user', message });
+      this.block(task.id, message, context);
+      return;
+    }
+    const outcome = settled!;
+    this.store.event('oncall', `${outcome.action}：${outcome.diagnosis}`, {
+      projectId: task.projectId,
+      taskId: task.id,
+      runId: run.id,
+    });
+    if (outcome.action === 'retry')
+      this.resolveIncident(task.projectId, incidentId, 'resolved', outcome.diagnosis, context);
+    else if (outcome.action === 'rework') {
+      this.store.updateIncident(incidentId, { status: 'resolved', message: outcome.diagnosis });
+      this.rework(
+        this.store.task(task.id),
+        `值班诊断：${outcome.diagnosis}
+正式验证输出：
+${detail}`,
+      );
+    } else {
+      this.resolveIncident(task.projectId, incidentId, 'waiting_user', outcome.question, context);
+      this.store.addMessage(
+        task.projectId,
+        'assistant',
+        `「${task.title}」需要你确认：${outcome.question}`,
+      );
+    }
+  }
   /** `spend: false` is host resynchronisation (a moved base), not a product rework round. */
   private rework(task: Task, reason: string, spend = true) {
     const retries = task.retries + (spend ? 1 : 0);
@@ -2012,7 +2178,9 @@ export class Engine {
       };
       ensureActive();
       if (tests.some((t) => t.exitCode !== 0)) {
-        this.rework(task, tests.map((t) => `${t.command}\n${t.output}`).join('\n'));
+        const failure = tests.map((t) => `${t.command}\nexit ${t.exitCode}\n${t.output}`).join('\n');
+        // On-call diagnoses first, so a flaky or environmental failure does not spend a rework round.
+        if (!this.startOncall(task, failure)) this.rework(task, failure);
         return;
       }
       await this.workspaces.push(task, signal);

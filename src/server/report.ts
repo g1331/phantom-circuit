@@ -100,7 +100,7 @@ const schemas = {
   }),
   run: scoped.extend({
     taskId: id.optional(),
-    role: z.enum(['pm', 'dev', 'review']),
+    role: z.enum(['pm', 'dev', 'review', 'oncall']),
     status: id,
     sourceMessageId: id.optional(),
     incidentId: id.optional(),

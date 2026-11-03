@@ -111,3 +111,38 @@ export async function shellCommand(
       )
     : command('/bin/sh', ['-c', text], cwd, undefined, timeout, false, signal);
 }
+/**
+ * Listening TCP ports and their owning processes, for read-only on-call diagnosis of collisions
+ * with work outside the host (another checkout's browser check held a fixed port during #65).
+ */
+export async function listeners(): Promise<{ port: number; pid: number; command: string }[]> {
+  const rows: { port: number; pid: number; command: string }[] = [];
+  if (process.platform === 'win32') {
+    const script =
+      '$p = @{}; Get-CimInstance Win32_Process | ForEach-Object { $p[[string]$_.ProcessId] = $_.CommandLine }; ' +
+      'Get-NetTCPConnection -State Listen | ForEach-Object { [pscustomobject]@{ port = $_.LocalPort; pid = $_.OwningProcess; command = $p[[string]$_.OwningProcess] } } | ConvertTo-Json -Compress';
+    const r = await command(
+      'pwsh.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      undefined,
+      undefined,
+      30000,
+      false,
+    );
+    const parsed: unknown = r.stdout.trim() ? JSON.parse(r.stdout) : [];
+    for (const row of Array.isArray(parsed) ? parsed : [parsed])
+      rows.push({ port: Number(row.port), pid: Number(row.pid), command: String(row.command ?? '') });
+  } else {
+    const r = await command('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'], undefined, undefined, 30000, false);
+    for (const line of r.stdout.split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      const port = Number(/:(\d+)$/.exec(cols[8] ?? '')?.[1]);
+      if (port) rows.push({ port, pid: Number(cols[1]), command: cols[0] ?? '' });
+    }
+  }
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => !seen.has(`${row.port}:${row.pid}`) && seen.add(`${row.port}:${row.pid}`))
+    .map((row) => ({ ...row, command: redact(row.command).slice(0, 300) }))
+    .sort((a, b) => a.port - b.port);
+}

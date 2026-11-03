@@ -127,7 +127,9 @@ export async function fixture(
       return 'fixture';
     }
     override async turn(_thread: string, prompt: string) {
-      if (this.options!.instructions.includes('Task Developer')) {
+      if (this.options!.instructions.includes('On-call')) {
+        await this.options!.toolHandler!('settle', { action: 'rework', diagnosis: 'Product defect.' });
+      } else if (this.options!.instructions.includes('Task Developer')) {
         turns++;
         await dev(this.options!.cwd);
       } else if (

@@ -1,6 +1,6 @@
 # Operate as an autonomous development team behind a requirements conversation
 
-Status: accepted direction, not yet implemented. Until each slice below lands, ADRs 0001, 0005, 0008 and 0009 describe the host's actual behavior, and agents follow them rather than this record.
+Status: accepted direction, partly implemented: on-call validation diagnosis (amending ADR 0005) has landed. Until each remaining slice lands, ADRs 0001, 0005, 0008 and 0009 describe the host's actual behavior, and agents follow them rather than this record.
 
 Phantom Circuit is a development team and the user is its client. The user discusses requirements and evaluates delivered behavior; planning, branches, commits, pull requests, reviews, CI, role assignment and model choice are the team's own business and are not part of the user's interface. On 2026-11-03 the operator standing in for the user intervened fourteen times across three Tasks (seven messages, seven host or test fixes), and none of those interventions was a product decision. Each one was an engineering problem — missing evidence, a flaky check, a port collision, machine load, a base resync — that the team escalated instead of resolving.
 

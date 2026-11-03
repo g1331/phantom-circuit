@@ -4,7 +4,7 @@ export type Stage =
   'clarifying' | 'ready' | 'developing' | 'reviewing' | 'merging' | 'done' | 'cancelled';
 export type RunStatus =
   'queued' | 'running' | 'waiting' | 'paused' | 'interrupted' | 'failed' | 'completed';
-export type Role = 'pm' | 'dev' | 'review';
+export type Role = 'pm' | 'dev' | 'review' | 'oncall';
 export type AgentKind = 'omp' | 'codex';
 export type ProfileName = 'backend' | 'frontend' | 'fullstack' | 'complex' | 'pm' | 'review';
 export type ProfileMode = 'inherit' | 'pinned';

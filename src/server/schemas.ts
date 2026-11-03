@@ -267,6 +267,14 @@ export const resolveIncidentInput = z
     guidance: z.string().trim().max(16000).optional(),
   })
   .strict();
+/** The on-call engineer's one disposition for an Incident; `question` is required for `ask_user`. */
+export const oncallSettleInput = z
+  .object({
+    action: z.enum(['retry', 'rework', 'ask_user']),
+    diagnosis: z.string().trim().min(1).max(4000),
+    question: z.string().trim().min(1).max(2000).optional(),
+  })
+  .strict();
 export const messageDescriptorSchema = z
   .object({
     code: z.string().min(1),
