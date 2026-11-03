@@ -1,0 +1,577 @@
+/* Team room (ADR 0013): the live view of the team beside the liaison conversation. */
+:root {
+  --role-pm: #8ab4f8;
+  --role-dev: #83d5b1;
+  --role-review: #c5a8ff;
+  --role-oncall: #efc078;
+}
+:root[data-theme='light'] {
+  --role-pm: #2f6fd6;
+  --role-dev: #187451;
+  --role-review: #7343d1;
+  --role-oncall: #a06a12;
+}
+
+.workspace-grid.with-team {
+  grid-template-columns: minmax(0, 1fr) 344px;
+}
+.team-rail-open {
+  display: none;
+}
+/* Laptop widths keep the conversation readable: the room narrows to a rail of member avatars. */
+@media (max-width: 1439px) and (min-width: 1101px) {
+  .workspace-grid.with-team {
+    grid-template-columns: minmax(0, 1fr) 68px;
+  }
+  .team-aside {
+    position: relative;
+    padding: 16px 0;
+    align-items: center;
+    overflow: hidden;
+  }
+  .team-aside > :not(.team-members-section, .team-rail-open),
+  .team-aside .team-members-section h3,
+  .team-aside .team-member-body {
+    display: none;
+  }
+  .team-aside .team-member {
+    padding: 6px;
+    border-color: transparent;
+    background: none;
+  }
+  .team-rail-open {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .team-rail-open:hover {
+    background: color-mix(in srgb, var(--text) 4%, transparent);
+  }
+  .team-rail-open:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+  .team-rail-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--warning);
+    color: var(--button-text);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+  }
+}
+@media (max-width: 1100px) {
+  .workspace-grid.with-team {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-grid.with-team > .team-aside {
+    display: none;
+  }
+}
+
+.team-room {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px 18px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  color: var(--text);
+}
+.team-aside {
+  border-left: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 92%, var(--role-pm)) 0, var(--bg) 220px);
+}
+.team-full {
+  flex: 1;
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: 28px var(--page-gutter) 40px;
+}
+.team-full .team-members {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.team-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.team-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+.team-header p {
+  margin: 3px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--faint);
+}
+.team-header p.team-live {
+  color: var(--role-dev);
+}
+.team-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+  animation: team-pulse 1.8s ease-out infinite;
+}
+.team-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.team-control:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+}
+.team-control:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.team-section h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.team-section ul,
+.team-section ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.team-empty,
+.team-more {
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+.team-more {
+  margin-top: 8px;
+}
+
+/* Waiting on the user: the one place the room asks for attention. */
+.team-waiting ul {
+  display: grid;
+  gap: 8px;
+}
+.team-request {
+  position: relative;
+  padding: 11px 12px 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warning) 9%, var(--panel));
+  overflow: hidden;
+}
+.team-request::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--warning);
+}
+.team-request.kind-blocked {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+}
+.team-request.kind-blocked::before {
+  background: var(--danger);
+}
+.team-request-kind {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warning);
+}
+.team-request.kind-blocked .team-request-kind {
+  color: var(--danger);
+}
+.team-request strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+}
+.team-request p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.team-link {
+  margin-top: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.team-link:hover {
+  text-decoration: underline;
+}
+
+/* Members */
+.team-members {
+  display: grid;
+  gap: 6px;
+}
+.team-member {
+  --role: var(--role-pm);
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+}
+.team-member.role-dev {
+  --role: var(--role-dev);
+}
+.team-member.role-review {
+  --role: var(--role-review);
+}
+.team-member.role-oncall {
+  --role: var(--role-oncall);
+}
+.team-member.is-working {
+  border-color: color-mix(in srgb, var(--role) 28%, var(--line));
+  background: color-mix(in srgb, var(--role) 7%, var(--panel));
+}
+.team-member.is-idle {
+  opacity: 0.62;
+}
+.team-avatar {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--role);
+  background: color-mix(in srgb, var(--role) 14%, var(--panel));
+}
+.is-idle .team-avatar {
+  color: var(--faint);
+  background: var(--raised);
+}
+/* A working member's avatar carries a turning arc in its role colour. */
+.is-working .team-avatar::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 55%, var(--role) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  animation: team-spin 1.6s linear infinite;
+}
+.team-member-body {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.team-member-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.team-clock {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--role);
+}
+.team-doing {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.is-working .team-doing {
+  color: var(--text);
+}
+.team-dots::after {
+  content: '';
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: team-dots 1.4s steps(4, end) infinite;
+}
+.team-member-task {
+  font-size: 12px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Work pipeline */
+.team-works {
+  display: grid;
+  gap: 8px;
+}
+.team-work {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+.team-work:hover {
+  border-color: var(--muted);
+  transform: translateY(-1px);
+}
+.team-work:focus-visible,
+.team-control:focus-visible,
+.team-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.team-work-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.team-badge,
+.team-rounds {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--faint);
+  background: var(--raised);
+}
+.attention-blocked .team-badge {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--panel));
+}
+.attention-needs_user .team-badge {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 15%, var(--panel));
+}
+.team-track {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.team-track > span {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--raised);
+}
+.team-track > .done {
+  background: color-mix(in srgb, var(--role-dev) 70%, var(--raised));
+}
+.team-track > .current {
+  background: var(--role-dev);
+}
+.is-live .team-track > .current {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--role-dev) 45%, transparent), var(--role-dev), color-mix(in srgb, var(--role-dev) 45%, transparent));
+  background-size: 200% 100%;
+  animation: team-flow 1.6s linear infinite;
+}
+.attention-blocked .team-track > .current {
+  background: var(--danger);
+}
+.attention-needs_user .team-track > .current {
+  background: var(--warning);
+}
+.attention-paused .team-track > .current {
+  background: var(--faint);
+}
+.team-work-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.team-owners {
+  display: inline-flex;
+  gap: 4px;
+  color: var(--role-dev);
+}
+.team-reason {
+  flex-basis: 100%;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Feed */
+.team-feed {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  padding-left: 14px !important;
+}
+.team-feed::before {
+  content: '';
+  position: absolute;
+  inset: 4px auto 4px 3px;
+  width: 1px;
+  background: var(--line);
+}
+.team-feed li {
+  --role: var(--role-pm);
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.team-feed li.role-dev {
+  --role: var(--role-dev);
+}
+.team-feed li.role-review {
+  --role: var(--role-review);
+}
+.team-feed li.role-oncall {
+  --role: var(--role-oncall);
+}
+.team-feed li::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--role);
+  box-shadow: 0 0 0 3px var(--bg);
+}
+.team-feed li.feed-failed::before {
+  background: var(--danger);
+}
+.team-feed li.team-feed-task {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-feed li.team-feed-task:first-child {
+  margin-top: 0;
+}
+.team-feed li.team-feed-task::before {
+  display: none;
+}
+.team-feed time {
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.team-feed strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.team-feed em {
+  font-style: normal;
+  color: var(--faint);
+}
+
+@keyframes team-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes team-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+@keyframes team-flow {
+  to {
+    background-position: -200% 0;
+  }
+}
+@keyframes team-dots {
+  0% {
+    content: '';
+  }
+  25% {
+    content: '.';
+  }
+  50% {
+    content: '..';
+  }
+  75% {
+    content: '...';
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .team-pulse,
+  .is-working .team-avatar::after,
+  .is-live .team-track > .current,
+  .team-dots::after {
+    animation: none;
+  }
+  .team-work:hover {
+    transform: none;
+  }
+}

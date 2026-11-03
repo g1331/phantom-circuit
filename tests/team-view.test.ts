@@ -48,6 +48,9 @@ test('the team view shows who is working on what and what waits on the user', as
       questions: [{ id: 'q', question: '按月还是按年计费？' }],
     });
 
+    // The liaison asked a question and now waits on the user: that is not work in progress.
+    const liaison = store.run('pm', project.id, 'pm');
+    store.finishRun(liaison.id, 'waiting', 'ClarificationPause');
     const view = teamView(store.snapshot(), project.id);
 
     const developer = view.members.find((m) => m.role === 'dev')!;
@@ -75,8 +78,12 @@ test('the team view shows who is working on what and what waits on the user', as
         ['clarification', 'Billing', '按月还是按年计费？'],
       ],
     );
-    assert.equal(view.feed[0].runId, dev.id);
-    assert.equal(view.feed[0].kind, 'started');
+    assert.ok(view.feed.some((f) => f.runId === dev.id && f.kind === 'started'));
+    assert.deepEqual(
+      view.feed.filter((f) => f.runId === liaison.id).map((f) => f.kind),
+      ['started'],
+      'a question to the user is not reported as the liaison finishing',
+    );
   } finally {
     store.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

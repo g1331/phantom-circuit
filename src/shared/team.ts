@@ -64,7 +64,8 @@ export interface TeamView {
   feed: TeamFeedItem[];
 }
 
-const live = (run: Run) => run.status === 'running' || run.status === 'waiting';
+// A `waiting` Run is held on the user (a Clarification), which the room shows as a request.
+const live = (run: Run) => run.status === 'running';
 
 function activity(run: Run, task?: Task): MemberActivity {
   if (run.role === 'pm') return run.incidentId ? 'assessing' : run.sourceMessageId ? 'talking' : 'planning';
@@ -181,7 +182,7 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
     };
     feed.push({ id: `${run.id}:start`, at: run.startedAt, kind: 'started', ...base });
-    if (run.endedAt && !live(run))
+    if (run.endedAt && run.status !== 'running' && run.status !== 'waiting')
       feed.push({
         id: `${run.id}:end`,
         at: run.endedAt,
