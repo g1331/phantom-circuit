@@ -145,13 +145,32 @@ async function fixture(axis: 'primary' | 'secondary', replyMode: 'tool' | 'json'
     );
   let engine = makeEngine();
   async function pump(condition: () => boolean) {
-    for (let i = 0; i < 700 && !condition(); i++) {
+    // Real Git and validation child processes compete with other test files.
+    // Bound elapsed time rather than the number of scheduler polls.
+    const startedAt = performance.now();
+    const deadline = startedAt + 60_000;
+    while (!condition() && performance.now() < deadline) {
       await engine.tick();
       await new Promise((r) => setTimeout(r, 15));
     }
-    assert.ok(
-      condition(),
-      `State not reached; trace=${trace}; task=${JSON.stringify(store.task(f.task.id))}`,
+    if (condition()) return;
+    const runs = store.list('run').filter((run) => run.taskId === f.task.id);
+    const incidents = store.list('incident').filter((incident) => incident.taskId === f.task.id);
+    assert.fail(
+      `State not reached; ${JSON.stringify({
+        elapsedMs: Math.round(performance.now() - startedAt),
+        trace,
+        task: store.task(f.task.id),
+        runs: runs.map(({ id, role, reviewAxis, status, error }) => ({
+          id,
+          role,
+          reviewAxis,
+          status,
+          error,
+        })),
+        incidents,
+        events: store.taskEvents(f.task.id).slice(-10),
+      })}`,
     );
   }
   return {
