@@ -10,6 +10,7 @@ import {
   Radio,
   Settings2,
   ShieldCheck,
+  Users,
   X,
 } from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
@@ -28,7 +29,9 @@ import { RunList } from './run-list.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { Modal } from './ui.tsx';
 import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
+import { TeamRoom } from './team-room.tsx';
 import './style.css';
+import './team-room.css';
 
 function App() {
   const { t, number } = useLocale();
@@ -38,7 +41,7 @@ function App() {
   const [scheduleRefresh, setScheduleRefresh] = useState(0);
   const [state, setState] = useState<Snapshot>();
   const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
-  const [view, setView] = useState<'chat' | 'tasks' | 'runs'>('chat');
+  const [view, setView] = useState<'chat' | 'team' | 'tasks' | 'runs'>('chat');
   const [contextOpen, setContextOpen] = useState(false);
   const contextRef = useRef<HTMLDialogElement>(null);
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
@@ -252,6 +255,18 @@ function App() {
     return submitted;
   }
 
+  const teamRoom = (layout: 'aside' | 'full') =>
+    state && project ? (
+      <TeamRoom
+        state={state}
+        projectId={project.id}
+        busy={busy}
+        layout={layout}
+        onOpenTask={setTaskDetail}
+        onTeam={(action) => void act(() => api(`/projects/${project.id}/team/${action}`, {}))}
+        {...(layout === 'aside' ? { onExpand: () => setView('team') } : {})}
+      />
+    ) : null;
   return (
     <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <Sidebar
@@ -350,6 +365,7 @@ function App() {
                 {(
                   [
                     { key: 'chat', label: t('tabs.chat'), icon: MessageSquare },
+                    { key: 'team', label: t('tabs.team'), icon: Users },
                     { key: 'tasks', label: t('tabs.tasks'), icon: Layers3 },
                     { key: 'runs', label: t('tabs.runs'), icon: Activity },
                   ] as const
@@ -376,7 +392,7 @@ function App() {
                 <Settings2 size={15} /> {t('project.overview')}
               </button>
             </section>
-            <div className="workspace-grid">
+            <div className={`workspace-grid ${view === 'chat' ? 'with-team' : ''}`}>
               <section className="primary-workspace">
                 <div
                   className="chat-workspace"
@@ -534,8 +550,11 @@ function App() {
                   />
                 ) : view === 'runs' ? (
                   <RunList state={state} runs={runs} tasks={tasks} />
+                ) : view === 'team' ? (
+                  teamRoom('full')
                 ) : null}
               </section>
+              {view === 'chat' && teamRoom('aside')}
               <dialog
                 id="project-context"
                 className="context-panel"
