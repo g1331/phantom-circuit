@@ -2909,6 +2909,34 @@ ${detail}`,
       this.store.updateTask(task.id, { pendingFeedback: pending });
     });
   }
+  /**
+   * Pauses every unfinished Task of a Project, or resumes only the Tasks a team pause held, so a
+   * Task the user or the host paused on its own stays paused. Returns the Task ids it changed.
+   */
+  async team(projectId: string, action: 'pause' | 'resume') {
+    const tasks = this.store
+      .list('task')
+      .filter((t) => t.projectId === projectId && !['done', 'cancelled'].includes(t.stage));
+    const changed: string[] = [];
+    for (const task of tasks) {
+      if (action === 'pause') {
+        if (task.control !== 'active') continue;
+        this.control(task.id, 'pause', { source: 'user', reason: 'team_pause' });
+        changed.push(task.id);
+        continue;
+      }
+      const last = this.store.taskEvents(task.id).findLast((e) => e.control);
+      if (task.control !== 'paused' || last?.control?.reason !== 'team_pause') continue;
+      try {
+        await this.resume(task.id, undefined, { source: 'user', reason: 'team_resume' });
+        changed.push(task.id);
+      } catch (error) {
+        // A Task still gated on the user (an open Clarification) stays paused with that reason.
+        if (!(error instanceof Fault)) throw error;
+      }
+    }
+    return changed;
+  }
   control(taskId: string, action: 'pause' | 'resume' | 'cancel', context?: TaskControlContext) {
     this.store.control(taskId, action, context);
     if (action !== 'resume')

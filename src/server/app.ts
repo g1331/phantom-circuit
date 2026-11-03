@@ -666,6 +666,13 @@ export function createApp(
       .catch((e) => store.addMessage(m.projectId, 'system', `PM 重试失败：${String(e)}`));
     return { queued: true };
   });
+  app.post('/api/projects/:id/team/:action', async (req) => {
+    const { id, action } = z
+      .object({ id: z.string(), action: z.enum(['pause', 'resume']) })
+      .parse(req.params);
+    store.project(id);
+    return { changed: await engine.team(id, action) };
+  });
   app.post('/api/tasks/:id/:action', async (req) => {
     const { id, action } = z
       .object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel']) })
