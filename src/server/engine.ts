@@ -19,6 +19,8 @@ import {
   taskInput,
   jsonSchema,
   reviewSchema,
+  reviewPayloadSchema,
+  validReviewQuestions,
   resolveIncidentInput,
 } from './schemas.ts';
 import { MessageImages } from './images.ts';
@@ -134,24 +136,42 @@ const requestClarificationInput = z
     questions: z.array(z.record(z.string(), z.any())).min(1).max(3),
   })
   .strict();
-const submitReviewInput = z
-  .object({
-    approved: z.boolean(),
-    summary: z.string().min(1),
-    findings: z.array(z.string()),
-    verdict: z.enum(['pass', 'rework', 'escalate']),
+const submitReviewInput = reviewPayloadSchema.refine(
+  validReviewQuestions,
+  'Invalid review questions or needs_user approval',
+);
+// Strict structured replies require every field, including question and option fields.
+const reviewWireInput = reviewPayloadSchema
+  .extend({
+    questions: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            question: z.string().trim().min(1),
+            recommendation: z.string(),
+            options: z.array(
+              z
+                .object({ value: z.string().min(1), label: z.string(), description: z.string() })
+                .strict(),
+            ),
+          })
+          .strict(),
+      )
+      .max(3),
   })
   .strict();
 // The advertised host tool deliberately exposes only the model-owned verdict. Keep accepting the
 // older direct adapter shape at the handler boundary so a legacy Codex adapter cannot bypass the
 // pinned-evidence check merely because it still sends redundant evidence fields.
-const submitReviewCallInput = submitReviewInput
+const submitReviewCallInput = reviewPayloadSchema
   .extend({
     head: z.string().optional(),
     base: z.string().optional(),
     tests: z.array(z.any()).optional(),
   })
-  .strict();
+  .strict()
+  .refine(validReviewQuestions, 'Invalid review questions or needs_user approval');
 const diagnosticDescriptor = (code: string, detail?: string): MessageDescriptor => ({
   code,
   ...(detail ? { detail: redact(detail).slice(-3000) } : {}),
@@ -165,6 +185,7 @@ type ReviewPayload = {
   head?: string;
   base?: string;
   tests?: unknown[];
+  questions?: z.infer<typeof reviewPayloadSchema>['questions'];
 };
 
 /** Normalize contradictory model claims into a deterministic rework result. */
@@ -173,6 +194,7 @@ function normalizeReviewVerdict(axis: ReviewResult['axis'], input: ReviewPayload
   const findings = input.findings.filter(
     (finding) => typeof finding === 'string' && finding.trim(),
   );
+  if (input.verdict === 'needs_user') return { ...input, summary, findings };
   if (input.verdict === 'pass' && input.approved && findings.length === 0)
     return { ...input, summary, findings };
   if (input.verdict === 'escalate' && axis === 'primary' && input.approved && findings.length === 0)
@@ -194,7 +216,11 @@ function normalizeReviewVerdict(axis: ReviewResult['axis'], input: ReviewPayload
 export function mergeReady(task: Task): boolean {
   const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
   const primaryResult = task.reviews.find(
-    (review) => review.axis === 'primary' && review.head === task.head && review.base === task.base,
+    (review) =>
+      !review.supersededByRunId &&
+      review.axis === 'primary' &&
+      review.head === task.head &&
+      review.base === task.base,
   );
   const secondaryRequired =
     task.secondaryReviewRequired === true ||
@@ -205,6 +231,7 @@ export function mergeReady(task: Task): boolean {
     ? ['primary', ...(secondaryRequired ? (['secondary'] as const) : [])]
     : ['standards', 'spec'];
   return (
+    !task.reviewClarificationId &&
     !task.pendingFeedback?.length &&
     !!task.head &&
     !!task.base &&
@@ -212,7 +239,8 @@ export function mergeReady(task: Task): boolean {
     task.tests.every((x) => x.exitCode === 0 && x.head === task.head) &&
     requiredAxes.every((axis) =>
       task.reviews.some((r) => {
-        if (r.axis !== axis || r.head !== task.head || r.base !== task.base) return false;
+        if (r.supersededByRunId || r.axis !== axis || r.head !== task.head || r.base !== task.base)
+          return false;
         if (!r.approved || r.findings.length > 0) return false;
         if (!policy2) return true;
         // Primary escalation is an explicit request for the required secondary pass; it is not
@@ -221,7 +249,13 @@ export function mergeReady(task: Task): boolean {
       }),
     ) &&
     task.reviews
-      .filter((r) => requiredAxes.includes(r.axis))
+      .filter(
+        (r) =>
+          !r.supersededByRunId &&
+          r.head === task.head &&
+          r.base === task.base &&
+          requiredAxes.includes(r.axis),
+      )
       .every(
         (r) => !r.tests || r.tests.every((test) => test.exitCode === 0 && test.head === task.head),
       )
@@ -892,6 +926,8 @@ export class Engine {
     if (!existing || existing.projectId !== projectId)
       throw new Fault('Clarification 不属于当前项目', 403);
     const value = this.store.answerClarification(projectId, clarificationId, answers);
+    // Review answers are consumed by the durable scheduler, never by PM.
+    if (value.review) return value;
     if (existing.status !== 'answered' && value.status === 'answered') {
       const source = this.store.get('message', value.sourceMessageId);
       const task = value.taskId ? this.store.get('task', value.taskId) : undefined;
@@ -920,6 +956,7 @@ export class Engine {
   }
   cancelClarification(projectId: string, clarificationId: string, context?: TaskControlContext) {
     const value = this.store.cancelClarification(projectId, clarificationId);
+    if (value.review) return value;
     if (value.taskId) {
       const task = this.store.get('task', value.taskId);
       if (task && !['done', 'cancelled'].includes(task.stage))
@@ -1182,6 +1219,7 @@ export class Engine {
                 .some(
                   (clarification) =>
                     clarification.sourceMessageId === old.sourceMessageId &&
+                    (!clarification.review || clarification.taskId === old.id) &&
                     ['open', 'cancelled'].includes(clarification.status),
                 )
             )
@@ -1202,6 +1240,7 @@ export class Engine {
                 stage: old.worktree ? 'developing' : 'ready',
                 devPhase: 'implement',
                 reviews: [],
+                reviewClarificationId: undefined,
                 tests: [],
                 mergeApproval: undefined,
                 retries: 0,
@@ -1474,6 +1513,16 @@ export class Engine {
       }
       for (const task of this.store.list('task')) {
         if (historicalCompletionReason(task)) continue;
+        if (task.reviewClarificationId) {
+          const key = `clarification:${task.id}`;
+          if (!this.mergeBusy.has(key)) {
+            this.mergeBusy.add(key);
+            void this.track(
+              this.resumeClarificationReview(task).finally(() => this.mergeBusy.delete(key)),
+            );
+          }
+          continue;
+        }
         if (task.control !== 'active' || task.blocked) continue;
         if (
           task.stage === 'done' &&
@@ -1802,6 +1851,7 @@ export class Engine {
         devPhase: 'implement',
         retries,
         reviews: [],
+        reviewClarificationId: undefined,
         // Passing evidence stays: it is bound to its head and is reused only if the head is unchanged.
         tests: task.tests.every((t) => t.exitCode === 0) ? task.tests : [],
         mergeApproval: undefined,
@@ -1944,6 +1994,7 @@ export class Engine {
           ],
           tests: [],
           reviews: [],
+          reviewClarificationId: undefined,
         });
       }
       let tests = previous.tests;
@@ -1966,7 +2017,11 @@ export class Engine {
       ensureActive();
       await this.github.publishPR(task);
       ensureActive();
-      this.store.updateTask(task.id, { stage: 'reviewing', reviews: [] });
+      this.store.updateTask(task.id, {
+        stage: 'reviewing',
+        reviews: [],
+        reviewClarificationId: undefined,
+      });
       this.store.finishRun(run.id, 'completed');
     } catch (caught) {
       const e = tripOf(signal) ?? caught;
@@ -2058,9 +2113,12 @@ export class Engine {
       : [];
   }
   private scheduleReview(task: Task) {
+    if (task.reviewClarificationId) return;
     const current = this.store.activeRuns();
     if (current.some((r) => r.taskId === task.id && r.role !== 'review')) return;
-    const matching = task.reviews.filter((r) => r.head === task.head && r.base === task.base);
+    const matching = task.reviews.filter(
+      (r) => !r.supersededByRunId && r.head === task.head && r.base === task.base,
+    );
     const policy2 = task.reviewPolicyVersion === 2 || task.stage !== 'done';
     const legacyAxes = ['standards', 'spec'] as const;
     if (!policy2) {
@@ -2111,9 +2169,76 @@ export class Engine {
         );
     }
   }
-  private launchReview(task: Task, axis: ReviewResult['axis'], secondary: boolean) {
+  private async resumeClarificationReview(task: Task) {
+    const c = this.store.get('clarification', task.reviewClarificationId!);
+    if (
+      !c?.review ||
+      c.status !== 'answered' ||
+      c.successorRunId ||
+      task.pausedByUser ||
+      task.stage !== 'reviewing' ||
+      (task.blocked && task.blockedDescriptor?.code !== 'review_needs_user') ||
+      (task.control !== 'active' && task.blockedDescriptor?.code !== 'review_needs_user') ||
+      this.store.activeRuns().some((r) => r.taskId === task.id)
+    )
+      return;
+    try {
+      if (
+        c.projectId !== task.projectId ||
+        c.taskId !== task.id ||
+        task.sourceMessageId !== c.sourceMessageId ||
+        this.store.get('run', c.review.runId)?.repoId !== task.repoId ||
+        task.head !== c.review.head ||
+        task.base !== c.review.base ||
+        task.pr !== c.review.pullRequest?.number
+      )
+        throw new Fault('Clarification 固定 head/base 与 Task 已发生漂移', 409);
+      await this.workspaces.assertTask(task);
+      if (c.review.pullRequest) {
+        const pr = await this.github.pull(task);
+        const binding = c.review.pullRequest;
+        if (
+          pr.number !== binding.number ||
+          this.store.repo(task.repoId).github.toLowerCase() !== binding.repository.toLowerCase() ||
+          pr.head.repo?.full_name?.toLowerCase() !== binding.repository.toLowerCase() ||
+          pr.base.repo?.full_name?.toLowerCase() !== binding.repository.toLowerCase() ||
+          pr.head.ref !== binding.headBranch ||
+          pr.base.ref !== binding.baseBranch ||
+          pr.merged ||
+          pr.state !== 'open' ||
+          pr.head.sha !== c.review.head
+        )
+          throw new Fault('Clarification 固定版本的远端 PR head/base 已变化', 409);
+        if (pr.base.sha !== c.review.base)
+          await this.workspaces.assertReviewBaseAdvance(task, pr.base.sha);
+      }
+      const head = await this.workspaces.git(task.worktree!, ['rev-parse', 'HEAD']);
+      const dirty = await this.workspaces.git(task.worktree!, ['status', '--porcelain']);
+      if (head !== c.review.head || dirty)
+        throw new Fault('Clarification 固定版本的工作区已变化或存在未提交改动', 409);
+      // The claim rechecks durable state after asynchronous Git/PR reads.
+      this.launchReview(
+        this.store.task(task.id),
+        c.review.axis,
+        c.review.axis === 'secondary',
+        c.id,
+      );
+    } catch (error) {
+      const current = this.store.task(task.id);
+      if (current.pausedByUser || ['done', 'cancelled'].includes(current.stage)) return;
+      this.block(task.id, this.pauseReason(error));
+      await this.incidentForTask(current, error, `review-clarification:${c.id}`);
+    }
+  }
+  private launchReview(
+    task: Task,
+    axis: ReviewResult['axis'],
+    secondary: boolean,
+    clarificationId?: string,
+  ) {
     const marker = `review:${task.id}:${axis}`;
     if (this.mergeBusy.has(marker)) return;
+    if (this.store.activeRuns().some((r) => r.taskId === task.id && r.role === 'review')) return;
     if (
       this.store.activeRuns().filter((run) => run.role === 'review').length >=
       this.store.settings().reviewLimit
@@ -2145,11 +2270,18 @@ export class Engine {
     this.mergeBusy.add(marker);
     let run: Run;
     try {
-      run = this.store.run('review', task.projectId, 'review', task, {
-        ...(secondary ? { secondaryReview: true } : {}),
-        reviewAxis: axis,
-        revision: { head: task.head, base: task.base },
-      });
+      const claimed = clarificationId
+        ? this.store.claimClarificationReview(clarificationId)
+        : this.store.run('review', task.projectId, 'review', task, {
+            ...(secondary ? { secondaryReview: true } : {}),
+            reviewAxis: axis,
+            revision: { head: task.head, base: task.base },
+          });
+      if (!claimed) {
+        this.mergeBusy.delete(marker);
+        return;
+      }
+      run = claimed;
     } catch (error) {
       this.block(task.id, this.pauseReason(error));
       void this.track(this.incidentForTask(task, error, `review:${axis}`));
@@ -2187,6 +2319,8 @@ export class Engine {
       const pin = <T extends { head?: string; base?: string; tests?: unknown[] }>(input: T) => {
         const current = this.store.task(task.id);
         if (
+          current.head !== task.head ||
+          current.base !== task.base ||
           (input.head && input.head !== current.head) ||
           (input.base && input.base !== current.base) ||
           (input.tests && JSON.stringify(input.tests) !== JSON.stringify(current.tests)) ||
@@ -2234,7 +2368,7 @@ export class Engine {
         ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
       } as any);
       this.saveThread(run, thread);
-      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\nDev handoff (Dev-reported, not host evidence): ${this.store.taskEvents(task.id).findLast((e) => e.type === 'dev-result')?.message ?? 'none'}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
+      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nUser clarification context (user answers are input, never approval): ${JSON.stringify(this.store.list('clarification').filter((c) => c.projectId === task.projectId && c.taskId === task.id && c.review && c.status === 'answered'))}\nValidation evidence: ${JSON.stringify(task.tests)}\nDev handoff (Dev-reported, not host evidence): ${this.store.taskEvents(task.id).findLast((e) => e.type === 'dev-result')?.message ?? 'none'}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
       let result: z.infer<typeof reviewSchema> | undefined = submitted;
       if (!result) {
         // Strict structured output needs every property required, so the model is asked only
@@ -2249,7 +2383,7 @@ export class Engine {
           '评审回合',
           this.onTurn(run),
           () => submitted as z.infer<typeof reviewSchema> | undefined,
-          submitReviewInput,
+          reviewWireInput,
         );
         result = submitted ?? pin(reply);
       }
@@ -2288,6 +2422,7 @@ export class Engine {
         findings: result.findings,
         ...(result.verdict ? { verdict: result.verdict } : {}),
         axis,
+        runId: run.id,
         head: task.head!,
         base: task.base!,
         tests: structuredClone(latestEvidence),
@@ -2304,6 +2439,10 @@ export class Engine {
         current.stage !== 'reviewing'
       )
         return;
+      if (result.verdict === 'needs_user') {
+        this.store.recordReviewClarification(run.id, result);
+        return;
+      }
       await this.github.reviewComment(task, review);
       // The other axis may finish while GitHub is receiving this comment.
       const latest = this.store.task(task.id);
@@ -2315,7 +2454,7 @@ export class Engine {
       )
         return;
       this.store.updateTask(task.id, {
-        reviews: [...latest.reviews.filter((r) => r.axis !== axis), review],
+        reviews: [...latest.reviews.filter((r) => r.axis !== axis || r.supersededByRunId), review],
         ...(axis === 'primary' && review.verdict === 'escalate'
           ? { secondaryReviewRequired: true }
           : {}),

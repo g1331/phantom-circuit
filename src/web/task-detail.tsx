@@ -3,7 +3,7 @@ import type { ReviewResult, SchedulingExplanation, Snapshot, Task } from '../sha
 import { api } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import { PriorityEditor, ClaimConditions } from './task-priority.tsx';
-import { TaskRuntimeBadges } from './project-actions.tsx';
+import { ProjectActions, TaskRuntimeBadges } from './project-actions.tsx';
 import { TaskUsagePanel } from './usage-panel.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, taskAttention } from '../shared/task-history.ts';
@@ -43,6 +43,16 @@ export function TaskDetail({
         locale={locale}
       />
       <TaskRuntimeBadges state={state} taskId={detail.id} />
+      <ProjectActions
+        state={{
+          ...state,
+          incidents: [],
+          recoveryItems: [],
+          clarifications: state.clarifications?.filter((c) => c.taskId === detail.id && c.review),
+        }}
+        project={state.projects.find((p) => p.id === detail.projectId)!}
+        reload={reload}
+      />
       <TaskUsagePanel key={detail.id} taskId={detail.id} revision={detail.updatedAt} />
       {attention.historicalReason && (
         <section className="historical-completion" aria-label={t('tasks.historicalCompletion')}>
@@ -128,10 +138,19 @@ export function TaskDetail({
         </>
       )}
       {detail.reviews.map((r) => (
-        <section className={`review-result ${r.approved ? 'approved' : 'changes'}`} key={r.axis}>
+        <section
+          className={`review-result ${r.approved ? 'approved' : 'changes'}`}
+          key={r.runId ?? r.axis}
+        >
           <h3>
             {reviewTitle[r.axis] ?? r.axis}{' '}
-            <span>{r.approved ? t('ui.approved') : t('ui.changesRequested')}</span>
+            <span>
+              {r.verdict === 'needs_user'
+                ? t('review.needsUser')
+                : r.approved
+                  ? t('ui.approved')
+                  : t('ui.changesRequested')}
+            </span>
           </h3>
           <MarkdownContent content={r.summary} label={t('review.summary', { axis: r.axis })} />
           {r.findings.map((f, i) => (

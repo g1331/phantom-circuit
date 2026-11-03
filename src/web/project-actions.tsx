@@ -9,10 +9,12 @@ export function ProjectActions({
   state,
   project,
   reload,
+  onOpenTask,
 }: {
   state: Snapshot;
   project: Project;
   reload: () => Promise<void>;
+  onOpenTask?: (taskId: string) => void;
 }) {
   const { t, host } = useLocale();
   const [busy, setBusy] = useState('');
@@ -118,6 +120,8 @@ export function ProjectActions({
             <ClarificationCard
               key={clarification.id}
               clarification={clarification}
+              taskTitle={state.tasks.find((task) => task.id === clarification.taskId)?.title}
+              onOpenTask={onOpenTask}
               disabled={!!busy}
               submit={(answers) =>
                 act(clarification.id, `clarifications/${clarification.id}/answer`, { answers })
@@ -183,11 +187,15 @@ function ClarificationCard({
   disabled,
   submit,
   cancel,
+  taskTitle,
+  onOpenTask,
 }: {
   clarification: Clarification;
   disabled: boolean;
   submit: (answers: { questionId: string; value: string }[]) => Promise<void>;
   cancel: () => Promise<void>;
+  taskTitle?: string;
+  onOpenTask?: (taskId: string) => void;
 }) {
   const { t } = useLocale();
   const storageKey = `phantom.clarification.${clarification.id}`;
@@ -225,6 +233,27 @@ function ClarificationCard({
     .filter((answer) => answer.value);
   return (
     <article className="action-record clarification-card">
+      {clarification.review && (
+        <>
+          <p className="runtime-badge">{t('review.needsUser')}</p>
+          {clarification.taskId &&
+            (onOpenTask ? (
+              <button
+                className="secondary-button"
+                onClick={() => onOpenTask(clarification.taskId!)}
+              >
+                {taskTitle ?? clarification.taskId}
+              </button>
+            ) : (
+              <p>{taskTitle ?? clarification.taskId}</p>
+            ))}
+          <p className="muted">
+            {clarification.review.axis === 'secondary' ? 'Secondary Review' : 'Primary Review'}
+            {' · '}HEAD {clarification.review.head} · BASE {clarification.review.base}
+          </p>
+          {clarification.status === 'answered' && <p>{t('review.answerInput')}</p>}
+        </>
+      )}
       {clarification.status !== 'open' && (
         <p className="runtime-badge">
           {t(clarification.status === 'answered' ? 'actions.answered' : 'actions.cancelled')}
@@ -327,13 +356,30 @@ export function TaskRuntimeBadges({
   const clarification =
     sourceId &&
     state.clarifications?.some(
-      (item) => item.status === 'open' && item.sourceMessageId === sourceId,
+      (item) =>
+        item.status === 'open' &&
+        (item.review
+          ? item.taskId === taskId || item.review.runId === runId
+          : item.sourceMessageId === sourceId),
     );
   return (
     <>
       {incident && <span className="runtime-badge warning">{t('actions.incidentBadge')}</span>}
       {recovery && <span className="runtime-badge">{t('actions.recoveryBadge')}</span>}
-      {clarification && <span className="runtime-badge">{t('actions.clarificationBadge')}</span>}
+      {clarification && (
+        <span className="runtime-badge">
+          {t(
+            state.clarifications?.some(
+              (c) =>
+                c.review &&
+                c.status === 'open' &&
+                (c.taskId === taskId || c.review.runId === runId),
+            )
+              ? 'review.needsUser'
+              : 'actions.clarificationBadge',
+          )}
+        </span>
+      )}
     </>
   );
 }

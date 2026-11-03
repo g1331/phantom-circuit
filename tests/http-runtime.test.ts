@@ -95,6 +95,92 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   return { app, store, request };
 }
 
+test('HTTP review answers stay Project-scoped, persist partial answers and never auto-resume an independent pause', async (t) => {
+  const { store, request } = await fixture(t);
+  const project = store.createProject('Review answers', '');
+  const other = store.createProject('Other', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'fixture',
+    path: '/fixture',
+    github: 'fixture/repo',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const source = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  const task = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId: source.id,
+    title: 'Review fixture',
+    spec: 'Implement',
+    acceptance: ['Done'],
+    dependencies: [],
+    kind: 'backend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const pinned = store.updateTask(task.id, { stage: 'reviewing', head: 'head', base: 'base' });
+  const run = store.run('review', project.id, 'review', pinned, {
+    reviewAxis: 'secondary',
+    secondaryReview: true,
+  });
+  const c = store.recordReviewClarification(run.id, {
+    approved: false,
+    verdict: 'needs_user',
+    summary: 'Need policy',
+    findings: [],
+    head: 'head',
+    base: 'base',
+    questions: [{ question: 'Which audience?' }, { question: 'Which retention period?' }],
+  });
+  const path = `/projects/${project.id}/clarifications/${c.id}/answer`;
+  assert.equal(
+    (
+      await request('POST', `/projects/${other.id}/clarifications/${c.id}/answer`, {
+        answers: [{ questionId: 'q1', value: 'A' }],
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal(
+    (await request('POST', path, { answers: [{ questionId: 'q1', value: '  ' }] })).statusCode,
+    400,
+  );
+  assert.equal(
+    (await request('POST', path, { answers: [{ questionId: 'unknown', value: 'A' }] })).statusCode,
+    400,
+  );
+  const partial = await request('POST', path, { answers: [{ questionId: 'q1', value: 'Teams' }] });
+  assert.equal(partial.statusCode, 200);
+  assert.equal(partial.json().status, 'open');
+  store.control(task.id, 'pause');
+  const answered = await request('POST', path, {
+    answers: [{ questionId: 'q2', value: 'Seven years' }],
+  });
+  assert.equal(answered.statusCode, 200);
+  assert.equal(answered.json().status, 'answered');
+  assert.deepEqual(answered.json().review, {
+    runId: run.id,
+    axis: 'secondary',
+    head: 'head',
+    base: 'base',
+  });
+  assert.equal(
+    (await request('POST', path, { answers: [{ questionId: 'q2', value: 'Repeated answer' }] }))
+      .statusCode,
+    200,
+  );
+  assert.equal(store.get('clarification', c.id)?.answers?.[1].value, 'Seven years');
+  assert.equal(store.task(task.id).pausedByUser, true);
+  assert.equal(store.task(task.id).control, 'paused');
+  assert.equal(store.task(task.id).retries, 0);
+  assert.equal(store.list('run').length, 1);
+  const state = (await request('GET', '/state')).json();
+  assert.equal(state.clarifications[0].taskId, task.id);
+  assert.equal(state.clarifications[0].status, 'answered');
+});
+
 test('runtime HTTP boundaries expose structured errors and sanitized agent data', async (t) => {
   const { request, store } = await fixture(t);
   const unauthorized = await request('GET', '/state', undefined, { cookie: '' });
