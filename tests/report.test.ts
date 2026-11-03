@@ -90,8 +90,8 @@ function database(root: string) {
   return db;
 }
 
-async function report(root: string) {
-  return exec(process.execPath, ['--import', 'tsx', cli, '--data-dir', root], {
+async function report(root: string, args: string[] = []) {
+  return exec(process.execPath, ['--import', 'tsx', cli, '--data-dir', root, ...args], {
     timeout: 15_000,
     encoding: 'utf8',
   });
@@ -105,6 +105,29 @@ test('report CLI reads an empty existing database without requiring a host', asy
     assert.match(result.stdout, /读取时间：/);
     assert.match(result.stdout, /数据来源：.*phantom.sqlite/);
     assert.match(result.stdout, /暂无 Project/);
+    assert.match(result.stdout, /加 --explain 查看统计口径/);
+    assert.doesNotMatch(result.stdout, /口径：全部持久记录/);
+    const explained = await report(root, ['--explain']);
+    assert.deepEqual(explained.stdout.split('\n').slice(3, 9), [
+      '口径：全部持久记录；确认合并按 Task ID；token 先汇总 Task 全部归属 Run，再取中位数；墙钟=createdAt→merged_at。',
+      '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
+      '干预覆盖：现行数据无历史完整性标记，未发现干预仍为 unknown；无干预率仅为保守下界。',
+      'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
+      '暂停/恢复/取消口径：有效 control.action/source/reason 且动作一致才采用来源；user 计干预，host/pm 仅排除该条用户直接操作，关联 Incident 仍计入。',
+      '缺失、未知或不一致来源仍为 unknown；后续自动动作不覆盖早先用户/未知证据；兼容 recovery.pauseProvenance=user，不据此证明历史完整。',
+    ]);
+    assert.doesNotMatch(explained.stdout, /加 --explain/);
+    const combined = await exec(process.execPath, [
+      '--import',
+      'tsx',
+      cli,
+      '--explain',
+      `--data-dir=${root}`,
+    ]);
+    assert.equal(
+      combined.stdout.split('\n').slice(2).join('\n'),
+      explained.stdout.split('\n').slice(2).join('\n'),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -199,10 +222,15 @@ test('CLI reports hand-calculated Task totals, even/odd medians, evidence gaps a
     assert.match(alpha, /返工轮数.*已知合计=5.*覆盖=7\/8/);
     assert.match(alpha, /合并任务返工.*已知合计=2.*覆盖=5\/6/);
     assert.match(alpha, /token 中位数：120；n=3\/6；unknown=1；partial=2/);
-    assert.match(alpha, /墙钟交付耗时中位数：20000 ms；n=5\/6；unknown=1/);
-    assert.match(alpha, /Task a：.*token=120/);
+    assert.match(alpha, /墙钟交付耗时中位数：20秒；n=5\/6；unknown=1/);
+    assert.match(alpha, /Task a a：.*token=120/);
     assert.match(beta, /确认合并任务：2；历史 done 未确认：0/);
     assert.match(beta, /token 中位数：20；n=2\/2/);
+    const explained = await report(root, ['--explain']);
+    assert.equal(
+      explained.stdout.slice(explained.stdout.indexOf('\nProject：')),
+      stdout.slice(stdout.indexOf('\nProject：')),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -213,6 +241,105 @@ function event(db: DatabaseSync, value: Record<string, unknown>) {
     JSON.stringify({ at: '2026-01-01T00:00:05Z', ...value }),
   );
 }
+
+test('CLI identifies Tasks by Issue/title or short ID and stably orders actual merges with unknowns last', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-labels-'));
+  try {
+    const db = database(root);
+    project(db);
+    const fixtures: [string, number | undefined, string, string | null][] = [
+      ['a-unknown', 90, '缺失时间', null],
+      ['b-late', 63, '长'.repeat(38) + '🚀尾超长标题', '2026-01-01T09:55:00Z'],
+      ['c-first', 10, '最早合并', '2026-01-01T00:01:00Z'],
+      ['d-tied-123456789', undefined, '没有 Issue 的标题', '2026-01-01T00:01:00Z'],
+      ['e-invalid', 91, '无效时间', 'invalid'],
+    ];
+    for (const [id, issue, title, at] of fixtures) {
+      task(db, id, 'p', { issue, title, updatedAt: '2020-01-01T00:00:00Z' });
+      merged(db, id, 'p', at);
+      run(db, `run-${id}`, id, 1000);
+    }
+    db.close();
+    const { stdout } = await report(root);
+    const labels = stdout
+      .split('\n')
+      .filter((line) => line.startsWith('  Task '))
+      .map((line) => line.split('：')[0]);
+    assert.deepEqual(labels, [
+      '  Task #10 最早合并',
+      '  Task d-tied-1 没有 Issue 的标题',
+      '  Task #63 ' + '长'.repeat(38) + '🚀…',
+      '  Task #90 缺失时间',
+      '  Task #91 无效时间',
+    ]);
+    assert.match(stdout, /Task #90 缺失时间：.*墙钟=unknown/);
+    assert.match(stdout, /Task #91 无效时间：.*墙钟=unknown/);
+    assert.match(stdout, /确认合并任务：5；历史 done 未确认：0/);
+    assert.match(stdout, /token 中位数：1,000；n=5\/5；unknown=0；partial=0/);
+    assert.match(stdout, /墙钟交付耗时中位数：1分；n=3\/5；unknown=2/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI groups exact token totals and fractional medians while retaining partial and zero usage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-tokens-'));
+  try {
+    const db = database(root);
+    project(db);
+    for (const id of ['a', 'b', 'partial', 'zero']) {
+      task(db, id);
+      merged(db, id);
+    }
+    run(db, 'a1', 'a', 1234567);
+    run(db, 'a2', 'a', 1);
+    run(db, 'b', 'b', 1234569);
+    run(db, 'partial', 'partial', 9876543, { usage: { totalTokens: 9876543 } });
+    run(db, 'zero', 'zero', 0, { usage: { totalTokens: 0 } });
+    run(db, 'pm1', undefined, 1234567, { role: 'pm' });
+    run(db, 'pm2', undefined, 2, { role: 'pm' });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /token 中位数：1,234,568.5；n=2\/4；unknown=0；partial=2/);
+    assert.match(stdout, /Task a a：token=1,234,568；/);
+    assert.match(stdout, /Task b b：token=1,234,569；/);
+    assert.match(stdout, /Task partial partial：token=partial\(已知=9,876,543\)/);
+    assert.match(stdout, /Task zero zero：token=partial\(已知=0\)/);
+    assert.match(stdout, /PM 未分配：Run=2；已知 token=1,234,569；/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI renders wall durations in Chinese without changing median samples', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-duration-'));
+  try {
+    const db = database(root);
+    project(db);
+    const fixtures: [string, string | null, string][] = [
+      ['hours', '2026-01-01T09:55:59Z', '9小时55分'],
+      ['hour', '2026-01-01T01:05:00Z', '1小时5分'],
+      ['minutes', '2026-01-01T00:42:00Z', '42分'],
+      ['seconds', '2026-01-01T00:00:42.125Z', '42.125秒'],
+      ['subsecond', '2026-01-01T00:00:00.999Z', '不足1秒'],
+      ['zero', createdAt, '0秒'],
+      ['unknown', null, 'unknown'],
+    ];
+    for (const [id, at] of fixtures) {
+      task(db, id);
+      merged(db, id, 'p', at);
+    }
+    db.close();
+    const { stdout } = await report(root);
+    for (const [id, , display] of fixtures)
+      assert.match(stdout, new RegExp(`Task ${id.slice(0, 8)} ${id}：.*墙钟=${display}；`));
+    // Median of 0, 999, 42125, 2520000, 3900000, 35759000 is 1281062.5 ms.
+    assert.match(stdout, /墙钟交付耗时中位数：21分；n=6\/7；unknown=1/);
+    assert.doesNotMatch(stdout, /\d+(?:\.\d+)? ms/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('CLI attributes persisted control sources per event without treating explicit sources as full history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-report-controls-'));
@@ -339,9 +466,9 @@ test('CLI attributes persisted control sources per event without treating explic
     assert.match(stdout, /确认无干预：0；确认有干预：4；未知：5/);
     assert.match(stdout, /保守下界.*0\/9/);
     for (const name of ['user', 'pm', 'cancel', 'recovery-conflict'])
-      assert.match(stdout, new RegExp(`Task ${key(name)}：.*干预=有`));
+      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=有`));
     for (const name of ['host', 'legacy', 'future', 'malformed', 'after'])
-      assert.match(stdout, new RegExp(`Task ${key(name)}：.*干预=unknown`));
+      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=unknown`));
     assert.match(stdout, /控制事件来源：user=6；host=5；pm=2；unknown=4/);
     assert.match(stdout, /暂停\/恢复\/取消=2/);
     assert.match(stdout, /未归属 Project 的控制事件：1/);
@@ -448,10 +575,10 @@ test('CLI retains resolved interventions and ambiguous PM usage without confusin
       /PM 未分配：Run=2；已知 token=100；usage unknown=1；partial=0；歧义影响 Task=shared1,shared2/,
     );
     assert.match(stdout, /token 中位数：10；n=4\/6；unknown=0；partial=2/);
-    assert.match(stdout, /墙钟交付耗时中位数：10000 ms；n=5\/6；unknown=1/);
-    assert.match(stdout, /Task automatic：.*干预=unknown/);
-    assert.match(stdout, /Task no-time：.*墙钟=unknown；干预=unknown/);
-    assert.match(stdout, /Task after：.*干预=unknown/);
+    assert.match(stdout, /墙钟交付耗时中位数：10秒；n=5\/6；unknown=1/);
+    assert.match(stdout, /Task automati automatic：.*干预=unknown/);
+    assert.match(stdout, /Task no-time no-time：.*墙钟=unknown；干预=unknown/);
+    assert.match(stdout, /Task after after：.*干预=unknown/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -587,7 +714,7 @@ test('CLI rejects mismatched PR/revision/Repo evidence and preserves unknown sam
     assert.match(stdout, /确认合并任务：2；历史 done 未确认：5/);
     assert.match(stdout, /返工轮数（Project 全部 Task）：已知合计=N\/A；覆盖=0\/7；unknown=7/);
     assert.match(stdout, /token 中位数：0；n=1\/2；unknown=1；partial=0/);
-    assert.match(stdout, /墙钟交付耗时中位数：10000 ms；n=1\/2；unknown=1/);
+    assert.match(stdout, /墙钟交付耗时中位数：10秒；n=1\/2；unknown=1/);
     assert.match(stdout, /watchdog 触发次数：1/);
     const empty = stdout.split('Project：Empty [empty]')[1];
     assert.match(empty, /无干预合并率（保守下界）：N\/A/);
@@ -629,6 +756,7 @@ test('CLI uses the home authority by default and accepts only the documented dat
     );
     const help = await exec(process.execPath, ['--import', 'tsx', cli, '--help']);
     assert.match(help.stdout, /Usage: npm run report/);
+    assert.match(help.stdout, /\[--data-dir <directory>\] \[--explain\]/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -679,7 +807,7 @@ test('CLI reads committed WAL data consistently while an independent writer cont
       new RegExp(`返工轮数（Project 全部 Task）：已知合计=${version}；覆盖=1/1`),
     );
     assert.match(stdout, /token 中位数：20；n=1\/1/);
-    assert.match(stdout, /墙钟交付耗时中位数：10000 ms；n=1\/1/);
+    assert.match(stdout, /墙钟交付耗时中位数：10秒；n=1\/1/);
     // Events are read by a separate SQL query; their count must belong to the
     // same committed version as the documents, even as the writer advances.
     assert.match(stdout, new RegExp(`watchdog 触发次数：${version}（按 Run ID）`));
@@ -757,7 +885,7 @@ test('CLI attributes pre-publication Clarification and exclusive PM usage throug
     assert.match(stdout, /确认无干预：0；确认有干预：1；未知：0/);
     assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=0/);
     assert.match(stdout, /PM 未分配：Run=0/);
-    assert.match(stdout, /Task a：token=110；.*干预=有/);
+    assert.match(stdout, /Task a a：token=110；.*干预=有/);
     assert.match(stdout, /token 中位数：110；n=1\/1；unknown=0；partial=0/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -794,8 +922,8 @@ test('CLI keeps PM usage on a shared self-referencing source unallocated and mar
       stdout,
       /PM 未分配：Run=1；已知 token=100；usage unknown=0；partial=0；歧义影响 Task=a,b/,
     );
-    assert.match(stdout, /Task a：token=partial\(已知=10\)/);
-    assert.match(stdout, /Task b：token=partial\(已知=20\)/);
+    assert.match(stdout, /Task a a：token=partial\(已知=10\)/);
+    assert.match(stdout, /Task b b：token=partial\(已知=20\)/);
     assert.match(stdout, /token 中位数：N\/A；n=0\/2；unknown=0；partial=2/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -826,7 +954,7 @@ test('CLI leaves a genuine multi-message source cycle unknown rather than assign
     assert.match(stdout, /确认无干预：0；确认有干预：0；未知：1/);
     assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=1/);
     assert.match(stdout, /PM 未分配：Run=1；已知 token=100/);
-    assert.match(stdout, /Task a：.*干预=unknown/);
+    assert.match(stdout, /Task a a：.*干预=unknown/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
