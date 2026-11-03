@@ -1,12 +1,15 @@
-// Computed-style snapshot of the built UI, to prove a stylesheet reorganisation changes nothing.
-//   npm run build && npx tsx scripts/style-snapshot.ts before.json
-//   (reorganise, rebuild) && npx tsx scripts/style-snapshot.ts after.json
-//   npx tsx scripts/style-snapshot.ts --diff before.json after.json
-// Every element of every captured state is fingerprinted (own style plus ::before/::after),
-// so any cascade change in the covered views shows up as a differing element.
+// Proves a stylesheet change is inert: compares the built UI's CSS against a baseline CSS file
+// on the very same DOM, state by state.
+//   (on the baseline revision) npm run build && cp dist/assets/index-*.css baseline.css
+//   (on the candidate)         npm run build && npx tsx scripts/style-snapshot.ts baseline.css [shots]
+// For each state the computed style of every element (with ::before/::after) is fingerprinted
+// under the built CSS, then under the baseline CSS swapped in place. Data, time and async content
+// are therefore identical on both sides; only the stylesheet differs. Any element whose style
+// differs is reported and the script exits 1. With a screenshot directory it also saves
+// <state>.before.png (baseline) and <state>.after.png (built) for visual review.
 import { chromium, type Page, type Request } from 'playwright';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -21,39 +24,10 @@ import { OmpBackend } from '../src/server/omp.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { stageLabels, type Stage } from '../src/shared/types.ts';
 
-type Snapshot = Record<string, Record<string, string>>;
-
-if (process.argv[2] === '--diff') {
-  const [before, after] = await Promise.all(
-    process.argv
-      .slice(3, 5)
-      .map(async (file) => JSON.parse(await readFile(file, 'utf8')) as Snapshot),
-  );
-  // Restyling never adds or removes elements, so only elements present on both sides can fail;
-  // one-sided elements are asynchronous content (for example a model list) and are only reported.
-  let changed = 0;
-  let oneSided = 0;
-  for (const state of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const a = before[state] ?? {};
-    const b = after[state] ?? {};
-    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    const restyled = [...keys].filter((key) => key in a && key in b && a[key] !== b[key]);
-    const missing = [...keys].filter((key) => !(key in a && key in b));
-    changed += restyled.length;
-    oneSided += missing.length;
-    if (restyled.length)
-      console.log(`${state}: ${restyled.length} restyled — ${restyled.slice(0, 3).join(' | ')}`);
-    if (missing.length)
-      console.log(`${state}: ${missing.length} on one side only (content, not style)`);
-  }
-  console.log(`restyled elements: ${changed}; one-sided elements: ${oneSided}`);
-  process.exit(changed ? 1 : 0);
-}
-
-const out = process.argv[2];
-if (!out)
-  throw new Error('Usage: style-snapshot.ts <out.json> | --diff <before.json> <after.json>');
+const [baselineFile, shots] = process.argv.slice(2);
+if (!baselineFile) throw new Error('Usage: style-snapshot.ts <baseline.css> [screenshot-dir]');
 if (!existsSync(resolve('dist/index.html'))) throw new Error('Run npm run build first.');
+const baseline = await readFile(baselineFile, 'utf8');
 
 const port = await new Promise<number>((done, fail) => {
   const probe = createServer().once('error', fail);
@@ -190,7 +164,6 @@ for (let i = 0; i < 3; i++)
     taskId: tasks[i].id,
   });
 
-const snapshot: Snapshot = {};
 const inflight = new Map<Page, Set<Request>>();
 /** Counts a page's open requests; the event stream stays open by design and is ignored. */
 function trackRequests(page: Page) {
@@ -202,12 +175,19 @@ function trackRequests(page: Page) {
   page.on('requestfinished', (request) => open.delete(request));
   page.on('requestfailed', (request) => open.delete(request));
 }
-async function capture(page: Page, state: string) {
-  for (let waited = 0; inflight.get(page)!.size && waited < 10_000; waited += 100)
+/**
+ * Jumps finite animations and transitions to their end state. Swapping stylesheets starts a
+ * transition on every property that differs, and reading mid-transition would hide the change.
+ */
+const finishAnimations = (page: Page) =>
+  page.evaluate(() => {
+    for (const animation of document.getAnimations())
+      if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish();
+  });
+/** Waits for open requests to finish and the DOM to stay quiet for 500ms (at most 5s). */
+async function settle(page: Page) {
+  for (let waited = 0; inflight.get(page)!.size && waited < 30_000; waited += 100)
     await page.waitForTimeout(100);
-  // tsx keeps function names with a __name helper that the page does not define.
-  await page.evaluate('window.__name = (f) => f');
-  // Panels load asynchronously; sample once the DOM has been quiet for 500ms (at most 5s).
   await page.evaluate(
     () =>
       new Promise<void>((done) => {
@@ -231,21 +211,38 @@ async function capture(page: Page, state: string) {
         });
       }),
   );
-  snapshot[state] = await page.evaluate(() => {
+}
+/** Swaps the built stylesheets for the baseline CSS (or back) in one synchronous step. */
+async function useBaseline(page: Page, on: boolean) {
+  await page.evaluate(
+    ([css, enable]) => {
+      for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
+        link.disabled = enable;
+      document.getElementById('style-snapshot-baseline')?.remove();
+      if (!enable) return;
+      const style = document.createElement('style');
+      style.id = 'style-snapshot-baseline';
+      style.textContent = css;
+      document.head.append(style);
+    },
+    [baseline, on] as const,
+  );
+}
+/** Computed-style hash per element, keyed by its tag/class path so keys survive siblings. */
+function fingerprint(page: Page) {
+  return page.evaluate(() => {
     const result: Record<string, string> = {};
     const hash = (text: string) => {
       let h = 0x811c9dc5;
       for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
       return (h >>> 0).toString(36);
     };
-    // Key = parent key > tag.classes[n among same-keyed siblings], so an inserted element
-    // does not shift the keys of unrelated elements elsewhere in the page.
     const walk = (parent: Element, parentKey: string) => {
       const seen = new Map<string, number>();
       for (const element of parent.children) {
         const classes =
           typeof element.className === 'string'
-            ? element.className.trim().split(/s+/).filter(Boolean).join('.')
+            ? element.className.trim().split(/\s+/).filter(Boolean).join('.')
             : '';
         const label = `${element.tagName.toLowerCase()}${classes ? '.' + classes : ''}`;
         const n = seen.get(label) ?? 0;
@@ -269,12 +266,53 @@ async function capture(page: Page, state: string) {
     return result;
   });
 }
+const same = (a: Record<string, string>, b: Record<string, string>) =>
+  Object.keys(a).length === Object.keys(b).length &&
+  Object.keys(a).every((key) => a[key] === b[key]);
 
+let restyledTotal = 0;
+let elementTotal = 0;
+const unstable: string[] = [];
+async function compare(page: Page, state: string) {
+  // tsx keeps function names with a __name helper that the page does not define.
+  await page.evaluate('window.__name = (f) => f');
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await settle(page);
+    await finishAnimations(page);
+    const after = await fingerprint(page);
+    if (shots)
+      await page.screenshot({ path: join(shots, `${state}.after.png`), animations: 'disabled' });
+    await useBaseline(page, true);
+    await finishAnimations(page);
+    const before = await fingerprint(page);
+    if (shots)
+      await page.screenshot({ path: join(shots, `${state}.before.png`), animations: 'disabled' });
+    await useBaseline(page, false);
+    await finishAnimations(page);
+    // Content that changed mid-comparison would masquerade as a style difference; retry it.
+    const again = await fingerprint(page);
+    if (!same(after, again)) {
+      const moved = Object.keys({ ...after, ...again }).find((key) => after[key] !== again[key]);
+      console.log(`${state}: changed during attempt ${attempt} at ${moved}`);
+      continue;
+    }
+    const restyled = Object.keys(after).filter((key) => before[key] !== after[key]);
+    restyledTotal += restyled.length;
+    elementTotal += Object.keys(after).length;
+    if (restyled.length)
+      console.log(`${state}: ${restyled.length} restyled — ${restyled.slice(0, 3).join(' | ')}`);
+    return;
+  }
+  unstable.push(state);
+}
+
+if (shots) await mkdir(shots, { recursive: true });
 await app.listen({ host: '127.0.0.1', port });
 const browser = await chromium.launch({
   headless: true,
   channel: process.platform === 'win32' ? 'msedge' : undefined,
 });
+let states = 0;
 try {
   for (const theme of ['dark', 'light']) {
     for (const [width, height] of [
@@ -293,33 +331,38 @@ try {
         localStorage.setItem('phantom.theme', value);
         localStorage.setItem('phantom.locale', 'zh-CN');
       }, theme);
+      const capture = async (view: string) => {
+        states++;
+        await compare(page, `${theme}-${width}-${view}`);
+      };
       await page.goto(`http://127.0.0.1:${port}`);
       await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
-      const prefix = `${theme}-${width}`;
-      await capture(page, `${prefix}-chat`);
+      await capture('chat');
       await page.getByRole('tab', { name: /任务/ }).first().click();
-      await capture(page, `${prefix}-board`);
+      await capture('board');
       await page.getByRole('button', { name: '列表', exact: true }).click();
-      await capture(page, `${prefix}-list`);
+      await capture('list');
       await page.getByText('任务 2：登录与会话改进').first().click();
       await page.locator('dialog[open]').waitFor();
-      await capture(page, `${prefix}-detail`);
+      await capture('detail');
       await page.keyboard.press('Escape');
       await page.getByRole('button', { name: '看板', exact: true }).click();
       await page.getByRole('tab', { name: /运行/ }).first().click();
-      await capture(page, `${prefix}-runs`);
+      await capture('runs');
       await page.locator('.context-trigger').click();
-      await capture(page, `${prefix}-context`);
+      await capture('context');
       await page.keyboard.press('Escape');
       await page.getByRole('button', { name: '运行设置' }).first().click();
       await page.locator('dialog[open]').waitFor();
-      await capture(page, `${prefix}-settings`);
+      await capture('settings');
       await page.close();
     }
   }
-  await writeFile(out, JSON.stringify(snapshot));
-  const elements = Object.values(snapshot).reduce((n, state) => n + Object.keys(state).length, 0);
-  console.log(`states: ${Object.keys(snapshot).length}, elements: ${elements}`);
+  console.log(
+    `states: ${states}, elements: ${elementTotal}, restyled: ${restyledTotal}` +
+      (unstable.length ? `, unstable: ${unstable.join(', ')}` : ''),
+  );
+  process.exitCode = restyledTotal || unstable.length ? 1 : 0;
 } finally {
   await browser.close();
   await app.close();
