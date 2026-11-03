@@ -15,6 +15,7 @@ import {
 } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { taskAttention } from '../shared/task-history.ts';
+import { hasOwner } from '../shared/team.ts';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { redact, bounded } from './redaction.ts';
@@ -46,6 +47,7 @@ import type {
   TaskControlContext,
   Run,
   Message,
+  OwnerMessage,
   Settings,
   Snapshot,
   Event,
@@ -138,6 +140,7 @@ type Entities = {
   task: Task;
   run: Run;
   message: Message;
+  ownerMessage: OwnerMessage;
   operation: Operation;
   incident: Incident;
   clarification: Clarification;
@@ -216,6 +219,7 @@ export interface RunOptions {
   incidentId?: string;
   incidentPhase?: string;
   incidentEvidence?: string;
+  ownerMessageId?: string;
 }
 
 export interface MessageOptions {
@@ -1128,7 +1132,47 @@ export class Store {
       clarifications: this.list('clarification'),
       recoveryItems: this.list('recovery'),
       accountAllowances: this.list('allowance'),
+      ownerMessages: this.list('ownerMessage'),
     };
+  }
+  addOwnerMessage(taskId: string, content: string) {
+    return this.transaction(() => {
+      const task = this.task(taskId);
+      if (!hasOwner(task)) throw new Fault('这项工作还没有负责人接手，请先和联络人沟通', 409);
+      const m: OwnerMessage = {
+        id: id(),
+        projectId: task.projectId,
+        taskId,
+        role: 'user',
+        content: redact(content),
+        createdAt: now(),
+        status: 'queued',
+      };
+      this.put('ownerMessage', m.id, m);
+      return m;
+    });
+  }
+  ownerReply(question: OwnerMessage, content: string, runId: string) {
+    return this.transaction(() => {
+      this.put('ownerMessage', question.id, { ...question, status: 'answered', runId });
+      const m: OwnerMessage = {
+        id: id(),
+        projectId: question.projectId,
+        taskId: question.taskId,
+        role: 'owner',
+        content: redact(content),
+        createdAt: now(),
+        runId,
+      };
+      this.put('ownerMessage', m.id, m);
+      return m;
+    });
+  }
+  setOwnerMessage(key: string, patch: Pick<OwnerMessage, 'status'> & Partial<OwnerMessage>) {
+    this.transaction(() => {
+      const m = this.get('ownerMessage', key);
+      if (m) this.put('ownerMessage', key, { ...m, ...patch });
+    });
   }
   private timelineOrder() {
     return Number(
@@ -1437,11 +1481,16 @@ export class Store {
         if (incident.assessmentRunId === successorRunId) return structuredClone(incident);
         throw new Fault('Incident 已由另一个 Run 评估', 409);
       }
-      return this.updateIncident(incidentId, {
+      // Written directly: `updateIncident` refuses a change of assessor, which is the point here.
+      const next: Incident = {
+        ...incident,
         assessmentRunId: successorRunId,
         assessmentAt: now(),
         status: incident.status === 'open' ? 'assessing' : incident.status,
-      });
+        updatedAt: now(),
+      };
+      this.put('incident', incidentId, next);
+      return structuredClone(next);
     });
   }
   assistantDraft(projectId: string, runId: string, draftId = runId, content = ''): Message {
@@ -1842,6 +1891,7 @@ export class Store {
       ...(options.incidentId ? { incidentId: options.incidentId } : {}),
       ...(options.incidentPhase ? { incidentPhase: options.incidentPhase } : {}),
       ...(options.incidentEvidence ? { incidentEvidence: redact(options.incidentEvidence) } : {}),
+      ...(options.ownerMessageId ? { ownerMessageId: options.ownerMessageId } : {}),
       reviewPolicyVersion: taskRecord?.reviewPolicyVersion,
       ...(options.secondaryReview ? { secondaryReview: true } : {}),
       ...(options.usage ? { usage: structuredClone(options.usage) } : {}),
@@ -2349,6 +2399,13 @@ export class Store {
       if (existing) {
         if (!recovered.some((item) => item.id === existing.id))
           recovered.push(structuredClone(existing));
+        continue;
+      }
+      if (r.ownerMessageId) {
+        // A read-only answer holds no work: the question fails and the user may ask again.
+        this.finishRun(r.id, 'interrupted', '服务重启，回答中断');
+        const question = this.get('ownerMessage', r.ownerMessageId);
+        if (question) this.put('ownerMessage', question.id, { ...question, status: 'failed' });
         continue;
       }
       const task = r.taskId ? this.get('task', r.taskId) : undefined;

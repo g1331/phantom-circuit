@@ -673,6 +673,16 @@ export function createApp(
     store.project(id);
     return { changed: await engine.team(id, action) };
   });
+  // The user talks directly with the member who owns a Task; the engine answers queued lines.
+  app.post('/api/tasks/:id/owner-messages', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { content } = z
+      .object({ content: z.string().trim().min(1).max(8000) })
+      .strict()
+      .parse(req.body);
+    reply.code(202);
+    return store.addOwnerMessage(id, content);
+  });
   app.post('/api/tasks/:id/:action', async (req) => {
     const { id, action } = z
       .object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel']) })

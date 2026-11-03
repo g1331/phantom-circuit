@@ -420,3 +420,59 @@
     padding: 14px 18px;
   }
 }
+.owner-conversation {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.owner-conversation h3 {
+  margin: 0 0 2px;
+}
+.owner-conversation > p {
+  margin: 0 0 10px;
+}
+.owner-lines {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.owner-line {
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+.owner-line.owner {
+  border-left-color: color-mix(in srgb, var(--role-dev) 55%, var(--line));
+}
+.owner-line p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.owner-who {
+  display: block;
+  color: var(--faint);
+  font-size: 11px;
+}
+.owner-line em {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.owner-line em.error-text {
+  color: var(--danger);
+}
+.owner-compose {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.owner-compose textarea {
+  flex: 1;
+  min-height: 40px;
+}
+.owner-compose .primary-button {
+  flex: none;
+}

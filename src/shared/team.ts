@@ -64,13 +64,24 @@ export interface TeamView {
   feed: TeamFeedItem[];
 }
 
+/** A Task has an owner to talk with once a Dev opened its worktree, until the work finishes. */
+export const hasOwner = (task: Task) =>
+  !!task.worktree && task.stage !== 'done' && task.stage !== 'cancelled';
+
 // A `waiting` Run is held on the user (a Clarification), which the room shows as a request.
 const live = (run: Run) => run.status === 'running';
 
 function activity(run: Run, task?: Task): MemberActivity {
   // A task-bound liaison turn (a Dev question, feedback, acceptance) is the team talking internally.
   if (run.role === 'pm')
-    return run.incidentId ? 'assessing' : task ? 'coordinating' : run.sourceMessageId ? 'talking' : 'planning';
+    return run.incidentId
+      ? 'assessing'
+      : task
+        ? 'coordinating'
+        : run.sourceMessageId
+          ? 'talking'
+          : 'planning';
+  if (run.ownerMessageId) return 'talking';
   if (run.role === 'oncall' || run.incidentPhase === 'validation') return 'diagnosing';
   if (run.role === 'review') return run.secondaryReview ? 'second_review' : 'reviewing';
   if (task?.pendingMerge) return 'merging';
@@ -187,11 +198,7 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
         id: `${run.id}:end`,
         at: run.endedAt,
         kind:
-          run.status === 'completed'
-            ? 'finished'
-            : run.status === 'failed'
-              ? 'failed'
-              : 'paused',
+          run.status === 'completed' ? 'finished' : run.status === 'failed' ? 'failed' : 'paused',
         ...base,
       });
   }

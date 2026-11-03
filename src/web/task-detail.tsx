@@ -5,6 +5,7 @@ import { MarkdownContent } from './markdown-content.tsx';
 import { PriorityEditor, ClaimConditions } from './task-priority.tsx';
 import { ProjectActions, TaskRuntimeBadges } from './project-actions.tsx';
 import { TaskUsagePanel } from './usage-panel.tsx';
+import { OwnerConversation } from './owner-conversation.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, taskAttention } from '../shared/task-history.ts';
 
@@ -114,6 +115,7 @@ export function TaskDetail({
           </>
         )}
       </div>
+      <OwnerConversation task={detail} state={state} busy={busy} act={act} />
       <h3>{t('ui.taskSpecification')}</h3>
       <MarkdownContent content={detail.spec} label={t('ui.taskSpecification')} />
       <h3>{t('ui.acceptanceCriteria')}</h3>

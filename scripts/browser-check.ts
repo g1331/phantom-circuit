@@ -2,6 +2,7 @@ import { choosePreference } from './browser-preferences.ts';
 import { chromium, type Page } from 'playwright';
 import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
+import { checkOwnerConversation } from './browser-owner.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer, type AddressInfo } from 'node:net';
@@ -1146,6 +1147,7 @@ try {
   );
   await page.getByRole('button', { name: '关闭窗口' }).click();
   await checkPriority(page, store, task, artifacts);
+  await checkOwnerConversation(page, store, task, artifacts);
   assert.deepEqual(errors, []);
   await checkProviders(page, artifacts);
   await checkProfiles(page, store, artifacts);

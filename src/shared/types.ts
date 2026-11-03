@@ -140,6 +140,18 @@ export interface Message {
   draftStatus?: 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   descriptor?: MessageDescriptor;
 }
+/** One line of the user's direct conversation with the member who owns a Task (ADR 0013). */
+export interface OwnerMessage {
+  id: string;
+  projectId: string;
+  taskId: string;
+  role: 'user' | 'owner';
+  content: string;
+  createdAt: string;
+  /** User lines only: the owner answers them one at a time, oldest first. */
+  status?: 'queued' | 'answering' | 'answered' | 'failed';
+  runId?: string;
+}
 export interface Task {
   id: string;
   projectId: string;
@@ -282,6 +294,8 @@ export interface Run {
   incidentId?: string;
   incidentPhase?: string;
   incidentEvidence?: string;
+  /** The user's direct question this read-only owner turn answers (ADR 0013). */
+  ownerMessageId?: string;
   reviewPolicyVersion?: number;
   secondaryReview?: boolean;
   usage?: RunUsage;
@@ -541,6 +555,7 @@ export interface Snapshot {
   clarifications?: Clarification[];
   recoveryItems?: RecoveryItem[];
   accountAllowances?: AccountAllowance[];
+  ownerMessages?: OwnerMessage[];
 }
 export interface PMActivity {
   timelineOrder?: number;

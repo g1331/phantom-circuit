@@ -1,5 +1,6 @@
 import { Providers } from './providers.ts';
 import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
+import { hasOwner } from '../shared/team.ts';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -23,6 +24,7 @@ import {
   validReviewQuestions,
   resolveIncidentInput,
   oncallSettleInput,
+  ownerReplyInput,
 } from './schemas.ts';
 import { listeners } from './process.ts';
 import { MessageImages } from './images.ts';
@@ -35,6 +37,7 @@ import {
 } from './pm-context.ts';
 import type {
   Message,
+  OwnerMessage,
   MessageDescriptor,
   Run,
   Task,
@@ -1518,6 +1521,7 @@ export class Engine {
       this.watchdog();
       let claim: Run | undefined;
       if (this.stopping) return;
+      this.answerOwners();
       while ((claim = this.store.claimNext())) {
         const run = claim;
         void this.track(
@@ -1943,7 +1947,10 @@ export class Engine {
             if (name === 'rerun_validation') {
               // A rerun over uncommitted edits would pass them off as evidence for the pinned head.
               if (await dirty())
-                throw new Fault('工作区有未提交改动：修好后用 settle fixed，由宿主提交并正式验证', 409);
+                throw new Fault(
+                  '工作区有未提交改动：修好后用 settle fixed，由宿主提交并正式验证',
+                  409,
+                );
               const tests = await this.workspaces.verify(this.store.task(task.id), signal);
               return tests.map(({ command, exitCode, durationMs, output }) => ({
                 command,
@@ -2049,6 +2056,140 @@ ${detail}`,
       );
     }
   }
+  /** Starts the oldest queued direct question per Task; a Task's owner answers one at a time. */
+  private answerOwners() {
+    const questions = this.store.list('ownerMessage').filter((m) => m.role === 'user');
+    for (const question of questions) {
+      if (question.status !== 'queued') continue;
+      const busy = questions.some(
+        (other) =>
+          other.taskId === question.taskId &&
+          (other.status === 'answering' ||
+            (other.status === 'queued' && other.createdAt < question.createdAt)),
+      );
+      if (!busy) void this.track(this.ownerAnswer(question));
+    }
+  }
+  /**
+   * The member who owns a Task answers the user directly in a read-only turn (ADR 0013). A change
+   * of direction goes through the liaison, and the liaison gets a summary of every exchange.
+   */
+  private async ownerAnswer(question: OwnerMessage) {
+    const task = this.store.task(question.taskId);
+    if (!hasOwner(task)) {
+      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      return;
+    }
+    let run: Run;
+    try {
+      run = this.store.run('dev', task.projectId, task.profile, task, {
+        ownerMessageId: question.id,
+        suppressSource: true,
+      });
+    } catch (error) {
+      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      this.store.event('owner', `负责人无法回答：${redact(String(error))}`, {
+        projectId: task.projectId,
+        taskId: task.id,
+      });
+      return;
+    }
+    this.store.setOwnerMessage(question.id, { status: 'answering', runId: run.id });
+    const earlier = this.store
+      .list('ownerMessage')
+      .filter((m) => m.taskId === task.id && m.createdAt < question.createdAt)
+      .slice(-12)
+      .map((m) => `${m.role === 'user' ? '用户' : '你'}：${m.content}`)
+      .join('\n');
+    const handoff = this.store
+      .taskEvents(task.id)
+      .findLast((e) => e.type === 'dev-result')?.message;
+    let reply: { answer: string; summary: string } | undefined;
+    try {
+      await this.withAgent(run, async (c, signal) => {
+        const profile = this.agentProfile(run);
+        const thread = await c.thread({
+          cwd: task.worktree!,
+          profile,
+          ephemeral: true,
+          instructions: await instructions('dev'),
+          writable: false,
+          tools: [
+            {
+              name: 'align_with_liaison',
+              description:
+                "Hand the user's request to change direction (scope, acceptance or approach) to the liaison, who decides whether the Task changes. Returns the liaison's answer.",
+              inputSchema: jsonSchema(z.object({ request: z.string().min(1) }).strict()),
+            },
+            {
+              name: 'reply',
+              description:
+                'End this turn: answer for the user, and a one or two sentence summary for the liaison.',
+              inputSchema: jsonSchema(ownerReplyInput),
+            },
+          ],
+          toolHandler: async (name: string, args: unknown) => {
+            if (name === 'align_with_liaison') {
+              const { request } = z.object({ request: z.string() }).parse(args);
+              const answer = await this.pmQueue(
+                task.projectId,
+                () =>
+                  this.pmTurn(
+                    task.projectId,
+                    `The user, talking directly with the owner of this Task, asked to change its direction. The user's words: ${question.content}
+The owner's account: ${request}
+You are the liaison: decide. Revise the Task with your tools when the change is right, or explain why not. Answer the owner briefly.`,
+                    undefined,
+                    this.store.task(task.id),
+                    '宿主事件：负责人对齐方向',
+                  ),
+                true,
+              );
+              return { answer };
+            }
+            if (name !== 'reply') throw new Fault('没有此操作权限', 403);
+            reply = ownerReplyInput.parse(args);
+            return { accepted: true };
+          },
+          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
+        } as any);
+        const duty = await readFile(resolve('prompts/owner.md'), 'utf8');
+        await c.turn(
+          thread,
+          `${duty}
+${taskPrompt(task)}
+Stage: ${task.stage}
+HEAD=${task.head ?? 'none'}
+BASE=${task.base ?? 'none'}
+Your last handoff: ${handoff ? handoff.slice(-4000) : 'none yet'}
+Earlier in this conversation:
+${earlier || 'none'}
+The user asks: ${question.content}
+Call reply exactly once.`,
+          profile,
+          signal,
+          undefined,
+          this.onTurn(run),
+        );
+        if (!reply) throw new Fault('负责人没有给出回答', 409);
+      });
+    } catch (error) {
+      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      this.store.event('owner', `负责人回答中断：${redact(String(error))}`, {
+        projectId: task.projectId,
+        taskId: task.id,
+        runId: run.id,
+      });
+      return;
+    }
+    this.store.ownerReply(question, reply!.answer, run.id);
+    // The liaison reads the project conversation, so the summary reaches it there.
+    this.store.addMessage(
+      task.projectId,
+      'system',
+      `你直接和「${task.title}」的负责人沟通了：${reply!.summary}`,
+    );
+  }
   /**
    * `spend: false` is host resynchronisation (a moved base), not a product rework round.
    * `finalize` keeps edits the Dev already made, so the next Run commits them without a Dev turn.
@@ -2076,10 +2217,9 @@ ${detail}`,
         control: exhausted ? 'paused' : 'active',
         pausedByUser: false,
         blocked: exhausted ? '连续三轮未完成，PM 正在重评' : undefined,
-        blockedDescriptor:
-          exhausted
-            ? diagnosticDescriptor('retries_exhausted', '连续三轮未完成，PM 正在重评')
-            : undefined,
+        blockedDescriptor: exhausted
+          ? diagnosticDescriptor('retries_exhausted', '连续三轮未完成，PM 正在重评')
+          : undefined,
       },
       exhausted ? 'pause' : 'resume',
       { source: 'host', reason: 'rework' },
@@ -2227,7 +2367,9 @@ ${detail}`,
       };
       ensureActive();
       if (tests.some((t) => t.exitCode !== 0)) {
-        const failure = tests.map((t) => `${t.command}\nexit ${t.exitCode}\n${t.output}`).join('\n');
+        const failure = tests
+          .map((t) => `${t.command}\nexit ${t.exitCode}\n${t.output}`)
+          .join('\n');
         // On-call diagnoses first, so a flaky or environmental failure does not spend a rework round.
         if (!this.startOncall(task, failure)) this.rework(task, failure);
         return;

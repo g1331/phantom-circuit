@@ -19,6 +19,9 @@ _Avoid_: Run, conversation
 **On-call**: Historical role for diagnosing a failed host validation. The Task's Dev now does this in its own thread and settles it as a retry, a fix, a trunk resync or a question for the user.
 _Avoid_: PM, Dev
 
+**Owner conversation**: The user's direct exchange with the Dev who owns an unfinished Task. The owner answers read-only; a change of direction goes to the PM before anything changes, and the PM's conversation records a summary of each exchange.
+_Avoid_: Dev chat, steer
+
 **Run**: One bounded execution of a PM, Dev, Review or On-call role.
 _Avoid_: Task
 

@@ -24,7 +24,13 @@ async function scenario(
     `const fs = require('fs'); const m = ${JSON.stringify(marker)};\nif (!fs.existsSync(m)) { fs.writeFileSync(m, ''); console.error('EADDRINUSE 4318'); process.exit(1); }`,
   );
   store.patchRepo(repo.id, {
-    commands: { install: '', build: '', test: `node "${join(root, 'flaky.cjs')}"`, start: '', port: 3000 },
+    commands: {
+      install: '',
+      build: '',
+      test: `node "${join(root, 'flaky.cjs')}"`,
+      start: '',
+      port: 3000,
+    },
   });
   const devPrompts: string[] = [];
   const validationThreads: (string | undefined)[] = [];
@@ -54,7 +60,13 @@ async function scenario(
       return 'done';
     }
   }
-  const engine = new Engine(store, github, new Workspaces(join(root, 'ws'), store), root, () => new Model());
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(join(root, 'ws'), store),
+    root,
+    () => new Model(),
+  );
   const run = async (until: () => boolean) => {
     await engine.start();
     for (let i = 0; i < 1200 && !until(); i++) {
@@ -107,11 +119,17 @@ test('the Dev fixes a defect the validation found; the host commits and revalida
     assert.match(String(refused[0]), /没有改动/, 'fixed needs an edit');
     assert.match(String(refused[1]), /未提交改动/, 'no rerun over uncommitted edits');
     assert.match(String(refused[2]), /未提交改动/, 'no retry over uncommitted edits');
-    assert.equal(s.devPrompts.length, 1, 'the host commits the fix without another implementation turn');
+    assert.equal(
+      s.devPrompts.length,
+      1,
+      'the host commits the fix without another implementation turn',
+    );
     const task = s.store.task(s.task.id);
     assert.equal(task.retries, 1);
     assert.ok(task.feedback.some((f) => f.includes('改用空闲端口')));
-    assert.ok(task.tests.length && task.tests.every((t) => t.exitCode === 0 && t.head === task.head));
+    assert.ok(
+      task.tests.length && task.tests.every((t) => t.exitCode === 0 && t.head === task.head),
+    );
     const { stdout } = await command('git', ['show', `${task.head}:a.txt`], task.worktree!);
     assert.equal(stdout.trim(), 'fixed port');
   } finally {
@@ -128,7 +146,9 @@ test('the Dev asks the user in product terms and pauses the task', async () => {
   try {
     await s.run(paused);
     assert.equal(s.store.task(s.task.id).control, 'paused');
-    assert.ok(s.store.list('message').some((m) => m.role === 'assistant' && m.content.includes(question)));
+    assert.ok(
+      s.store.list('message').some((m) => m.role === 'assistant' && m.content.includes(question)),
+    );
     assert.equal(s.devPrompts.length, 1);
   } finally {
     await s.close();
@@ -156,5 +176,101 @@ test('the Dev resyncs a trunk failure once the trunk moved, without spending a r
     assert.match(s.devPrompts[1], /同步主干后重新验证/);
   } finally {
     await s.close();
+  }
+});
+
+test('a host crash while the Dev handles a failed validation resumes in the same Dev thread', async () => {
+  const { root, store, repo, task, github } = await devFixture('phantom-oncall-crash-');
+  github.publishPR = async () => ({}) as never;
+  github.reviewComment = async () => {};
+  const marker = join(root, 'ran-once');
+  await writeFile(
+    join(root, 'flaky.cjs'),
+    `const fs = require('fs'); const m = ${JSON.stringify(marker)}; if (!fs.existsSync(m)) { fs.writeFileSync(m, ''); console.error('EADDRINUSE 4318'); process.exit(1); }`,
+  );
+  store.patchRepo(repo.id, {
+    commands: {
+      install: '',
+      build: '',
+      test: `node "${join(root, 'flaky.cjs')}"`,
+      start: '',
+      port: 3000,
+    },
+  });
+  let crashed = false;
+  let reviewed = false;
+  const validationThreads: (string | undefined)[] = [];
+  class Model extends Codex {
+    role = '';
+    handler?: Handler;
+    override async start() {}
+    override async stop() {}
+    override async thread(o: Parameters<Codex['thread']>[0]) {
+      this.role = o.instructions.includes('Independent Review') ? 'review' : 'dev';
+      this.handler = o.toolHandler;
+      if (o.tools?.some((tool) => tool.name === 'settle')) validationThreads.push(o.threadId);
+      return `${this.role}-thread`;
+    }
+    override async turn(_thread: string, prompt: string, _profile: unknown, signal?: AbortSignal) {
+      if (prompt.includes('## 正式验证失败')) {
+        // The first host dies while the Dev is still diagnosing.
+        if (!crashed) return hang(signal);
+        await this.handler!('rerun_validation', {});
+        await this.handler!('settle', { action: 'retry', diagnosis: '端口被占用，重跑通过。' });
+        return 'settled';
+      }
+      if (this.role === 'review') {
+        reviewed = true;
+        return hang(signal);
+      }
+      await writeFile(join(store.task(task.id).worktree!, 'a.txt'), 'implemented\n');
+      return 'done';
+    }
+  }
+  const host = () =>
+    new Engine(store, github, new Workspaces(join(root, 'ws'), store), root, () => new Model());
+  const first = host();
+  const second = host();
+  const until = async (engine: Engine, done: () => boolean) => {
+    for (let i = 0; i < 1200 && !done(); i++) {
+      await engine.tick();
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(
+      done(),
+      JSON.stringify({
+        runs: store.list('run').map((r) => [r.role, r.status, r.incidentPhase, r.error]),
+        incidents: store.list('incident').map((i) => [i.status, i.assessmentRunId]),
+      }),
+    );
+  };
+  try {
+    await first.start();
+    const handling = () =>
+      store.activeRuns().find((r) => r.role === 'dev' && r.incidentPhase === 'validation');
+    await until(first, () => !!handling());
+    const interrupted = handling()!;
+    // A crash: the first host stops scheduling but never finishes its Runs.
+    clearInterval((first as any).timer);
+    crashed = true;
+    await second.start();
+    await until(second, () => reviewed);
+    assert.deepEqual(
+      validationThreads,
+      ['dev-thread', 'dev-thread'],
+      'both the interrupted and the recovered handling continue the Dev thread',
+    );
+    assert.equal(store.get('run', interrupted.id)?.status, 'interrupted');
+    const recovery = store.list('recovery').find((item) => item.oldRunId === interrupted.id)!;
+    const successor = store.get('run', recovery.successorRunId!)!;
+    assert.equal(successor.role, 'dev');
+    assert.equal(successor.incidentPhase, 'validation');
+    assert.equal(store.get('incident', interrupted.incidentId!)?.status, 'resolved');
+    assert.equal(store.task(task.id).retries, 0, 'an environmental failure spends no round');
+  } finally {
+    await second.stop();
+    await first.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });

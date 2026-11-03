@@ -179,7 +179,10 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
         const axis = /Axis: (primary|secondary)/.exec(prompt)?.[1] ?? this.axis;
         this.axis = axis;
         assert.ok(axis, 'the host must name the Policy 2 review lane');
-        assert.ok(prompt.includes(`Handoff ${devTurns}:`), 'review must see the latest Dev handoff');
+        assert.ok(
+          prompt.includes(`Handoff ${devTurns}:`),
+          'review must see the latest Dev handoff',
+        );
         if (axis === 'primary' && route === 'complex' && !rejected) {
           rejected = true;
           const evidence = store.task(task.id);
@@ -232,7 +235,9 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   const engine = new Engine(store, new FakeGitHub(store), ws, root, () => new FakeCodex());
   try {
     await engine.start();
-    for (let i = 0; i < 600 && store.task(task.id).stage !== 'done'; i++) {
+    // A wall-clock budget: under the full suite's load a fixed tick count ran out mid-review.
+    const deadline = Date.now() + 150_000;
+    while (Date.now() < deadline && store.task(task.id).stage !== 'done') {
       await engine.tick();
       await new Promise((r) => setTimeout(r, 50));
     }

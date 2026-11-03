@@ -268,6 +268,12 @@ export const resolveIncidentInput = z
   })
   .strict();
 /** The on-call engineer's one disposition for an Incident; `question` is required for `ask_user`. */
+export const ownerReplyInput = z
+  .object({
+    answer: z.string().trim().min(1).max(8000),
+    summary: z.string().trim().min(1).max(1000),
+  })
+  .strict();
 export const oncallSettleInput = z
   .object({
     action: z.enum(['retry', 'fixed', 'resync', 'ask_user']),
