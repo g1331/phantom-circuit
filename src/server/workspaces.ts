@@ -953,6 +953,7 @@ export class Workspaces {
     const evidence: Evidence[] = [];
     for (const text of [repo.commands.build, repo.commands.test].filter(Boolean)) {
       let r;
+      const started = Date.now();
       try {
         // A full suite plus browser checks overran 10 minutes while two Tasks validated in parallel.
         r = await shellCommand(text, task.worktree, signal, 30 * 60_000);
@@ -967,6 +968,7 @@ export class Workspaces {
         output: redact(r.stdout + '\n' + r.stderr).slice(-16000),
         head: before,
         at: now(),
+        durationMs: Date.now() - started,
       });
       this.store.updateTask(task.id, { tests: [...evidence] });
       // External test runners only expose text for nested process/OS failures.
