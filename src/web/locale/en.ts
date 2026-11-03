@@ -418,6 +418,7 @@ export const en = {
   'team.doing.talking': "Talking with you",
   'team.doing.planning': "Planning the work",
   'team.doing.assessing': "Handling an incident",
+  'team.doing.coordinating': "Coordinating the work",
   'team.doing.building': "Writing code",
   'team.doing.checking': "Running checks",
   'team.doing.merging': "Integrating trunk changes",

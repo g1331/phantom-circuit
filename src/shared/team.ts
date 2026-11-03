@@ -9,6 +9,7 @@ export type MemberActivity =
   | 'talking'
   | 'planning'
   | 'assessing'
+  | 'coordinating'
   | 'building'
   | 'checking'
   | 'merging'
@@ -68,7 +69,9 @@ export interface TeamView {
 const live = (run: Run) => run.status === 'running';
 
 function activity(run: Run, task?: Task): MemberActivity {
-  if (run.role === 'pm') return run.incidentId ? 'assessing' : run.sourceMessageId ? 'talking' : 'planning';
+  // A task-bound liaison turn (a Dev question, feedback, acceptance) is the team talking internally.
+  if (run.role === 'pm')
+    return run.incidentId ? 'assessing' : task ? 'coordinating' : run.sourceMessageId ? 'talking' : 'planning';
   if (run.role === 'oncall') return 'diagnosing';
   if (run.role === 'review') return run.secondaryReview ? 'second_review' : 'reviewing';
   if (task?.pendingMerge) return 'merging';

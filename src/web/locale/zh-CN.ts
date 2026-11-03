@@ -402,6 +402,7 @@ export const zhCN = {
   'team.doing.talking': "在和你沟通",
   'team.doing.planning': "在拆解需求",
   'team.doing.assessing': "在处理异常",
+  'team.doing.coordinating': "在协调工作",
   'team.doing.building': "在写代码",
   'team.doing.checking': "在跑验证",
   'team.doing.merging': "在整合主干改动",

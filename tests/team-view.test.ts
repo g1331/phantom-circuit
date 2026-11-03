@@ -51,6 +51,8 @@ test('the team view shows who is working on what and what waits on the user', as
     // The liaison asked a question and now waits on the user: that is not work in progress.
     const liaison = store.run('pm', project.id, 'pm');
     store.finishRun(liaison.id, 'waiting', 'ClarificationPause');
+    // The liaison answering the Dev's question is coordinating, not talking with the user.
+    store.run('pm', project.id, 'pm', store.task(building.id));
     const view = teamView(store.snapshot(), project.id);
 
     const developer = view.members.find((m) => m.role === 'dev')!;
@@ -60,7 +62,7 @@ test('the team view shows who is working on what and what waits on the user', as
     assert.deepEqual(
       view.members.map((m) => [m.role, m.activity]),
       [
-        ['pm', 'idle'],
+        ['pm', 'coordinating'],
         ['dev', 'building'],
         ['review', 'idle'],
         ['oncall', 'idle'],
@@ -68,7 +70,7 @@ test('the team view shows who is working on what and what waits on the user', as
     );
     const work = Object.fromEntries(view.work.map((w) => [w.title, w]));
     assert.equal(work['Search page'].attention, 'none');
-    assert.deepEqual(work['Search page'].owners, ['dev']);
+    assert.deepEqual(work['Search page'].owners, ['dev', 'pm']);
     assert.equal(work['Export'].attention, 'blocked');
     assert.equal(work['Billing'].attention, 'needs_user');
     assert.deepEqual(
