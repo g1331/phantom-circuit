@@ -3,7 +3,6 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
@@ -60,19 +59,9 @@ export async function checkReviewClarification() {
   const ws = new Workspaces(join(root, 'workspaces'), store);
   const engine = new Engine(store, new GitHub(store), ws, root);
   const app = createApp(store, engine, new Previews(store, ws), 4329);
-  let server: Awaited<ReturnType<typeof createServer>> | undefined;
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
     await app.listen({ host: '127.0.0.1', port: 4329 });
-    server = await createServer({
-      server: {
-        host: '127.0.0.1',
-        port: 5173,
-        strictPort: true,
-        proxy: { '/api': 'http://127.0.0.1:4329' },
-      },
-    });
-    await server.listen();
     browser = await chromium.launch({
       headless: true,
       channel: process.platform === 'win32' ? 'msedge' : undefined,
@@ -84,7 +73,8 @@ export async function checkReviewClarification() {
     });
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto('http://127.0.0.1:5173');
+    // The host serves the built UI itself, as in the main check, so 5173 stays free for `npm run dev`.
+    await page.goto('http://127.0.0.1:4329');
     const projectCard = page.locator('.conversation-content .clarification-card');
     await projectCard.getByText('需要用户', { exact: true }).waitFor();
     await projectCard
@@ -117,7 +107,6 @@ export async function checkReviewClarification() {
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
-    await server?.close();
     await app.close();
     await engine.stop();
     store.close();
