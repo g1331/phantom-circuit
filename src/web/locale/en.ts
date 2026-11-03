@@ -442,4 +442,5 @@ export const en = {
   'team.feed.failed': "failed",
   'team.feed.paused': "stopped",
   'team.feedGeneral': "Conversation",
+  'chat.internal': { one: 'Team discussion · {count} exchange', other: 'Team discussion · {count} exchanges' },
 } as const;

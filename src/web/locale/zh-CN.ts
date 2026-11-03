@@ -426,4 +426,5 @@ export const zhCN = {
   'team.feed.failed': "失败",
   'team.feed.paused': "中断",
   'team.feedGeneral': "沟通",
+  'chat.internal': { other: '团队内部沟通 · {count} 次' },
 } as const satisfies Resource;
