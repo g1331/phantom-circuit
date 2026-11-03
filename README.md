@@ -89,7 +89,7 @@ npm run test:browser
 npm run probe
 ```
 
-Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on port 4318. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
+Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on a free local port (set `PHANTOM_BROWSER_PORT` to pin one). Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
 
 The maintenance browser checks additionally serve the real `dist/` build on fixture port 4333. They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
 

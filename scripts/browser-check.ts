@@ -4,6 +4,7 @@ import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer, type AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -25,7 +26,18 @@ import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
 
 const artifacts = resolve('test-results');
-const port = Number(process.env.PHANTOM_BROWSER_PORT ?? 4318);
+// A fixed default port collided when two checkouts ran browser checks at once.
+const freePort = () =>
+  new Promise<number>((done, fail) => {
+    const probe = createServer().once('error', fail);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => done(port));
+    });
+  });
+const port = process.env.PHANTOM_BROWSER_PORT
+  ? Number(process.env.PHANTOM_BROWSER_PORT)
+  : await freePort();
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error('PHANTOM_BROWSER_PORT must be an integer from 1 to 65535');
 const origin = `http://127.0.0.1:${port}`;
