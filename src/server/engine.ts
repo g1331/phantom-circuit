@@ -2221,7 +2221,7 @@ export class Engine {
         ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
       } as any);
       this.saveThread(run, thread);
-      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
+      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nValidation evidence: ${JSON.stringify(task.tests)}\nDev handoff (Dev-reported, not host evidence): ${this.store.taskEvents(task.id).findLast((e) => e.type === 'dev-result')?.message ?? 'none'}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
       let result: z.infer<typeof reviewSchema> | undefined = submitted;
       if (!result) {
         // Strict structured output needs every property required, so the model is asked only

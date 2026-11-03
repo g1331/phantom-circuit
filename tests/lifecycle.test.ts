@@ -173,12 +173,13 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
           join(this.cwd, 'sum.cjs'),
           `// Revision ${devTurns}\nmodule.exports=(a,b)=>a+b;\n`,
         );
-        return 'Implemented in the task worktree; host must commit and validate.';
+        return `Handoff ${devTurns}: implemented in the task worktree; host must commit and validate.`;
       }
       if (this.role === 'review') {
         const axis = /Axis: (primary|secondary)/.exec(prompt)?.[1] ?? this.axis;
         this.axis = axis;
         assert.ok(axis, 'the host must name the Policy 2 review lane');
+        assert.ok(prompt.includes(`Handoff ${devTurns}:`), 'review must see the latest Dev handoff');
         if (axis === 'primary' && route === 'complex' && !rejected) {
           rejected = true;
           const evidence = store.task(task.id);
