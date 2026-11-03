@@ -148,6 +148,9 @@ export function TaskWorkspace({
         <div className="task-board" tabIndex={0} aria-label={t('tasks.board')}>
           {columns.map((stage) => {
             const column = shown.filter((task) => task.stage === stage);
+            // Finished work reads newest first; its priority no longer orders anything.
+            const finished = stage === 'done' || stage === 'cancelled';
+            if (finished) column.reverse();
             return (
               <section
                 className={`board-column ${column.length ? '' : 'empty'}`}
@@ -170,7 +173,7 @@ export function TaskWorkspace({
                       <TaskRefs task={task} />
                     </span>
                     <span className="task-badges">
-                      <PriorityBadge value={task.priority} locale={locale} />
+                      {!finished && <PriorityBadge value={task.priority} locale={locale} />}
                       <TaskRuntimeBadges state={state} taskId={task.id} />
                       {!!task.dependencies.length && (
                         <span className="task-dependencies">
@@ -186,7 +189,6 @@ export function TaskWorkspace({
                     )}
                   </button>
                 ))}
-                {!column.length && <p className="muted">{t('tasks.columnEmpty')}</p>}
               </section>
             );
           })}

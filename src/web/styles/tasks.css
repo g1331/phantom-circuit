@@ -231,12 +231,18 @@
   scroll-padding-inline: var(--page-gutter);
 }
 .board-column {
-  flex: 0 0 248px;
+  flex: 1 0 248px;
+  max-width: 360px;
   min-width: 0;
   scroll-snap-align: start;
 }
+/* An empty stage keeps its place and count but gives its width to stages with work. */
+.board-column.empty {
+  flex: 0 0 128px;
+}
 .board-column.empty h3 {
-  color: var(--muted);
+  color: var(--faint);
+  font-weight: 500;
 }
 .board-column h3 {
   display: flex;

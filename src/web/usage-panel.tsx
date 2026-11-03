@@ -1,3 +1,4 @@
+import { RefreshCw } from 'lucide-react';
 import { ErrorText } from './error-text.tsx';
 import { useEffect, useState } from 'react';
 import type {
@@ -277,38 +278,50 @@ export function AllowancePanel({ agent, providerId }: { agent: AgentKind; provid
     allowance?.agentKind === agent && allowance.providerId === providerId ? allowance : undefined;
   return (
     <section className="allowance-panel" aria-label={t('usage.allowance')}>
-      <h3>
-        {t('usage.allowance')} · {agent.toUpperCase()}
-      </h3>
-      <button
-        className="text-button"
-        disabled={loading}
-        onClick={() => setRefresh((value) => value + 1)}
-      >
-        {t('usage.refresh')}
-      </button>
+      <header className="allowance-head">
+        <h3>
+          {t('usage.allowance')} · {agent === 'omp' ? 'OMP' : 'Codex'}
+        </h3>
+        <span className={`allowance-state state-${current?.state ?? 'unknown'}`}>
+          {current ? t(`usage.${current.state}`) : t('usage.unknown')}
+        </span>
+        <button
+          className="icon-button"
+          disabled={loading}
+          aria-label={t('usage.refresh')}
+          title={t('usage.refresh')}
+          onClick={() => setRefresh((value) => value + 1)}
+        >
+          <RefreshCw size={14} className={loading ? 'spinning' : undefined} />
+        </button>
+      </header>
       {error && (
-        <p role="alert">
+        <p role="alert" className="check-failed">
           {current && current.state !== 'unknown' && t('usage.stale')} <ErrorText error={error} />
         </p>
       )}
-      <p>{current ? t(`usage.${current.state}`) : t('usage.unknown')}</p>
       {current?.stale && !error && <p className="muted">{t('usage.cachedSnapshot')}</p>}
-      {current?.remaining !== undefined && (
-        <p>
-          {t('usage.remaining')}: {current.currency} {current.remaining}
-        </p>
-      )}
       {current && (
-        <p>
-          {t('usage.captured')}:{' '}
-          {date(current.capturedAt, { dateStyle: 'short', timeStyle: 'medium' })}
-        </p>
-      )}
-      {current?.resetAt && (
-        <p>
-          {t('usage.reset')}: {date(current.resetAt, { dateStyle: 'short', timeStyle: 'medium' })}
-        </p>
+        <dl className="allowance-facts">
+          {current.remaining !== undefined && (
+            <div>
+              <dt>{t('usage.remaining')}</dt>
+              <dd>
+                {current.currency} {current.remaining}
+              </dd>
+            </div>
+          )}
+          {current.resetAt && (
+            <div>
+              <dt>{t('usage.reset')}</dt>
+              <dd>{date(current.resetAt, { dateStyle: 'short', timeStyle: 'short' })}</dd>
+            </div>
+          )}
+          <div>
+            <dt>{t('usage.captured')}</dt>
+            <dd>{date(current.capturedAt, { dateStyle: 'short', timeStyle: 'short' })}</dd>
+          </div>
+        </dl>
       )}
     </section>
   );

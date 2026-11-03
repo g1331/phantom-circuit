@@ -32,16 +32,13 @@ export function TaskDetail({
 }) {
   const { t, host, locale } = useLocale();
   const attention = taskAttention(detail);
+  // Finished work leads with its outcome; scheduling and priority no longer apply to it.
+  const finished = detail.stage === 'done' || detail.stage === 'cancelled';
   const historicalIncidents =
     state.incidents?.filter((incident) => incidentAttention(incident, detail).historicalReason) ??
     [];
   return (
     <div className="task-detail">
-      <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />
-      <ClaimConditions
-        entry={schedule?.tasks.find((entry) => entry.taskId === detail.id)}
-        locale={locale}
-      />
       <TaskRuntimeBadges state={state} taskId={detail.id} />
       <ProjectActions
         state={{
@@ -53,7 +50,6 @@ export function TaskDetail({
         project={state.projects.find((p) => p.id === detail.projectId)!}
         reload={reload}
       />
-      <TaskUsagePanel key={detail.id} taskId={detail.id} revision={detail.updatedAt} />
       {attention.historicalReason && (
         <section className="historical-completion" aria-label={t('tasks.historicalCompletion')}>
           <p>{t('tasks.historicalCompletion')}</p>
@@ -91,7 +87,7 @@ export function TaskDetail({
             <GitPullRequest size={14} /> PR <ExternalLink size={13} />
           </a>
         )}
-        {!['done', 'cancelled'].includes(detail.stage) && (
+        {!finished && (
           <>
             <button
               className="secondary-button"
@@ -118,6 +114,7 @@ export function TaskDetail({
           </>
         )}
       </div>
+      <h3>{t('ui.taskSpecification')}</h3>
       <MarkdownContent content={detail.spec} label={t('ui.taskSpecification')} />
       <h3>{t('ui.acceptanceCriteria')}</h3>
       <ul>
@@ -197,6 +194,16 @@ export function TaskDetail({
           <pre>{test.output}</pre>
         </details>
       ))}
+      {!finished && (
+        <section className="detail-schedule">
+          <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />
+          <ClaimConditions
+            entry={schedule?.tasks.find((entry) => entry.taskId === detail.id)}
+            locale={locale}
+          />
+        </section>
+      )}
+      <TaskUsagePanel key={detail.id} taskId={detail.id} revision={detail.updatedAt} />
       <details>
         <summary>{t('ui.technicalRecords')}</summary>
         <pre>

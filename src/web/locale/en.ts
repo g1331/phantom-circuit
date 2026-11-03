@@ -72,7 +72,6 @@ export const en = {
   'tasks.allControls': 'All controls',
   'tasks.activeControl': 'Active',
   'tasks.pausedControl': 'Paused',
-  'tasks.columnEmpty': 'No tasks in this stage',
   'tasks.dependencies': { one: '{count} dependency', other: '{count} dependencies' },
   'images.pending': 'Pending image: {name}',
   'images.preview': 'Preview image: {name}',

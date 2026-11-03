@@ -220,7 +220,7 @@ export function ProjectContext({
                   </button>
                 )}
               </div>
-              {r.preview?.error && <p className="inline-warning">{r.preview.error}</p>}
+              {r.preview?.error && <p className="inline-warning">{host(r.preview.error)}</p>}
             </div>
           );
         })

@@ -106,6 +106,7 @@ export function createLocale(locale: Locale, production = false) {
           { code: descriptor.code, params: (descriptor.params ?? {}) as HostMessageParams, legacy },
           locale,
         )
-      : legacy;
+      : // Host records often hold `String(error)`; the class name is noise to the user.
+        legacy.replace(/^(?:Error|Fault): /, '');
   return { t, number, date, time, duration, activityTitle, host };
 }

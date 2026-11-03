@@ -129,7 +129,8 @@ export class Previews {
       this.store.patchRepo(repoId, {
         preview: signal.aborted
           ? { status: 'stopped' }
-          : { status: 'failed', error: redact(String(e)) },
+          : // The message alone: `String(error)` would show the user an "Error:" prefix.
+            { status: 'failed', error: redact(e instanceof Error ? e.message : String(e)) },
       });
       throw e;
     }

@@ -9,7 +9,7 @@ import { Empty, unset } from './ui.tsx';
 type Run = Snapshot['runs'][number];
 
 export function RunList({ state, runs, tasks }: { state: Snapshot; runs: Run[]; tasks: Task[] }) {
-  const { t, time, host } = useLocale();
+  const { t, time, host, duration } = useLocale();
   if (!runs.length)
     return (
       <div className="run-workspace">
@@ -29,32 +29,47 @@ export function RunList({ state, runs, tasks }: { state: Snapshot; runs: Run[]; 
     completed: t('ui.completed'),
     queued: t('ui.queued'),
   };
+  const title = (run: Run) =>
+    tasks.find((task) => task.id === run.taskId)?.title ??
+    t('ui.projectRequirementsAndCoordination');
+  // Consecutive Runs for the same work share one heading.
+  const groups: Run[][] = [];
+  for (const run of runs.slice().reverse()) {
+    const last = groups.at(-1);
+    if (last && last[0].taskId === run.taskId) last.push(run);
+    else groups.push([run]);
+  }
   return (
     <div className="run-workspace">
-      {runs
-        .slice()
-        .reverse()
-        .map((r) => (
-          <div className={`run-row status-${r.status}`} key={r.id}>
-            <span className={`status-dot ${isRunning(r.status) ? 'live' : ''}`} />
-            <div>
-              <strong>
-                {t(`team.role.${r.role}`)} <RunModel run={r} />
-              </strong>
-              <p>
-                {tasks.find((task) => task.id === r.taskId)?.title ??
-                  t('ui.projectRequirementsAndCoordination')}
+      {groups.map((group) => (
+        <section className="run-group" key={group[0].id} aria-label={title(group[0])}>
+          <h3>{title(group[0])}</h3>
+          {group.map((r) => (
+            <div className={`run-row status-${r.status}`} key={r.id}>
+              <span className={`status-dot ${isRunning(r.status) ? 'live' : ''}`} />
+              <div>
+                <strong>
+                  {t(`team.role.${r.role}`)} <RunModel run={r} />
+                </strong>
                 {r.error && <em>{host(r.error, r.errorDescriptor)}</em>}
-              </p>
-              <TaskRuntimeBadges state={state} taskId={r.taskId} runId={r.id} />
-              <RunRecord run={r} />
+                <TaskRuntimeBadges state={state} taskId={r.taskId} runId={r.id} />
+                <RunRecord run={r} />
+              </div>
+              <div className="run-meta">
+                <span className={`run-status ${r.status}`}>{statusLabel[r.status]}</span>
+                <span>
+                  {r.endedAt && (
+                    <span className="run-duration">
+                      {duration((Date.parse(r.endedAt) - Date.parse(r.startedAt)) / 1000)} ·{' '}
+                    </span>
+                  )}
+                  <time dateTime={r.startedAt}>{time(r.startedAt)}</time>
+                </span>
+              </div>
             </div>
-            <div className="run-meta">
-              <span className={`run-status ${r.status}`}>{statusLabel[r.status]}</span>
-              <time dateTime={r.startedAt}>{time(r.startedAt)}</time>
-            </div>
-          </div>
-        ))}
+          ))}
+        </section>
+      ))}
     </div>
   );
 }

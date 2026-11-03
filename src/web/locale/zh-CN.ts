@@ -74,7 +74,6 @@ export const zhCN = {
   'tasks.allControls': '全部执行状态',
   'tasks.activeControl': '活跃',
   'tasks.pausedControl': '已暂停',
-  'tasks.columnEmpty': '此阶段没有任务',
   'tasks.dependencies': { one: '{count} 个依赖', other: '{count} 个依赖' },
   'images.pending': '待发送：{name}',
   'images.preview': '预览图片：{name}',

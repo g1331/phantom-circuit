@@ -24,7 +24,7 @@ import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversatio
 import { LocaleProvider, useLocale } from './locale/provider.tsx';
 import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
-import { TaskWorkspace, type TaskFilters } from './task-workspace.tsx';
+import { TaskWorkspace, profileKeys, type TaskFilters } from './task-workspace.tsx';
 import { RunList } from './run-list.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { Modal } from './ui.tsx';
@@ -694,7 +694,7 @@ function App() {
       {detail && (
         <Modal
           title={detail.title}
-          subtitle={`${t(`stage.${detail.stage}`)} · ${detail.routingReason}`}
+          subtitle={`${t(`stage.${detail.stage}`)} · ${t(profileKeys[detail.profile])}`}
           wide
           onClose={() => setTaskDetail(undefined)}
         >
