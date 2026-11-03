@@ -4,7 +4,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture, blockedOnPublication } from './host-publication-fixture.ts';
 
-test('host recovery authorizes one controlled publication and completes without rework', async () => {
+test('host recovery authorizes one controlled publication and completes without rework', async (t) => {
+  // Only explicit cycles drive the engine: a background tick could publish between the two resumes.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const f = await fixture();
   try {
     const failed = await blockedOnPublication(f);
@@ -41,8 +43,8 @@ test('host recovery authorizes one controlled publication and completes without 
     assert.equal(f.starts(), 0, 'no extra Dev session after recovery');
     assert.equal(f.turns(), 0, 'no reimplementation turn');
     // The pinned revision did not move, and it still carries passing formal evidence for the
-    // same commands. (Recovery re-runs verify on the unchanged worktree, so this is content
-    // equality of a fresh run, not identity of the original evidence record.)
+    // same commands. (Recovery may reuse the unchanged head's evidence or run it again, so this
+    // compares content, not the identity of the original evidence record.)
     assert.equal(result.head, failed.head);
     assert.equal(result.base, failed.base);
     assert.deepEqual(
