@@ -270,7 +270,7 @@ export const resolveIncidentInput = z
 /** The on-call engineer's one disposition for an Incident; `question` is required for `ask_user`. */
 export const oncallSettleInput = z
   .object({
-    action: z.enum(['retry', 'rework', 'ask_user']),
+    action: z.enum(['retry', 'rework', 'resync', 'ask_user']),
     diagnosis: z.string().trim().min(1).max(4000),
     question: z.string().trim().min(1).max(2000).optional(),
   })

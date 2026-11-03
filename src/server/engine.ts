@@ -1927,7 +1927,7 @@ export class Engine {
             {
               name: 'settle',
               description:
-                'End this on-call shift with one action: retry (needs a passing rerun), rework, or ask_user.',
+                'End this on-call shift with one action: retry (needs a passing rerun), rework, resync (trunk moved and carries the fix), or ask_user.',
               inputSchema: jsonSchema(oncallSettleInput),
             },
           ],
@@ -1956,6 +1956,19 @@ export class Engine {
               current.tests.every((t) => t.exitCode === 0 && t.head === current.head);
             if (input.action === 'retry' && !passing)
               throw new Fault('retry 需要先有一次全部通过的 rerun_validation', 409);
+            if (input.action === 'resync') {
+              // Only a trunk that moved can carry the fix; otherwise resync would just dodge the budget.
+              const branch = this.store.repo(current.repoId).defaultBranch;
+              const tip = (
+                await this.workspaces.git(
+                  current.worktree!,
+                  ['ls-remote', 'origin', `refs/heads/${branch}`],
+                  signal,
+                )
+              ).split(/\s/)[0];
+              if (!tip || tip === current.base)
+                throw new Fault('主干自本次验证后没有变化，resync 不会带来修复', 409);
+            }
             if (input.action === 'ask_user' && !input.question)
               throw new Fault('ask_user 必须给出 question', 400);
             settled = input;
@@ -1991,7 +2004,15 @@ export class Engine {
     });
     if (outcome.action === 'retry')
       this.resolveIncident(task.projectId, incidentId, 'resolved', outcome.diagnosis, context);
-    else if (outcome.action === 'rework') {
+    else if (outcome.action === 'resync') {
+      this.store.updateIncident(incidentId, { status: 'resolved', message: outcome.diagnosis });
+      this.rework(
+        this.store.task(task.id),
+        `值班诊断：${outcome.diagnosis}
+失败来自主干，主干已更新；同步主干后重新验证，本轮不计返工。`,
+        false,
+      );
+    } else if (outcome.action === 'rework') {
       this.store.updateIncident(incidentId, { status: 'resolved', message: outcome.diagnosis });
       this.rework(
         this.store.task(task.id),
