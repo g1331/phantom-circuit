@@ -28,6 +28,7 @@ const [baselineFile, shots] = process.argv.slice(2);
 if (!baselineFile) throw new Error('Usage: style-snapshot.ts <baseline.css> [screenshot-dir]');
 if (!existsSync(resolve('dist/index.html'))) throw new Error('Run npm run build first.');
 const baseline = await readFile(baselineFile, 'utf8');
+const frozenAt = Date.now();
 
 const port = await new Promise<number>((done, fail) => {
   const probe = createServer().once('error', fail);
@@ -327,6 +328,8 @@ try {
         reducedMotion: 'reduce',
       });
       trackRequests(page);
+      // Live counters (elapsed times) would otherwise tick between the two screenshots.
+      await page.clock.setFixedTime(frozenAt);
       await page.addInitScript((value) => {
         localStorage.setItem('phantom.theme', value);
         localStorage.setItem('phantom.locale', 'zh-CN');
