@@ -21,13 +21,16 @@ Team members are existing agent harnesses, used without intrusion. Phantom launc
 
 Remote use means one person reaching their own computer or server from elsewhere, in the way t3code does. The service holds GitHub write access and model credentials, so it requires real authentication before it listens beyond loopback.
 
+The product ships as one core service in two packages. The desktop application is the main entry: an installer, a tray presence, launch at login and automatic updates, built with Electron because the service is already Node, and it keeps working after its window closes. On a server the same service runs headless and installs as a system service, so nothing has to keep a terminal open. The desktop application also connects to teams running on other machines and switches between them, and a phone reaches them through the web interface. The installed release runs separately from any checkout it develops: the team never runs its own unreleased code, and an upgrade is an explicit step. Server use makes Linux a supported platform alongside Windows, so the Windows-only process cleanup, credential-file permissions and shell invocation become platform adapters.
+
 Direction under discussion, not decided: one deployment of the service is one team, and its members are combinations of harness, account and machine that the user makes available, possibly spanning several machines. Several people sharing one deployment is a later question.
 
 The redesign is led by the operator rather than by Phantom itself, because it changes how the team organizes its own work; Phantom receives well-bounded slices once the skeleton exists. The planned order is:
 
-1. team autonomy and a reduced user surface (conversation, progress in plain language, delivered results);
-2. learning and following repository conventions;
-3. MCP host tools and the Claude Code harness;
-4. remote access.
+1. team autonomy and a rebuilt interface (conversation, team view, direct owner conversations, intervention);
+2. the service form: separation from the checkout, background and system service, Linux support;
+3. learning and following repository conventions;
+4. MCP host tools and the Claude Code harness;
+5. the desktop application and remote access to several teams.
 
 Each slice that lands updates the ADRs it supersedes and `CONTEXT.md`.
