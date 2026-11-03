@@ -446,9 +446,6 @@
 .role-modes select {
   width: 100%;
 }
-.runtime-settings input[type='checkbox'] {
-  width: auto;
-}
 .runtime-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

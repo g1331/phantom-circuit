@@ -137,7 +137,7 @@ export const zhCN = {
   'ui.accepted': '已接受',
   'ui.draft': '草案',
   'ui.connectAnExistingLocalCheckoutToIts':
-    '关联已有本地 checkout 与 GitHub 仓库。接入后默认不开工。',
+    '把本机已有的代码目录和 GitHub 仓库关联起来。接入后不会自动开工。',
   'ui.runtimeSettings': '运行设置',
   'ui.globalAssignmentsAreDefaultsForNewProjects': '项目可继承全局配置，也可单独设置。',
   'ui.changesAffectFutureRunsActiveAndHistorical': '仅影响后续运行，正在执行的回合保持原配置。',
@@ -160,7 +160,7 @@ export const zhCN = {
   'ui.authorizeLocalDevelopmentAndVerificationGithubTasks':
     '授权此仓库的本地开发与验证，以及 GitHub 任务、Project、Milestone、任务分支、PR 和合并操作。生产部署不包含在内。',
   'ui.usesTheGithubIdentitySignedInOn':
-    '使用本机已登录的 GitHub 身份。系统会核对本地 origin；原 checkout 中的修改会保留。',
+    '使用本机已登录的 GitHub 账号。系统会确认这个目录确实对应该仓库；目录里原有的修改不会被改动。',
   'ui.verifyingRepository': '正在核对仓库…',
   'ui.installDependencies': '安装依赖',
   'ui.build': '构建',

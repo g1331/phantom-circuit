@@ -58,6 +58,14 @@ select {
   padding: 10px 12px;
   min-width: 0;
 }
+/* Native checkboxes: field padding and radius would shrink them to a dot. */
+input:is([type='checkbox'], [type='radio']) {
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+}
 textarea {
   resize: vertical;
 }
