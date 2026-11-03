@@ -115,8 +115,10 @@ const schemas = {
     runId: id.optional(),
     phase: z.string().optional(),
     createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
     message: z.string().optional(),
     descriptor: descriptor.optional(),
+    status: z.string().optional(),
   }),
   clarification: scoped.extend({
     taskId: id.optional(),
@@ -132,7 +134,14 @@ const schemas = {
     pauseProvenance: z.enum(['user', 'runtime', 'terminal']).optional(),
     createdAt: z.string().optional(),
   }),
-  message: scoped.extend({ sourceMessageId: id.optional() }),
+  message: scoped.extend({
+    sourceMessageId: id.optional(),
+    runId: id.optional(),
+    role: z.string().optional(),
+    intent: z.string().optional(),
+    content: z.string().optional(),
+    createdAt: z.string().optional(),
+  }),
 };
 const eventSchema = z.object({
   at: z.string().optional(),
@@ -272,6 +281,29 @@ function mergeEvidence(
   return { merged: true, at: time(pr.merged_at ?? undefined) };
 }
 
+function waitingWindow(
+  incident: z.infer<typeof schemas.incident>,
+  task: ReportTask | undefined,
+  end: number | undefined,
+): 'confirmed' | 'outside' | 'unknown' {
+  const start = time(task?.createdAt);
+  const created = time(incident.createdAt);
+  const updated = time(incident.updatedAt);
+  if (
+    start === undefined ||
+    end === undefined ||
+    created === undefined ||
+    updated === undefined ||
+    end < start ||
+    updated < created
+  )
+    return 'unknown';
+  if (created > end || updated < start) return 'outside';
+  // Store writes updatedAt with every Incident status change. It bounds when
+  // the final state was established, without claiming an exact transition time.
+  return created >= start && updated <= end ? 'confirmed' : 'unknown';
+}
+
 export function renderReport(snapshot: Snapshot, options: { explain?: boolean } = {}): string {
   const data = {
     projects: records(snapshot, 'project', schemas.project),
@@ -290,16 +322,17 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
     return { ...parsed.data, id: row.id };
   });
   const runProjects = new Map(data.runs.map((run) => [run.id, run.projectId]));
+  const messageProjects = new Map(data.messages.map((message) => [message.id, message.projectId]));
   const lines = [
     'Project 运行评测报告',
     `读取时间：${snapshot.readAt}`,
     `数据来源：${snapshot.file}`,
     '口径：全部持久记录；确认合并按 Task ID；token 先汇总 Task 全部归属 Run，再取中位数；墙钟=createdAt→merged_at。',
     '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
-    '干预覆盖：现行数据无历史完整性标记，未发现干预仍为 unknown；无干预率仅为保守下界。',
+    '干预覆盖：Task“无”仅表示未发现已确认干预证据，历史完整性仍为 unknown；无干预率仅为保守下界。',
     'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
-    '暂停/恢复/取消口径：有效 control.action/source/reason 且动作一致才采用来源；user 计干预，host/pm 仅排除该条用户直接操作，关联 Incident 仍计入。',
-    '缺失、未知或不一致来源仍为 unknown；后续自动动作不覆盖早先用户/未知证据；兼容 recovery.pauseProvenance=user，不据此证明历史完整。',
+    '干预归因：用户讨论/反馈仅按同 Project 持久关联或完整 Task ID/唯一 #Issue/精确 Issue URL；共享来源不扩散，原始实施请求排除。Task.createdAt 为本地发布边界，createdAt≤证据时间≤实际 merged_at，消息和 Task 时间缺失不用 updatedAt 补齐；Clarification 保留发布前来源关联。',
+    '来源计数：消息按 ID；事故按 Incident ID，采用明确 user/http_incident 或最终 waiting_user 且 Task.createdAt≤Incident.createdAt≤Incident.updatedAt≤merged_at；Incident.updatedAt 仅为最终状态成立的时间上界，晚于合并或缺失/矛盾时间保留缺口。独立用户暂停/恢复/取消按 Event ID，host/pm 不计用户动作，后续内部处置不抹去用户证据；recovery.pauseProvenance=user 无原动作 ID 时仅作用户暂停记录，已有用户暂停则补充证据、不增加次数，无法判定是否另一次暂停。',
   ];
   if (!options.explain) lines.splice(3, 6, '加 --explain 查看统计口径');
   if (!data.projects.length) lines.push('暂无 Project');
@@ -320,6 +353,8 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
       while (source) {
         if (seen.has(source)) return undefined;
         seen.add(source);
+        if (messageProjects.has(source) && messageProjects.get(source) !== project.id)
+          return undefined;
         const parent = messages.get(source)?.sourceMessageId;
         // A steered user message is its own original source (Store.beginSteer).
         if (!parent || parent === source) return source;
@@ -370,6 +405,100 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
         ),
       }))
       .filter((item) => item.merged);
+    const waitingWindows = new Map(
+      incidents
+        .filter((incident) => incident.status === 'waiting_user')
+        .map((incident) => {
+          const task = byId.get(linkedTask(incident) ?? '');
+          return [
+            incident.id,
+            waitingWindow(incident, task, merged.find((item) => item.task.id === task?.id)?.at),
+          ];
+        }),
+    );
+    const messageEvidence = new Map<string, Set<string>>();
+    let unassignedMessages = 0;
+    let messageTimeGaps = 0;
+    for (const message of messages.values()) {
+      if (message.role !== 'user' || !['discuss', 'feedback'].includes(message.intent ?? ''))
+        continue;
+      const owners = new Set<string>();
+      const source = rootSource(message.id);
+      if (source) {
+        const chain: string[] = [];
+        let cursor: string | undefined = message.id;
+        while (cursor && !chain.includes(cursor)) {
+          chain.push(cursor);
+          const parent: string | undefined = messages.get(cursor)?.sourceMessageId;
+          if (!parent || parent === cursor) break;
+          cursor = parent;
+        }
+        // Prefer the nearest durable Task binding; a shared ancestor cannot
+        // assign all sibling Tasks. Run success is irrelevant to attribution.
+        for (const sourceId of chain) {
+          const bound = new Set(
+            tasks.filter((task) => task.sourceMessageId === sourceId).map((task) => task.id),
+          );
+          for (const run of runs) {
+            if (run.sourceMessageId !== sourceId) continue;
+            const owner = linkedTask({ taskId: run.taskId, runId: run.id });
+            if (owner) bound.add(owner);
+          }
+          if (bound.size) {
+            if (bound.size === 1) owners.add([...bound][0]);
+            break;
+          }
+        }
+      }
+      if (message.runId) {
+        const owner = linkedTask({ runId: message.runId });
+        if (owner) owners.add(owner);
+      }
+      const content = message.content ?? '';
+      for (const task of tasks) {
+        const literal = task.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`(?<![A-Za-z0-9_-])${literal}(?![A-Za-z0-9_-])`, 'u').test(content))
+          owners.add(task.id);
+      }
+      const urls = [
+        ...content.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)\b/gi),
+      ];
+      for (const [, github, issue] of urls) {
+        for (const task of tasks) {
+          const repo = data.repos.find(
+            (repo) => repo.id === task.repoId && repo.projectId === project.id,
+          );
+          if (repo?.github.toLowerCase() === github.toLowerCase() && task.issue === Number(issue))
+            owners.add(task.id);
+        }
+      }
+      // Resolve bare numbers against all Project Tasks, before applying any time window.
+      for (const [, issue] of content.matchAll(/(?<![\w/])#(\d+)\b/g)) {
+        const candidates = tasks.filter((task) => task.issue === Number(issue));
+        if (candidates.length === 1) owners.add(candidates[0].id);
+      }
+      if (!owners.size) {
+        unassignedMessages++;
+        continue;
+      }
+      const date = time(message.createdAt);
+      let gap = date === undefined;
+      for (const owner of owners) {
+        const task = byId.get(owner)!;
+        if (task.sourceMessageId === message.id) continue;
+        const start = time(task.createdAt);
+        const end = merged.find((item) => item.task.id === owner)?.at;
+        if (date === undefined || start === undefined || end === undefined) {
+          gap = true;
+          continue;
+        }
+        if (date < start || date > end) continue;
+        const ids = messageEvidence.get(owner) ?? new Set<string>();
+        ids.add(message.id);
+        messageEvidence.set(owner, ids);
+      }
+      if (gap) messageTimeGaps++;
+    }
     const incidentPhases = new Map<string, number>();
     for (const incident of incidents) {
       const phase = incident.phase || 'unknown';
@@ -433,6 +562,7 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
     let tokenUnknown = 0;
     let tokenPartial = 0;
     let intervened = 0;
+    const confirmedIncidents = new Set<string>();
     const details: { at?: number; line: string }[] = [];
     for (const { task, at } of merged) {
       const assignedRuns = taskRuns.get(task.id) ?? [];
@@ -460,33 +590,83 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
         // records already present at creation are provably before its merge.
         return value !== undefined && value <= (at ?? start ?? -Infinity);
       };
-      const hasIntervention =
-        controls.some(
-          (event) =>
-            controlTask(event) === task.id &&
-            controlSource(event) === 'user' &&
-            beforeMerge(event.at),
-        ) ||
-        incidents.some(
-          (incident) => linkedTask(incident) === task.id && beforeMerge(incident.createdAt),
-        ) ||
-        clarifications.some(
-          (item) =>
-            (item.taskId === task.id ||
-              (!!rootSource(item.sourceMessageId) &&
-                rootSource(item.sourceMessageId) === rootSource(task.sourceMessageId))) &&
-            beforeMerge(item.createdAt),
-        ) ||
-        recoveries.some(
-          (item) =>
-            linkedTask(item) === task.id &&
-            item.pauseProvenance === 'user' &&
-            beforeMerge(item.createdAt),
+      const evidence = new Map<string, Set<string>>();
+      const add = (category: string, id: string) => {
+        const ids = evidence.get(category) ?? new Set<string>();
+        ids.add(id);
+        evidence.set(category, ids);
+      };
+      for (const id of messageEvidence.get(task.id) ?? []) add('消息', id);
+      const inWindow = (date: string | undefined) => {
+        const value = time(date);
+        return (
+          value !== undefined &&
+          start !== undefined &&
+          at !== undefined &&
+          value >= start &&
+          value <= at
         );
+      };
+      const taskControls = controls.filter(
+        (event) => controlTask(event) === task.id && inWindow(event.at),
+      );
+      for (const incident of incidents) {
+        if (linkedTask(incident) !== task.id) continue;
+        const related = taskControls.filter((event) => {
+          const parsed = controlSchema.safeParse(event.control);
+          return parsed.success && parsed.data.incidentId === incident.id;
+        });
+        const userHandled = related.some((event) => {
+          const parsed = controlSchema.parse(event.control);
+          return controlSource(event) === 'user' && parsed.reason === 'http_incident';
+        });
+        if (userHandled || waitingWindows.get(incident.id) === 'confirmed') {
+          add('事故', incident.id);
+          confirmedIncidents.add(incident.id);
+        }
+      }
+      const actionLabels = { pause: '暂停', resume: '恢复', cancel: '取消' };
+      for (const event of taskControls) {
+        if (controlSource(event) !== 'user') continue;
+        const control = controlSchema.parse(event.control);
+        if (
+          control.incidentId &&
+          control.reason === 'http_incident' &&
+          evidence.get('事故')?.has(control.incidentId)
+        )
+          continue;
+        add(actionLabels[control.action], String(event.id));
+      }
+      for (const item of clarifications) {
+        if (
+          (item.taskId === task.id ||
+            (!item.taskId &&
+              !!rootSource(item.sourceMessageId) &&
+              rootSource(item.sourceMessageId) === rootSource(task.sourceMessageId))) &&
+          beforeMerge(item.createdAt)
+        )
+          add('澄清', item.id);
+      }
+      for (const item of recoveries) {
+        if (
+          linkedTask(item) !== task.id ||
+          item.pauseProvenance !== 'user' ||
+          !inWindow(item.createdAt)
+        )
+          continue;
+        // A recovery snapshot has no original action ID. It supplements an
+        // observed pause; it cannot establish an additional pause action.
+        if (!evidence.get('暂停')?.size) add('用户暂停记录', item.id);
+      }
+      const categories = ['消息', '事故', '暂停', '恢复', '取消', '澄清', '用户暂停记录']
+        .filter((category) => evidence.get(category)?.size)
+        .map((category) => `${category}${evidence.get(category)!.size}`);
+      const count = [...evidence.values()].reduce((sum, ids) => sum + ids.size, 0);
+      const hasIntervention = count > 0;
       if (hasIntervention) intervened++;
       details.push({
         at,
-        line: `  Task ${taskLabel(task)}：token=${complete ? tokens(observed) : partial ? `partial(已知=${known.length ? tokens(observed) : 'N/A'})` : 'unknown'}；墙钟=${wall === undefined ? 'unknown' : duration(wall)}；干预=${hasIntervention ? '有' : 'unknown'}；返工=${task.retries ?? 'unknown'}`,
+        line: `  Task ${taskLabel(task)}：token=${complete ? tokens(observed) : partial ? `partial(已知=${known.length ? tokens(observed) : 'N/A'})` : 'unknown'}；墙钟=${wall === undefined ? 'unknown' : duration(wall)}；干预=${hasIntervention ? `${count}（${categories.join('、')}）` : '无'}；返工=${task.retries ?? 'unknown'}`,
       });
     }
     const unassignedClarifications = clarifications.filter(
@@ -502,6 +682,8 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
       `确认合并任务：${merged.length}；历史 done 未确认：${tasks.filter((task) => task.stage === 'done' && !merged.some((item) => item.task.id === task.id)).length}`,
       `无干预合并率（保守下界）：${merged.length ? `0/${merged.length} (0%)` : 'N/A'}；确认无干预：0；确认有干预：${intervened}；未知：${merged.length - intervened}`,
       `未归属干预：Incident=${incidents.filter((incident) => !linkedTask(incident)).length}；暂停/恢复/取消=${controls.filter((event) => !controlTask(event)).length}；Clarification=${unassignedClarifications.length}`,
+      `消息未归属=${unassignedMessages}；消息时间证据不足=${messageTimeGaps}`,
+      `Incident 等待用户时间证据不足=${incidents.filter((item) => waitingWindows.get(item.id) === 'unknown' && !confirmedIncidents.has(item.id)).length}（最后写入晚于合并、缺失或矛盾时间均保留缺口）；明确用户处置另按持久 control 证据`,
       `控制事件来源：${(['user', 'host', 'pm', 'unknown'] as const).map((source) => `${source}=${controls.filter((event) => controlSource(event) === source).length}`).join('；')}；明确用户暂停恢复记录：${recoveries.filter((item) => item.pauseProvenance === 'user').length}`,
       `Incident（全部状态，原始 phase）：${
         [...incidentPhases]

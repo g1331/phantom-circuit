@@ -43,6 +43,7 @@ function merged(
   id: string,
   projectId = 'p',
   mergedAt: string | null = '2026-01-01T00:00:10.000Z',
+  github = `owner/${projectId}`,
 ) {
   put(db, 'operation', {
     id: `merge:${id}:head-${id}`,
@@ -53,7 +54,7 @@ function merged(
       merged: true,
       ...(mergedAt ? { merged_at: mergedAt } : {}),
       head: { sha: `head-${id}` },
-      base: { sha: 'base', repo: { full_name: `owner/${projectId}` } },
+      base: { sha: 'base', repo: { full_name: github } },
     },
   });
 }
@@ -97,6 +98,398 @@ async function report(root: string, args: string[] = []) {
   });
 }
 
+test('CLI counts explicitly attributed user messages once per Task without allocating overlapping windows', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-messages-'));
+  try {
+    const db = database(root);
+    project(db);
+    project(db, 'q', 'Beta');
+    for (const [id, issue] of [
+      ['a', 67],
+      ['b', 68],
+      ['c', 69],
+    ] as const) {
+      task(db, id, 'p', { issue });
+      merged(db, id);
+    }
+    put(db, 'message', {
+      id: 'source-a',
+      projectId: 'p',
+      sourceMessageId: 'source-a',
+      role: 'user',
+      intent: 'implement',
+      content: '#67',
+      createdAt,
+    });
+    const message = (id: string, extra: Record<string, unknown> = {}) =>
+      put(db, 'message', {
+        id,
+        projectId: 'p',
+        role: 'user',
+        intent: 'discuss',
+        content: '反馈',
+        createdAt: '2026-01-01T00:00:05Z',
+        ...extra,
+      });
+    message('linked', { sourceMessageId: 'source-a', content: '#67 和 Task a' });
+    run(db, 'pm-linked', 'a', undefined, { role: 'pm', sourceMessageId: 'linked' });
+    message('multiple', {
+      intent: 'feedback',
+      content: '#67、https://github.com/owner/p/issues/68',
+    });
+    message('unassigned');
+    message('foreign', { projectId: 'q', content: '#67' });
+    message('early', { content: '#67', createdAt: '2025-12-31T23:59:59Z' });
+    message('late', { content: '#67', createdAt: '2026-01-01T00:00:11Z' });
+    message('assistant', { role: 'assistant', content: '#67' });
+    message('internal', { role: 'system', content: '#67' });
+    message('missing-time', { content: '#67', createdAt: undefined, updatedAt: createdAt });
+    db.close();
+    const { stdout } = await report(root, ['--explain']);
+    assert.match(stdout, /Task #67 a：.*干预=2（消息2）/);
+    assert.match(stdout, /Task #68 b：.*干预=1（消息1）/);
+    assert.match(stdout, /Task #69 c：.*干预=无/);
+    assert.match(stdout, /消息未归属=1；消息时间证据不足=1/);
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：1/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI includes both delivery boundaries and keeps missing publication or merge times unknown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-boundaries-'));
+  try {
+    const db = database(root);
+    project(db);
+    task(db, 'bounded');
+    merged(db, 'bounded');
+    task(db, 'no-start', 'p', { createdAt: undefined, updatedAt: createdAt });
+    merged(db, 'no-start');
+    task(db, 'no-end');
+    merged(db, 'no-end', 'p', null);
+    for (const [id, content, date] of [
+      ['at-start', 'Task bounded', createdAt],
+      ['at-end', 'Task bounded', '2026-01-01T00:00:10Z'],
+      ['no-start-message', 'Task no-start', '2026-01-01T00:00:05Z'],
+      ['no-end-message', 'Task no-end', '2026-01-01T00:00:05Z'],
+    ])
+      put(db, 'message', {
+        id,
+        projectId: 'p',
+        role: 'user',
+        intent: 'discuss',
+        content,
+        createdAt: date,
+      });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /Task bounded bounded：.*干预=2（消息2）/);
+    assert.match(stdout, /Task no-start no-start：.*干预=无/);
+    assert.match(stdout, /Task no-end no-end：.*干预=无/);
+    assert.match(stdout, /消息未归属=0；消息时间证据不足=2/);
+    assert.match(stdout, /确认无干预：0；确认有干预：1；未知：2/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI attributes full UUID Task mentions next to punctuation and Chinese without matching longer identifiers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-uuid-'));
+  try {
+    const db = database(root);
+    project(db);
+    const first = '5f3b9356-67fb-4f5e-83fd-3fe375d8173a';
+    const second = '881b0561-293c-4afe-a020-59bfd4af5053';
+    task(db, first, 'p', { issue: 73, title: 'UUID 引用' });
+    task(db, second, 'p', { issue: 74, title: '另一个 Task' });
+    merged(db, first);
+    merged(db, second);
+    const contents = [
+      `（${first}）`,
+      `请处理${first}，谢谢`,
+      `Task ${first} 和 ${first}`,
+      `Task ${first} 与 ${second}`,
+      `prefix${first}`,
+      `${first}-suffix`,
+      `_${first}`,
+      first.slice(0, 8),
+    ];
+    for (const [index, content] of contents.entries())
+      put(db, 'message', {
+        id: `uuid-message-${index}`,
+        projectId: 'p',
+        role: 'user',
+        intent: 'feedback',
+        content,
+        createdAt: '2026-01-01T00:00:05Z',
+      });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /Task #73 UUID 引用：.*干预=4（消息4）/);
+    assert.match(stdout, /Task #74 另一个 Task：.*干预=1（消息1）/);
+    assert.match(stdout, /消息未归属=4；消息时间证据不足=0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI counts user Incident evidence once and preserves independent user controls after internal dispositions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-incident-sources-'));
+  try {
+    const db = database(root);
+    project(db);
+    for (const id of ['retry', 'rework', 'waiting', 'handled', 'late', 'legacy']) {
+      task(db, id);
+      merged(db, id);
+      put(db, 'incident', {
+        id: `incident-${id}`,
+        projectId: 'p',
+        taskId: id,
+        phase: 'validation',
+        status: id === 'waiting' ? 'waiting_user' : 'resolved',
+        createdAt: '2026-01-01T00:00:02Z',
+      });
+    }
+    const control = (id: string, source: string, reason: string, at = '2026-01-01T00:00:05Z') =>
+      event(db, {
+        projectId: 'p',
+        taskId: id,
+        type: 'task',
+        message: '任务 resume',
+        at,
+        control: { action: 'resume', source, reason, incidentId: `incident-${id}` },
+      });
+    control('waiting', 'user', 'http_incident');
+    control('retry', 'host', 'oncall_retry');
+    control('rework', 'host', 'oncall_rework');
+    control('handled', 'user', 'http_incident');
+    control('handled', 'user', 'http_incident'); // repeated disposition representation
+    control('handled', 'pm', 'resolve_incident');
+    event(db, {
+      projectId: 'p',
+      taskId: 'handled',
+      type: 'task',
+      message: '任务 pause',
+      at: '2026-01-01T00:00:06Z',
+      control: {
+        action: 'pause',
+        source: 'user',
+        reason: 'http_task_control',
+        incidentId: 'incident-handled',
+      },
+    });
+    put(db, 'message', {
+      id: 'feedback',
+      projectId: 'p',
+      role: 'user',
+      intent: 'feedback',
+      content: 'Task handled',
+      createdAt: '2026-01-01T00:00:07Z',
+    });
+    control('late', 'user', 'http_incident', '2026-01-01T00:00:11Z');
+    event(db, {
+      projectId: 'p',
+      taskId: 'legacy',
+      type: 'task',
+      message: '任务 resume',
+      at: createdAt,
+    });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /Task handled handled：.*干预=3（消息1、事故1、暂停1）/);
+    assert.match(stdout, /Task waiting waiting：.*干预=1（事故1）/);
+    for (const id of ['retry', 'rework', 'late', 'legacy'])
+      assert.match(stdout, new RegExp(`Task ${id} ${id}：.*干预=无`));
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：4/);
+    assert.match(stdout, /Incident（全部状态，原始 phase）：validation=6/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI does not spread shared sources or ambiguous Issue numbers and follows explicit replies without a successful PM Run', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-explicit-links-'));
+  try {
+    const db = database(root);
+    project(db);
+    project(db, 'q', 'Beta');
+    put(db, 'repo', { id: 'second', projectId: 'p', github: 'owner/second' });
+    for (const id of ['a', 'b', 'c']) {
+      task(db, id, 'p', {
+        sourceMessageId: 'shared',
+        issue: 7,
+        ...(id === 'b' ? { repoId: 'second' } : {}),
+      });
+      merged(db, id);
+    }
+    merged(db, 'b', 'p', '2026-01-01T00:00:10Z', 'owner/second');
+    // Even though c's window excludes the message, #7 remains ambiguous.
+    task(db, 'c', 'p', { sourceMessageId: 'shared', issue: 7, createdAt: '2026-01-01T00:00:09Z' });
+    const message = (id: string, extra: Record<string, unknown>) =>
+      put(db, 'message', {
+        id,
+        projectId: 'p',
+        role: 'user',
+        intent: 'feedback',
+        content: '继续讨论',
+        createdAt: '2026-01-01T00:00:05Z',
+        ...extra,
+      });
+    message('shared', {
+      intent: 'implement',
+      sourceMessageId: 'shared',
+      content: 'Task a Task b Task c',
+    });
+    message('ambiguous-source', { sourceMessageId: 'shared' });
+    message('ambiguous-issue', { content: '#7' });
+    message('url', { content: 'https://github.com/owner/second/issues/7' });
+    message('bound', { sourceMessageId: 'shared' });
+    run(db, 'failed-pm', 'a', undefined, {
+      role: 'pm',
+      status: 'failed',
+      sourceMessageId: 'bound',
+    });
+    message('reply', { sourceMessageId: 'bound' });
+    message('cycle-1', { sourceMessageId: 'cycle-2' });
+    message('cycle-2', { sourceMessageId: 'cycle-1' });
+    message('foreign-source', { projectId: 'q' });
+    message('cross-project', { sourceMessageId: 'foreign-source' });
+    message('unknown-task', { content: 'Task abc、不猜标题' });
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /Task #7 a：.*干预=2（消息2）/);
+    assert.match(stdout, /Task #7 b：.*干预=1（消息1）/);
+    assert.match(stdout, /Task #7 c：.*干预=无/);
+    assert.match(stdout, /消息未归属=6；消息时间证据不足=0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI keeps waiting_user time gaps and counts recovery snapshots conservatively alongside user actions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-evidence-gaps-'));
+  try {
+    const db = database(root);
+    project(db);
+    for (const id of ['waiting', 'records', 'actions', 'missing']) {
+      task(db, id);
+      merged(db, id);
+    }
+    put(db, 'incident', {
+      id: 'wait',
+      projectId: 'p',
+      taskId: 'waiting',
+      status: 'waiting_user',
+      createdAt,
+      assessmentAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:11Z',
+    });
+    event(db, {
+      projectId: 'p',
+      taskId: 'waiting',
+      type: 'task',
+      message: '任务 pause',
+      at: '2026-01-01T00:00:02Z',
+      control: { action: 'pause', source: 'pm', reason: 'resolve_incident', incidentId: 'wait' },
+    });
+    const recovery = (id: string, taskId: string, extra: Record<string, unknown> = {}) =>
+      put(db, 'recovery', {
+        id,
+        projectId: 'p',
+        taskId,
+        pauseProvenance: 'user',
+        createdAt: '2026-01-01T00:00:03Z',
+        ...extra,
+      });
+    recovery('standalone', 'records');
+    recovery('observed-pause', 'actions');
+    recovery('missing-time', 'missing', { createdAt: undefined, updatedAt: createdAt });
+    for (const action of ['pause', 'resume'])
+      event(db, {
+        projectId: 'p',
+        taskId: 'actions',
+        type: 'task',
+        message: `任务 ${action}`,
+        at: '2026-01-01T00:00:04Z',
+        control: {
+          action,
+          source: 'user',
+          reason: 'http_recovery',
+          recoveryItemId: 'observed-pause',
+        },
+      });
+    db.close();
+    const { stdout } = await report(root, ['--explain']);
+    assert.match(stdout, /Task waiting waiting：.*干预=无/);
+    assert.match(stdout, /Incident 等待用户时间证据不足=1/);
+    assert.match(stdout, /Task records records：.*干预=1（用户暂停记录1）/);
+    assert.match(stdout, /Task actions actions：.*干预=2（暂停1、恢复1）/);
+    assert.match(stdout, /Task missing missing：.*干预=无/);
+    assert.match(stdout, /无法判定是否另一次暂停/);
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：2/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI counts final waiting_user within persisted bounds once and retains uncertain historical waits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-waiting-bounds-'));
+  try {
+    const db = database(root);
+    project(db);
+    const cases: [string, string, string | undefined][] = [
+      ['waiting', '2026-01-01T00:00:02Z', '2026-01-01T00:00:05Z'],
+      ['boundary', createdAt, '2026-01-01T00:00:10Z'],
+      ['late-write', '2026-01-01T00:00:02Z', '2026-01-01T00:00:11Z'],
+      ['missing', '2026-01-01T00:00:02Z', undefined],
+      ['invalid', '2026-01-01T00:00:02Z', 'invalid'],
+      ['contradict', '2026-01-01T00:00:05Z', '2026-01-01T00:00:02Z'],
+      ['after', '2026-01-01T00:00:11Z', '2026-01-01T00:00:12Z'],
+      ['before', '2025-12-31T23:59:58Z', '2025-12-31T23:59:59Z'],
+    ];
+    for (const [id, createdAt, updatedAt] of cases) {
+      task(db, id);
+      merged(db, id);
+      put(db, 'incident', {
+        id: `incident-${id}`,
+        projectId: 'p',
+        taskId: id,
+        status: 'waiting_user',
+        phase: 'validation',
+        createdAt,
+        updatedAt,
+      });
+    }
+    // A user disposition and current waiting state represent the same Incident.
+    for (let i = 0; i < 2; i++)
+      event(db, {
+        projectId: 'p',
+        taskId: 'boundary',
+        type: 'task',
+        message: '任务 pause',
+        at: '2026-01-01T00:00:06Z',
+        control: {
+          action: 'pause',
+          source: 'user',
+          reason: 'http_incident',
+          incidentId: 'incident-boundary',
+        },
+      });
+    db.close();
+    const { stdout } = await report(root, ['--explain']);
+    assert.match(stdout, /Task waiting waiting：.*干预=1（事故1）/);
+    assert.match(stdout, /Task boundary boundary：.*干预=1（事故1）/);
+    for (const id of ['late-write', 'missing', 'invalid', 'contradict', 'after', 'before'])
+      assert.match(stdout, new RegExp(`Task ${id.slice(0, 8)} ${id}：.*干预=无`));
+    assert.match(stdout, /Incident 等待用户时间证据不足=4/);
+    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：6/);
+    assert.match(stdout, /Incident（全部状态，原始 phase）：validation=8/);
+    assert.match(stdout, /Incident.updatedAt 仅为最终状态成立的时间上界/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('report CLI reads an empty existing database without requiring a host', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-report-'));
   try {
@@ -108,14 +501,9 @@ test('report CLI reads an empty existing database without requiring a host', asy
     assert.match(result.stdout, /加 --explain 查看统计口径/);
     assert.doesNotMatch(result.stdout, /口径：全部持久记录/);
     const explained = await report(root, ['--explain']);
-    assert.deepEqual(explained.stdout.split('\n').slice(3, 9), [
-      '口径：全部持久记录；确认合并按 Task ID；token 先汇总 Task 全部归属 Run，再取中位数；墙钟=createdAt→merged_at。',
-      '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
-      '干预覆盖：现行数据无历史完整性标记，未发现干预仍为 unknown；无干预率仅为保守下界。',
-      'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
-      '暂停/恢复/取消口径：有效 control.action/source/reason 且动作一致才采用来源；user 计干预，host/pm 仅排除该条用户直接操作，关联 Incident 仍计入。',
-      '缺失、未知或不一致来源仍为 unknown；后续自动动作不覆盖早先用户/未知证据；兼容 recovery.pauseProvenance=user，不据此证明历史完整。',
-    ]);
+    assert.match(explained.stdout, /Task“无”仅表示未发现已确认干预证据/);
+    assert.match(explained.stdout, /createdAt≤证据时间≤实际 merged_at/);
+    assert.match(explained.stdout, /共享来源不扩散/);
     assert.doesNotMatch(explained.stdout, /加 --explain/);
     const combined = await exec(process.execPath, [
       '--import',
@@ -215,7 +603,7 @@ test('CLI reports hand-calculated Task totals, even/odd medians, evidence gaps a
     const [alpha, beta] = stdout.split('Project：Beta [q]');
     assert.match(alpha, /Project：Alpha \[p\]/);
     assert.match(alpha, /确认合并任务：6；历史 done 未确认：1/);
-    assert.match(alpha, /确认无干预：0；确认有干预：2；未知：4/);
+    assert.match(alpha, /确认无干预：0；确认有干预：1；未知：5/);
     assert.match(alpha, /保守下界.*0\/6/);
     assert.match(alpha, /Incident.*review=1.*unknown=1/);
     assert.match(alpha, /未归属干预：Incident=1/);
@@ -463,12 +851,12 @@ test('CLI attributes persisted control sources per event without treating explic
     db.close();
     const { stdout } = await report(root);
     assert.match(stdout, /确认合并任务：9/);
-    assert.match(stdout, /确认无干预：0；确认有干预：4；未知：5/);
+    assert.match(stdout, /确认无干预：0；确认有干预：3；未知：6/);
     assert.match(stdout, /保守下界.*0\/9/);
-    for (const name of ['user', 'pm', 'cancel', 'recovery-conflict'])
-      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=有`));
-    for (const name of ['host', 'legacy', 'future', 'malformed', 'after'])
-      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=unknown`));
+    for (const name of ['user', 'cancel', 'recovery-conflict'])
+      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=1（`));
+    for (const name of ['host', 'pm', 'legacy', 'future', 'malformed', 'after'])
+      assert.match(stdout, new RegExp(`Task ${key(name).slice(0, 8)} ${name}：.*干预=无`));
     assert.match(stdout, /控制事件来源：user=6；host=5；pm=2；unknown=4/);
     assert.match(stdout, /暂停\/恢复\/取消=2/);
     assert.match(stdout, /未归属 Project 的控制事件：1/);
@@ -567,7 +955,7 @@ test('CLI retains resolved interventions and ambiguous PM usage without confusin
       event(db, { type: 'unrelated', projectId: 'p', message: 'noise' });
     db.close();
     const { stdout } = await report(root);
-    assert.match(stdout, /确认无干预：0；确认有干预：2；未知：4/);
+    assert.match(stdout, /确认无干预：0；确认有干预：1；未知：5/);
     assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=1/);
     assert.match(stdout, /watchdog 触发次数：1/);
     assert.match(
@@ -576,9 +964,9 @@ test('CLI retains resolved interventions and ambiguous PM usage without confusin
     );
     assert.match(stdout, /token 中位数：10；n=4\/6；unknown=0；partial=2/);
     assert.match(stdout, /墙钟交付耗时中位数：10秒；n=5\/6；unknown=1/);
-    assert.match(stdout, /Task automati automatic：.*干预=unknown/);
-    assert.match(stdout, /Task no-time no-time：.*墙钟=unknown；干预=unknown/);
-    assert.match(stdout, /Task after after：.*干预=unknown/);
+    assert.match(stdout, /Task automati automatic：.*干预=无/);
+    assert.match(stdout, /Task no-time no-time：.*墙钟=unknown；干预=无/);
+    assert.match(stdout, /Task after after：.*干预=无/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -777,6 +1165,9 @@ test('CLI reads committed WAL data consistently while an independent writer cont
     const { stdout: committed } = await report(root);
     assert.match(committed, /Project：Version 0 \[p\]/);
     assert.doesNotMatch(committed, /Uncommitted/);
+    // The next child may snapshot this committed state before execFile returns
+    // and the write loop begins. Keep it a valid version of the same invariant.
+    project(writer, 'p', 'Version 0');
     writer.exec('COMMIT');
     let finished = false;
     let commits = 0;
@@ -885,7 +1276,7 @@ test('CLI attributes pre-publication Clarification and exclusive PM usage throug
     assert.match(stdout, /确认无干预：0；确认有干预：1；未知：0/);
     assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=0/);
     assert.match(stdout, /PM 未分配：Run=0/);
-    assert.match(stdout, /Task a a：token=110；.*干预=有/);
+    assert.match(stdout, /Task a a：token=110；.*干预=1（澄清1）/);
     assert.match(stdout, /token 中位数：110；n=1\/1；unknown=0；partial=0/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -954,7 +1345,7 @@ test('CLI leaves a genuine multi-message source cycle unknown rather than assign
     assert.match(stdout, /确认无干预：0；确认有干预：0；未知：1/);
     assert.match(stdout, /未归属干预：Incident=0；暂停\/恢复\/取消=0；Clarification=1/);
     assert.match(stdout, /PM 未分配：Run=1；已知 token=100/);
-    assert.match(stdout, /Task a a：.*干预=unknown/);
+    assert.match(stdout, /Task a a：.*干预=无/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

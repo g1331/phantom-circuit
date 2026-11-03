@@ -19,12 +19,21 @@ SQLite 正常管理 -wal/-shm；短 deferred 快照后关闭连接再聚合。�
   合并数：持久 done merge-pr operation 的 Task/revision/PR/Repo 身份一致，按 Task ID 去重。
   普通 done、mergeApproval、聊天、completionSyncedAt 不证明实际合并；历史 done 未确认单列。
   无干预率：确认无干预 Task / 全部确认合并 Task；零分母 N/A。
-  合并前 Incident（含 resolved）、产品 Clarification（含 answered/cancelled，按 Task 和原始来源，含发布前）、
-  暂停/恢复/取消事件须有有效 control.action/source/reason，且 action 与原事件动作一致：user 计干预；
-  host 自动动作和 pm 技术操作仅排除该条用户直接操作，PM 关联 Incident 仍计入，后续动作不覆盖早先证据。
+  消息：仅 user 的 discuss/feedback，按同 Project 持久 source/Run Task 关联或明确完整 Task ID、
+  唯一 #Issue、仓库身份一致的 Issue URL；共享原始来源不扩散，原始实施请求排除，消息 ID 对每 Task 去重。
+  时间窗：Task.createdAt（本地发布边界）≤证据时间≤实际 merged_at；消息和 Task 缺失时间不回退 updatedAt。
+  Incident：明确 user/http_incident 处置，或最终 waiting_user 且满足
+  Task.createdAt≤Incident.createdAt≤Incident.updatedAt≤merged_at，均按 Incident ID 去重。
+  Incident.updatedAt 仅为最终状态成立的时间上界；晚于合并、缺失或矛盾时间单列缺口。
+  创建/评估时间或普通暂停本身不能反推合并前等待用户。
+  resolved、原因文本和 PM/on-call 内部处置均不推定用户参与；后续内部处置不抹去早先用户证据。
+  产品 Clarification 保留含发布前的 Task/原始来源关联；answered/cancelled 仍为证据。
+  暂停/恢复/取消事件须有有效 control.action/source/reason 且 action 一致：user 计干预，host/pm 不计。
+  同次 Incident 处置控制只计事故，独立用户控制仍按 Event ID 计暂停/恢复/取消。
   缺失、未知枚举、无效或不一致来源继续 unknown；关联不清单列未归属，不按原因文本或 pausedByUser 猜来源。
-  兼容 recovery.pauseProvenance=user；冲突时保留已确认干预或 unknown，不选择较乐观解释。旧数据不回填。
-  当前无历史完整性标记，未发现干预不证明无干预，未知单列，比例明确为保守下界。
+  recovery.pauseProvenance=user 无原动作 ID 时仅计用户暂停记录；已有用户暂停则补充证据，不增加次数，
+  无法判定是否另一次暂停。缺失来源和时间保留缺口，旧数据不回填。
+  Task 干预=无表示未发现已确认干预证据。当前无历史完整性标记，此类样本仍为未知，比例为保守下界。
   Incident：Project 全部记录，按 ID 去重、原始 phase 分组，缺 phase 为 unknown。
   watchdog：type=watchdog Event 或 Run/Incident 的宿主 Watchdog：失败前缀/descriptor detail，按 Run ID 去重；
   无 Run ID 的触发证据另列，一般失败不计。返工仅汇总每个 Task 的持久 retries，缺失不补零。
