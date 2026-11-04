@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
-import { teamView } from '../src/shared/team.ts';
+import { teamView, workGroup } from '../src/shared/team.ts';
 
 test('the team view shows who is working on what and what waits on the user', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-team-'));
@@ -53,6 +53,9 @@ test('the team view shows who is working on what and what waits on the user', as
     store.finishRun(liaison.id, 'waiting', 'ClarificationPause');
     // The liaison answering the Dev's question is coordinating, not talking with the user.
     store.run('pm', project.id, 'pm', store.task(building.id));
+    // A finished review of the work that now waits on the user.
+    const reviewer = store.run('review', project.id, 'review', store.task(asking.id));
+    store.finishRun(reviewer.id, 'completed');
     const view = teamView(store.snapshot(), project.id);
 
     const developer = view.members.find((m) => m.role === 'dev')!;
@@ -79,11 +82,15 @@ test('the team view shows who is working on what and what waits on the user', as
         ['clarification', 'Billing', '按月还是按年计费？'],
       ],
     );
-    assert.ok(view.feed.some((f) => f.runId === dev.id && f.kind === 'started'));
     assert.deepEqual(
-      view.feed.filter((f) => f.runId === liaison.id).map((f) => f.kind),
-      ['started'],
-      'a question to the user is not reported as the liaison finishing',
+      view.feed.map((f) => [f.role, f.kind, f.taskTitle]),
+      [['review', 'finished', 'Billing']],
+      'the feed holds finished turns only: live ones are members, a question waits on the user',
+    );
+    assert.ok(view.feed[0].durationMs >= 0);
+    assert.deepEqual(
+      Object.fromEntries(view.work.map((w) => [w.title, workGroup(w)])),
+      { 'Search page': 'moving', Export: 'needs_you', Billing: 'needs_you' },
     );
   } finally {
     store.close();

@@ -8,7 +8,6 @@ import {
   Plus,
   RotateCw,
   Settings2,
-  X,
 } from 'lucide-react';
 import type { AgentKind, Profile, Project, Repo, Snapshot, Task } from '../shared/types.ts';
 import { api } from './api.ts';
@@ -31,7 +30,6 @@ export function ProjectContext({
   act,
   projectAgent,
   pmProfile,
-  onClose,
   onOpenModal,
   onConfigureRepo,
 }: {
@@ -44,7 +42,6 @@ export function ProjectContext({
   act: (fn: () => Promise<unknown>) => Promise<void>;
   projectAgent: AgentKind;
   pmProfile?: Profile;
-  onClose: () => void;
   onOpenModal: (kind: 'project-settings' | 'repo') => void;
   onConfigureRepo: (repo: Repo) => void;
 }) {
@@ -52,20 +49,16 @@ export function ProjectContext({
   const documents = state.documents.filter((d) => d.projectId === project.id);
   return (
     <>
-      <div className="context-heading">
+      <header className="page-header context-heading">
         <div>
-          <h2>{project.name}</h2>
+          <h1>{project.name}</h1>
           {project.description && <p>{project.description}</p>}
         </div>
-        <button className="icon-button" aria-label={t('common.close')} onClick={onClose}>
-          <X size={18} />
-        </button>
-      </div>
+      </header>
       <div className="context-actions">
         <button
           className="secondary-button"
           onClick={() => {
-            onClose();
             onOpenModal('project-settings');
           }}
         >
@@ -74,7 +67,6 @@ export function ProjectContext({
         <button
           className="secondary-button"
           onClick={() => {
-            onClose();
             onOpenModal('repo');
           }}
         >

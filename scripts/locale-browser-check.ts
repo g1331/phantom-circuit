@@ -2,12 +2,13 @@ import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import { resolve } from 'node:path';
+import { clickInSidebar, closeDrawer, openPage } from './browser-pages.ts';
 
 export async function checkLocale(page: Page, artifacts: string) {
   await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 1366, height: 768 });
   await choosePreference(page, 'language', 'zh-CN');
-  await page.getByRole('tab', { name: '与 PM 讨论', exact: true }).click();
+  await openPage(page, 'home');
   const draft = 'Keep this draft 中文内容 **unchanged**';
   await page.getByLabel('给 PM 的消息').fill(draft);
   await choosePreference(page, 'language', 'en');
@@ -45,7 +46,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   );
   await page.screenshot({ path: resolve(artifacts, 'locale-settings-en-desktop.png') });
   await page.keyboard.press('Escape');
-  await page.locator('.context-trigger').click();
+  await openPage(page, 'project');
   await page.getByRole('button', { name: 'Connect repository', exact: true }).click();
   await dialog.getByLabel('Local repository path', { exact: true }).waitFor();
   assert.equal(
@@ -58,10 +59,11 @@ export async function checkLocale(page: Page, artifacts: string) {
   assert.equal(await page.locator('.sidebar .language-control').getAttribute('data-value'), 'en');
   await page.setViewportSize({ width: 390, height: 500 });
   await choosePreference(page, 'language', 'zh-CN');
-  await page.getByRole('button', { name: '运行设置', exact: true }).click();
+  await clickInSidebar(page, '运行设置');
   await settingsPage(dialog, 'models', 'codex');
   await dialog.getByLabel('项目 PM模型', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(artifacts, 'locale-settings-zh-mobile-short.png') });
   await page.keyboard.press('Escape');
+  await closeDrawer(page);
 }

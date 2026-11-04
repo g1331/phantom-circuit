@@ -1,20 +1,14 @@
 import { ExternalLink, GitPullRequest, Pause, Play } from 'lucide-react';
-import type { ReviewResult, SchedulingExplanation, Snapshot, Task } from '../shared/types.ts';
+import type { SchedulingExplanation, Snapshot, Task } from '../shared/types.ts';
 import { api } from './api.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import { PriorityEditor, ClaimConditions } from './task-priority.tsx';
 import { ProjectActions, TaskRuntimeBadges } from './project-actions.tsx';
 import { TaskUsagePanel } from './usage-panel.tsx';
 import { OwnerConversation } from './owner-conversation.tsx';
+import { Receipt } from './receipt.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, taskAttention } from '../shared/task-history.ts';
-
-const reviewTitle: Record<ReviewResult['axis'], string> = {
-  primary: 'Primary Review',
-  secondary: 'Secondary Review',
-  standards: 'Standards',
-  spec: 'Spec',
-};
 
 export function TaskDetail({
   task: detail,
@@ -77,7 +71,8 @@ export function TaskDetail({
       {attention.blocked && (
         <div className="inline-warning">{host(attention.blocked, detail.blockedDescriptor)}</div>
       )}
-      <div className="detail-actions">
+      <Receipt task={detail} state={state} />
+      <div className="detail-actions" role="group" aria-label={t('task.controls')}>
         {detail.issueUrl && (
           <a className="secondary-button" href={detail.issueUrl} target="_blank" rel="noreferrer">
             GitHub Issue <ExternalLink size={13} />
@@ -118,14 +113,6 @@ export function TaskDetail({
       <OwnerConversation task={detail} state={state} busy={busy} act={act} />
       <h3>{t('ui.taskSpecification')}</h3>
       <MarkdownContent content={detail.spec} label={t('ui.taskSpecification')} />
-      <h3>{t('ui.acceptanceCriteria')}</h3>
-      <ul>
-        {detail.acceptance.map((x, i) => (
-          <li key={i}>
-            <MarkdownContent content={x} label={t('acceptance.label', { count: i + 1 })} />
-          </li>
-        ))}
-      </ul>
       {detail.dependencies.length > 0 && (
         <>
           <h3>{t('ui.waitingForTasks')}</h3>
@@ -136,31 +123,6 @@ export function TaskDetail({
           </ul>
         </>
       )}
-      {detail.reviews.map((r) => (
-        <section
-          className={`review-result ${r.approved ? 'approved' : 'changes'}`}
-          key={r.runId ?? r.axis}
-        >
-          <h3>
-            {reviewTitle[r.axis] ?? r.axis}{' '}
-            <span>
-              {r.verdict === 'needs_user'
-                ? t('review.needsUser')
-                : r.approved
-                  ? t('ui.approved')
-                  : t('ui.changesRequested')}
-            </span>
-          </h3>
-          <MarkdownContent content={r.summary} label={t('review.summary', { axis: r.axis })} />
-          {r.findings.map((f, i) => (
-            <MarkdownContent
-              key={i}
-              content={f}
-              label={t('review.finding', { axis: r.axis, count: i + 1 })}
-            />
-          ))}
-        </section>
-      ))}
       {detail.feedback.length > 0 && <h3>{t('ui.feedback')}</h3>}
       {detail.feedback.map((content, i) => (
         <MarkdownContent key={i} content={content} label={t('feedback.label', { count: i + 1 })} />
@@ -188,14 +150,6 @@ export function TaskDetail({
           <MarkdownContent content={detail.issueBody} label={t('ui.issueBody')} />
         </section>
       )}
-      {detail.tests.map((test, i) => (
-        <details key={i} className={`test-evidence ${test.exitCode === 0 ? 'passed' : 'failed'}`}>
-          <summary>
-            {test.exitCode === 0 ? '✓' : '!'} {test.command}
-          </summary>
-          <pre>{test.output}</pre>
-        </details>
-      ))}
       {!finished && (
         <section className="detail-schedule">
           <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />

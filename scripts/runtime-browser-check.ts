@@ -5,6 +5,7 @@ import { createServer } from 'vite';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
+import { openPage, openTask, backToWork } from './browser-pages.ts';
 import type { PriceCard, Snapshot } from '../src/shared/types.ts';
 
 export async function checkRuntimeUI() {
@@ -341,7 +342,7 @@ export async function checkRuntimeUI() {
     await incidents.getByRole('button', { name: 'Wait for user' }).click();
     await incidents.getByText('Waiting for user', { exact: true }).waitFor();
     await incidents.getByRole('button', { name: 'Mark resolved' }).click();
-    await page.locator('.context-trigger').click();
+    await openPage(page, 'project');
     const allowance = page.getByRole('region', { name: 'Account allowance' });
     await allowance.getByText(/12.345678901234/).waitFor();
     allowanceFails = true;
@@ -351,16 +352,11 @@ export async function checkRuntimeUI() {
       .getByText(/Last successful result/)
       .waitFor();
     assert.match(await allowance.innerText(), /12.345678901234/);
-    await page.keyboard.press('Escape');
-    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await choosePreference(page, 'language', 'zh-CN');
-    await page.locator('.context-trigger').click();
     await page
       .getByRole('alert')
       .getByText('服务暂时不可用，请稍后重试', { exact: false })
       .waitFor();
-    await page.keyboard.press('Escape');
-    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await choosePreference(page, 'language', 'en');
     allowanceFails = false;
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
@@ -378,12 +374,10 @@ export async function checkRuntimeUI() {
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(snapshot.settings.defaultAgent, 'codex');
     assert.equal(snapshot.settings.ompProfiles?.pm.model, 'omp-fixture');
-    await page.locator('.context-trigger').click();
     await page
-      .locator('#project-context')
+      .locator('.project-page')
       .getByRole('button', { name: 'Project model settings' })
       .click();
-    await page.locator('#project-context').waitFor({ state: 'hidden' });
     await dialog.getByLabel('Project agent', { exact: true }).selectOption('omp');
     await dialog.getByLabel('Interruption recovery policy').selectOption('manual');
     await settingsPage(dialog, 'models', 'omp');
@@ -394,6 +388,7 @@ export async function checkRuntimeUI() {
     assert.deepEqual(current.agentSelection, { mode: 'override', agent: 'omp' });
     assert.equal(current.profileModes?.pm, 'pinned');
     assert.equal(current.recoveryPolicy, 'manual');
+    await openPage(page, 'home');
     const globalBeforePM = structuredClone(snapshot.settings);
     const otherRoleBeforePM = structuredClone(current.ompProfiles?.review);
     const pmTrigger = page.getByRole('button', {
@@ -567,15 +562,14 @@ export async function checkRuntimeUI() {
           await choosePreference(page, 'theme', theme);
         for (const width of [1366, 390]) {
           await page.setViewportSize({ width, height: width === 390 ? 500 : 768 });
-          await page.locator('.context-trigger').click();
+          await openPage(page, 'project');
           await page
-            .locator('#project-context')
+            .locator('.project-page')
             .getByRole('button', {
               name: locale === 'en' ? 'Project model settings' : '项目模型设置',
               exact: true,
             })
             .click();
-          await page.locator('#project-context').waitFor({ state: 'hidden' });
           await page.screenshot({
             path: resolve('test-results', `runtime-settings-${locale}-${width}-${theme}.png`),
           });
@@ -584,13 +578,11 @@ export async function checkRuntimeUI() {
             true,
           );
           await page.keyboard.press('Escape');
-          await page
-            .getByRole('tab', { name: locale === 'en' ? 'Tasks' : '任务', exact: false })
-            .click();
-          await page.locator('.task-card').filter({ hasText: task.title }).click();
-          await dialog.getByText('USD 0.000000000123', { exact: false }).first().waitFor();
-          await dialog.getByText('EUR 0.1234567890123456789', { exact: false }).waitFor();
-          const runRecord = dialog.locator('.run-record').first();
+          await openTask(page, task.title);
+          const taskPage = page.locator('.task-page');
+          await taskPage.getByText('USD 0.000000000123', { exact: false }).first().waitFor();
+          await taskPage.getByText('EUR 0.1234567890123456789', { exact: false }).waitFor();
+          const runRecord = taskPage.locator('.run-record').first();
           await runRecord.locator('summary').first().click();
           await runRecord.getByText('USD 0.000000000123', { exact: false }).waitFor();
           await runRecord.getByText('128,000', { exact: true }).waitFor();
@@ -614,7 +606,7 @@ export async function checkRuntimeUI() {
             await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
             true,
           );
-          await page.keyboard.press('Escape');
+          await backToWork(page);
         }
       }
     }

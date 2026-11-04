@@ -1,6 +1,7 @@
 import type { Resource } from './core.ts';
 
 import { runtimeZh } from './runtime.ts';
+import { pagesZh } from './pages.ts';
 export const zhCN = {
   'panel.loading': '正在加载面板…',
   'panel.failed': '面板加载失败。',
@@ -8,6 +9,7 @@ export const zhCN = {
   'tasks.historicalCompletion': '历史完成记录，旧验收证据不完整',
   'tasks.historicalIncidents': '历史 Incident（保留原始记录与状态）',
   ...runtimeZh,
+  ...pagesZh,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': '对话目录',
   'chat.navigation': '对话轮次导航',
@@ -419,7 +421,6 @@ export const zhCN = {
   'team.request.clarification': "有个问题要问你",
   'team.request.decision': "需要你拿主意",
   'team.request.blocked': "工作受阻",
-  'team.feed.started': "开始",
   'team.feed.finished': "完成",
   'team.feed.failed': "失败",
   'team.feed.paused': "中断",

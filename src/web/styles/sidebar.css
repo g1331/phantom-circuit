@@ -272,37 +272,40 @@
   align-self: flex-end;
   margin: -16px 0 12px;
 }
-.sidebar-collapsed .sidebar {
-  width: 64px;
-  padding-inline: 8px;
-}
-.sidebar-collapsed .main {
-  margin-left: 64px;
-  width: calc(100% - 64px);
-}
-.sidebar-collapsed .brand {
-  padding: 0;
-  justify-content: center;
-}
-.sidebar-collapsed
-  :is(
-    .brand > span:last-child,
-    .workspace-label,
-    .sidebar-heading > span,
-    .project-link > span,
-    .sidebar-hint,
-    .sidebar-action > span,
-    .connection
-  ) {
-  display: none;
-}
-.sidebar-collapsed .sidebar-heading {
-  margin: 24px 0 8px;
-  justify-content: center;
-}
-.sidebar-collapsed :is(.project-link, .sidebar-action) {
-  justify-content: center;
-  padding-inline: 8px;
+/* Collapsing is a desktop choice: on a phone the sidebar is a drawer (pages.css). */
+@media (min-width: 661px) {
+  .sidebar-collapsed .sidebar {
+    width: 64px;
+    padding-inline: 8px;
+  }
+  .sidebar-collapsed .main {
+    margin-left: 64px;
+    width: calc(100% - 64px);
+  }
+  .sidebar-collapsed .brand {
+    padding: 0;
+    justify-content: center;
+  }
+  .sidebar-collapsed
+    :is(
+      .brand > span:last-child,
+      .workspace-label,
+      .sidebar-heading > span,
+      .project-link > span,
+      .sidebar-hint,
+      .sidebar-action > span,
+      .connection
+    ) {
+    display: none;
+  }
+  .sidebar-collapsed .sidebar-heading {
+    margin: 24px 0 8px;
+    justify-content: center;
+  }
+  .sidebar-collapsed :is(.project-link, .sidebar-action) {
+    justify-content: center;
+    padding-inline: 8px;
+  }
 }
 /* Both automatic narrow mode and manual collapse use the actual sidebar width. */
 @container (min-width: 81px) and (max-width: 180px) {

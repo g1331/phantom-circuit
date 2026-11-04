@@ -39,6 +39,8 @@ export interface TeamWork {
   owners: Role[];
   rounds: number;
   updatedAt: string;
+  /** Finished work only: when its last turn ended, which is when it was delivered or dropped. */
+  settledAt?: string;
 }
 export interface TeamRequest {
   id: string;
@@ -48,11 +50,14 @@ export interface TeamRequest {
   text: string;
   at: string;
 }
+/** One finished turn: who did it, how it ended and how long it took. Live turns are members. */
 export interface TeamFeedItem {
   id: string;
+  /** When the turn ended. */
   at: string;
   role: Role;
-  kind: 'started' | 'finished' | 'failed' | 'paused';
+  kind: 'finished' | 'failed' | 'paused';
+  durationMs: number;
   runId: string;
   taskId?: string;
   taskTitle?: string;
@@ -146,6 +151,13 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       if (i.taskId) asked.add(i.taskId);
     }
 
+  // Later bookkeeping (Issue sync, cleanup) touches `updatedAt`; the last turn's end does not move.
+  const settled = (taskId: string) =>
+    runs
+      .filter((r) => r.taskId === taskId && r.endedAt)
+      .map((r) => r.endedAt!)
+      .sort()
+      .at(-1);
   const work: TeamWork[] = [];
   for (const task of tasks.values()) {
     const owners = [...new Set(active.filter((r) => r.taskId === task.id).map((r) => r.role))];
@@ -177,31 +189,51 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       owners,
       rounds: task.retries,
       updatedAt: task.updatedAt,
+      ...(task.stage === 'done' || task.stage === 'cancelled'
+        ? { settledAt: settled(task.id) ?? task.updatedAt }
+        : {}),
     });
   }
   // Live and held work first, then most recently touched.
   const rank = (w: TeamWork) => (w.step === 'done' || w.step === 'cancelled' ? 1 : 0);
-  work.sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt));
+  const at = (w: TeamWork) => w.settledAt ?? w.updatedAt;
+  work.sort((a, b) => rank(a) - rank(b) || at(b).localeCompare(at(a)));
   waiting.sort((a, b) => a.at.localeCompare(b.at));
 
   const feed: TeamFeedItem[] = [];
   for (const run of runs) {
+    if (!run.endedAt || run.status === 'running' || run.status === 'waiting') continue;
     const task = run.taskId ? tasks.get(run.taskId) : undefined;
-    const base = {
+    feed.push({
+      id: run.id,
+      at: run.endedAt,
       role: run.role,
+      kind: run.status === 'completed' ? 'finished' : run.status === 'failed' ? 'failed' : 'paused',
+      durationMs: Math.max(0, Date.parse(run.endedAt) - Date.parse(run.startedAt)),
       runId: run.id,
       ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
-    };
-    feed.push({ id: `${run.id}:start`, at: run.startedAt, kind: 'started', ...base });
-    if (run.endedAt && run.status !== 'running' && run.status !== 'waiting')
-      feed.push({
-        id: `${run.id}:end`,
-        at: run.endedAt,
-        kind:
-          run.status === 'completed' ? 'finished' : run.status === 'failed' ? 'failed' : 'paused',
-        ...base,
-      });
+    });
   }
   feed.sort((a, b) => b.at.localeCompare(a.at));
   return { members, work, waiting, feed: feed.slice(0, feedLimit) };
 }
+
+/** Where a piece of work sits from the user's side: what they act on, watch, or can forget. */
+export type WorkGroup = 'needs_you' | 'moving' | 'paused' | 'queued' | 'delivered' | 'cancelled';
+export const workGroups: WorkGroup[] = [
+  'needs_you',
+  'moving',
+  'paused',
+  'queued',
+  'delivered',
+  'cancelled',
+];
+export function workGroup(work: TeamWork): WorkGroup {
+  if (work.step === 'cancelled') return 'cancelled';
+  if (work.step === 'done') return 'delivered';
+  if (work.attention === 'needs_user' || work.attention === 'blocked') return 'needs_you';
+  if (work.attention === 'paused') return 'paused';
+  return work.step === 'planned' && !work.owners.length ? 'queued' : 'moving';
+}
+/** Reworks the host allows before it stops the work and asks (engine `rework`). */
+export const maxReworks = 3;

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren, Users } from 'lucide-react';
+import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren } from 'lucide-react';
 import type { Role, Snapshot } from '../shared/types.ts';
 import { teamView, type TeamMember, type TeamWork, type WorkStep } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
@@ -107,20 +107,16 @@ export function TeamRoom({
   state,
   projectId,
   busy,
-  layout,
   onOpenTask,
   onTeam,
-  onExpand,
 }: {
   state: Snapshot;
   projectId: string;
   busy: boolean;
-  layout: 'aside' | 'full';
   onOpenTask: (taskId: string) => void;
   onTeam: (action: 'pause' | 'resume') => void;
-  onExpand?: () => void;
 }) {
-  const { t, time } = useLocale();
+  const { t, time, duration } = useLocale();
   const view = useMemo(() => teamView(state, projectId), [state, projectId]);
   const working = view.members.length;
   const now = useNow(working > 0);
@@ -129,16 +125,10 @@ export function TeamRoom({
   // Paused by the team control: every unfinished piece of work is held and none is running.
   const teamPaused = open.length > 0 && open.every((w) => w.attention === 'paused') && !working;
   return (
-    <aside className={`team-room team-${layout}`} aria-label={t('team.title')}>
-      {onExpand && (
-        // Only visible where the room narrows to a rail of avatars beside the conversation.
-        <button className="team-rail-open" onClick={onExpand} aria-label={t('tabs.team')}>
-          {view.waiting.length > 0 && <span className="team-rail-badge">{view.waiting.length}</span>}
-        </button>
-      )}
-      <header className="team-header">
+    <div className="page team-room team-full">
+      <header className="page-header team-header">
         <div>
-          <h2>{t('team.title')}</h2>
+          <h1>{t('team.title')}</h1>
           <p className={working > 0 ? 'team-live' : ''}>
             {working > 0 && <span className="team-pulse" aria-hidden="true" />}
             {teamPaused
@@ -187,12 +177,6 @@ export function TeamRoom({
             <Member key={member.id} member={member} now={now} />
           ))}
         </ul>
-        {view.members.length === 0 && (
-          // The rail still needs something to click when nobody is working.
-          <span className="team-rail-idle" aria-hidden="true">
-            <Users size={16} />
-          </span>
-        )}
       </section>
 
       <section className="team-section">
@@ -213,7 +197,7 @@ export function TeamRoom({
         <h3>{t('team.feed')}</h3>
         {view.feed.length ? (
           <ol className="team-feed">
-            {view.feed.slice(0, layout === 'full' ? 30 : 12).map((item, i, items) => (
+            {view.feed.map((item, i, items) => (
               <React.Fragment key={item.id}>
                 {/* Consecutive entries for the same work share one heading. */}
                 {item.taskTitle !== items[i - 1]?.taskTitle && (
@@ -224,6 +208,9 @@ export function TeamRoom({
                   <span>
                     <strong>{t(`team.role.${item.role}`)}</strong> {t(`team.feed.${item.kind}`)}
                   </span>
+                  <span className="team-feed-took">
+                    {t('team.turnTook', { duration: duration(item.durationMs / 1000) })}
+                  </span>
                 </li>
               </React.Fragment>
             ))}
@@ -232,6 +219,6 @@ export function TeamRoom({
           <p className="team-empty">{t('team.feedEmpty')}</p>
         )}
       </section>
-    </aside>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { runtimeEn } from './runtime.ts';
+import { pagesEn } from './pages.ts';
 export const en = {
   'panel.loading': 'Loading panel…',
   'panel.failed': 'Could not load this panel.',
@@ -6,6 +7,7 @@ export const en = {
   'tasks.historicalCompletion': 'Historical completion record; original acceptance evidence is incomplete',
   'tasks.historicalIncidents': 'Historical incidents (original records and status)',
   ...runtimeEn,
+  ...pagesEn,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': 'Conversation outline',
   'chat.navigation': 'Conversation turns',
@@ -435,7 +437,6 @@ export const en = {
   'team.request.clarification': "A question for you",
   'team.request.decision': "A decision for you",
   'team.request.blocked': "Work is blocked",
-  'team.feed.started': "started",
   'team.feed.finished': "finished",
   'team.feed.failed': "failed",
   'team.feed.paused': "stopped",

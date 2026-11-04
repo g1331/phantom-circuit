@@ -3,6 +3,7 @@ import type { Store } from '../src/server/store.ts';
 import type { Task } from '../src/shared/types.ts';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
+import { backToWork, openTask } from './browser-pages.ts';
 
 /** The task detail lets the user talk with the work's owner and shows the exchange (ADR 0013). */
 export async function checkOwnerConversation(
@@ -18,10 +19,10 @@ export async function checkOwnerConversation(
     sent.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
   });
-  await page.getByRole('tab', { name: '任务', exact: false }).click();
-  await page.locator('.task-row').filter({ hasText: task.title }).click();
-  const dialog = page.getByRole('dialog');
-  const section = dialog.getByRole('region', { name: '和负责人对话', exact: true });
+  await openTask(page, task.title);
+  const section = page
+    .locator('.task-page')
+    .getByRole('region', { name: '和负责人对话', exact: true });
   await section.waitFor();
   const ask = section.getByRole('button', { name: '提问', exact: true });
   assert.equal(await ask.isDisabled(), true, 'nothing to send yet');
@@ -39,5 +40,5 @@ export async function checkOwnerConversation(
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await section.scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(artifacts, 'owner-conversation.png') });
-  await page.keyboard.press('Escape');
+  await backToWork(page);
 }

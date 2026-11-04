@@ -1,4 +1,4 @@
-/* Team room (ADR 0013): the live view of the team beside the liaison conversation. */
+/* Team page (ADR 0013, 0014): who is working on what, and each finished turn. */
 :root {
   --role-pm: #8ab4f8;
   --role-dev: #83d5b1;
@@ -12,85 +12,6 @@
   --role-oncall: #a06a12;
 }
 
-.workspace-grid.with-team {
-  grid-template-columns: minmax(0, 1fr) 344px;
-}
-.team-rail-open,
-.team-rail-idle {
-  display: none;
-}
-/* Laptop widths keep the conversation readable: the room narrows to a rail of member avatars. */
-@media (max-width: 1439px) and (min-width: 1101px) {
-  .workspace-grid.with-team {
-    grid-template-columns: minmax(0, 1fr) 68px;
-  }
-  .team-aside {
-    position: relative;
-    padding: 16px 0;
-    align-items: center;
-    overflow: hidden;
-  }
-  .team-aside > :not(.team-members-section, .team-rail-open),
-  .team-aside .team-members-section h3,
-  .team-aside .team-member-body {
-    display: none;
-  }
-  .team-aside .team-member {
-    padding: 6px;
-    border-color: transparent;
-    background: none;
-  }
-  .team-rail-idle {
-    display: grid;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    margin: 6px auto;
-    border-radius: 50%;
-    color: var(--faint);
-    background: var(--raised);
-  }
-  .team-rail-open {
-    display: block;
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    border: 0;
-    background: none;
-    cursor: pointer;
-  }
-  .team-rail-open:hover {
-    background: color-mix(in srgb, var(--text) 4%, transparent);
-  }
-  .team-rail-open:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
-  }
-  .team-rail-badge {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: var(--warning);
-    color: var(--button-text);
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 18px;
-    text-align: center;
-  }
-}
-@media (max-width: 1100px) {
-  .workspace-grid.with-team {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .workspace-grid.with-team > .team-aside {
-    display: none;
-  }
-}
-
 .team-room {
   min-height: 0;
   overflow: auto;
@@ -100,10 +21,6 @@
   flex-direction: column;
   gap: 22px;
   color: var(--text);
-}
-.team-aside {
-  border-left: 1px solid var(--line);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 92%, var(--role-pm)) 0, var(--bg) 220px);
 }
 .team-full {
   flex: 1;

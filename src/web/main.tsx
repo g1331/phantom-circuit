@@ -1,53 +1,46 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  Activity,
-  ArrowUpRight,
-  ChevronDown,
-  Layers3,
-  MessageSquare,
-  Plus,
-  Radio,
-  Settings2,
-  ShieldCheck,
-  Users,
-  X,
-} from 'lucide-react';
+import { ArrowUpRight, ChevronDown, Layers3, Menu, Plus, Radio, ShieldCheck, X } from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
+import { teamView, workGroup } from '../shared/team.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
 import { ErrorText } from './error-text.tsx';
 import { PMComposer, type PMComposerHandle, type PMSubmission } from './pm-composer.tsx';
 import { PMModelControl } from './pm-model-control.tsx';
-import { DeferredSettings, DeferredTaskDetail } from './deferred-panels.tsx';
+import { DeferredSettings } from './deferred-panels.tsx';
 import { ProjectActions } from './project-actions.tsx';
 import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversation.tsx';
 import { LocaleProvider, useLocale } from './locale/provider.tsx';
 import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
-import { TaskWorkspace, profileKeys, type TaskFilters } from './task-workspace.tsx';
 import { RunList } from './run-list.tsx';
+import { ClaimOrder } from './task-priority.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { Modal } from './ui.tsx';
 import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
 import { TeamRoom } from './team-room.tsx';
+import { useRoute, routeHref } from './route.ts';
+import { Brief } from './brief.tsx';
+import { WorkList } from './work-list.tsx';
+import { TaskPage } from './task-page.tsx';
+import { ProjectNav } from './project-nav.tsx';
 import './style.css';
 
 function App() {
-  const { t, number } = useLocale();
+  const { t, locale } = useLocale();
   const [schedule, setSchedule] = useState<SchedulingExplanation>();
   const [scheduleError, setScheduleError] = useState<{ projectId: string; message: string }>();
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleRefresh, setScheduleRefresh] = useState(0);
   const [state, setState] = useState<Snapshot>();
-  const [selected, setSelected] = useState(localStorage.getItem('phantom.project') ?? '');
-  const [view, setView] = useState<'chat' | 'team' | 'tasks' | 'runs'>('chat');
-  const [contextOpen, setContextOpen] = useState(false);
-  const contextRef = useRef<HTMLDialogElement>(null);
+  const [route, go] = useRoute();
+  const page = route.page;
+  const [drawer, setDrawer] = useState(false);
+  const [workQuery, setWorkQuery] = useState('');
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
     null,
   );
   const [repoConfig, setRepoConfig] = useState<Repo>();
-  const [taskDetail, setTaskDetail] = useState<string>();
   const [error, setError] = useState<string | Error>('');
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -59,12 +52,6 @@ function App() {
     localStorage.setItem('phantom.sidebar', sidebarCollapsed ? 'collapsed' : 'expanded');
   }, [sidebarCollapsed]);
   const [stream, setStream] = useState<Record<string, string>>({});
-  const [taskFilters, setTaskFilters] = useState<TaskFilters>(() => ({
-    stage: 'all',
-    control: 'all',
-    query: '',
-    view: localStorage.getItem('phantom.taskView') === 'list' ? 'list' : 'board',
-  }));
   const scroll = useRef<HTMLDivElement>(null);
   const conversationContent = useRef<HTMLDivElement>(null);
   const processDisclosures = useRef({ projectId: '', items: new Map<string, boolean>() });
@@ -134,11 +121,6 @@ function App() {
       if (timer) clearTimeout(timer);
     };
   }, [reload]);
-  useEffect(() => {
-    localStorage.setItem('phantom.project', selected);
-    setTaskDetail(undefined);
-    setContextOpen(false);
-  }, [selected]);
   async function act(fn: () => Promise<unknown>) {
     setError('');
     setBusy(true);
@@ -151,13 +133,23 @@ function App() {
       setBusy(false);
     }
   }
+  const selected = route.projectId ?? localStorage.getItem('phantom.project') ?? '';
   const project = state?.projects.find((p) => p.id === selected) ?? state?.projects[0];
+  // Every page names its project in the address, so links and the back button land in place.
+  useEffect(() => {
+    if (!project) return;
+    localStorage.setItem('phantom.project', project.id);
+    if (route.projectId !== project.id) go({ page: 'home', projectId: project.id }, true);
+  }, [project?.id, route.projectId]);
+  useEffect(() => setDrawer(false), [route.page, route.projectId, route.taskId]);
+  const openTask = (taskId: string) =>
+    project && go({ page: 'task', projectId: project.id, taskId });
   if (processDisclosures.current.projectId !== (project?.id ?? '')) {
     processDisclosures.current = { projectId: project?.id ?? '', items: new Map() };
   }
-  useReadingAnchor(scroll, conversationContent, followingLatest, `${project?.id}:${view}`);
+  useReadingAnchor(scroll, conversationContent, followingLatest, `${project?.id}:${page}`);
   useEffect(() => {
-    if (view !== 'chat') return;
+    if (page !== 'home') return;
     const element = scroll.current;
     if (!element) return;
     followingLatest.current = true;
@@ -177,17 +169,11 @@ function App() {
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [project?.id, view]);
+  }, [project?.id, page]);
   useEffect(() => {
     const element = scroll.current;
     if (followingLatest.current && element) element.scrollTop = element.scrollHeight;
   }, [state?.messages.length, stream]);
-  useEffect(() => {
-    const dialog = contextRef.current;
-    if (!dialog) return;
-    if (contextOpen && !dialog.open) dialog.showModal();
-    if (!contextOpen && dialog.open) dialog.close();
-  }, [contextOpen, project?.id]);
   const projectAgent =
     project?.agentSelection?.mode === 'override'
       ? project.agentSelection.agent
@@ -207,7 +193,12 @@ function App() {
   const messages = state?.messages.filter((m) => m.projectId === project?.id) ?? [];
   const activities = state?.activities?.filter((a) => a.projectId === project?.id) ?? [];
   const pmBusy = active.some((r) => r.role === 'pm');
-  const detail = state?.tasks.find((t) => t.id === taskDetail);
+  const team = useMemo(
+    () => (state && project ? teamView(state, project.id) : undefined),
+    [state, project?.id],
+  );
+  const waitingCount = team?.waiting.length ?? 0;
+  const movingCount = team?.work.filter((w) => workGroup(w) === 'moving').length ?? 0;
   const currentSchedule = schedule?.projectId === project?.id ? schedule : undefined;
   useEffect(() => {
     let current = true;
@@ -254,31 +245,69 @@ function App() {
     return submitted;
   }
 
-  const teamRoom = (layout: 'aside' | 'full') =>
-    state && project ? (
-      <TeamRoom
+  const onTeam = (action: 'pause' | 'resume') =>
+    project && void act(() => api(`/projects/${project.id}/team/${action}`, {}));
+  const brief =
+    state && project && team ? (
+      <Brief
         state={state}
-        projectId={project.id}
+        project={project}
+        view={team}
         busy={busy}
-        layout={layout}
-        onOpenTask={setTaskDetail}
-        onTeam={(action) => void act(() => api(`/projects/${project.id}/team/${action}`, {}))}
-        {...(layout === 'aside' ? { onExpand: () => setView('team') } : {})}
+        act={act}
+        onTeam={onTeam}
+        onFeedback={(draft) => {
+          if (page !== 'home') go({ page: 'home', projectId: project.id });
+          composerRef.current?.setDraft(draft, 'feedback');
+        }}
+      />
+    ) : null;
+  const nav = (variant: 'sidebar' | 'bar') =>
+    project ? (
+      <ProjectNav
+        route={route}
+        projectId={project.id}
+        waiting={waitingCount}
+        working={team?.members.length ?? 0}
+        variant={variant}
       />
     ) : null;
   return (
-    <div className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+    <div
+      className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${drawer ? 'drawer-open' : ''}`}
+    >
+      {drawer && (
+        <button
+          className="drawer-scrim"
+          aria-label={t('nav.closeMenu')}
+          onClick={() => setDrawer(false)}
+        />
+      )}
       <Sidebar
         state={state}
         selectedId={project?.id}
         collapsed={sidebarCollapsed}
         connected={connected}
         onToggle={() => setSidebarCollapsed((value) => !value)}
-        onSelect={setSelected}
+        onSelect={(id) => go({ page: 'home', projectId: id })}
         onNewProject={() => setModal('project')}
         onSettings={() => setModal('settings')}
+        projectNav={nav('sidebar')}
       />
       <main className="main">
+        {project && (
+          <header className="mobile-top">
+            <button
+              className="icon-button"
+              aria-label={t('nav.menu')}
+              aria-expanded={drawer}
+              onClick={() => setDrawer(true)}
+            >
+              <Menu size={18} />
+            </button>
+            <strong>{project.name}</strong>
+          </header>
+        )}
         {!project && (
           <header className="topbar">
             <div className="breadcrumb">
@@ -356,47 +385,30 @@ function App() {
           </div>
         ) : (
           <>
-            <section className="project-header">
-              <div className="project-title">
-                <h1>{project.name}</h1>
-              </div>
-              <div className="tabs" role="tablist" aria-label={t('project.views')}>
-                {(
-                  [
-                    { key: 'chat', label: t('tabs.chat'), icon: MessageSquare },
-                    { key: 'team', label: t('tabs.team'), icon: Users },
-                    { key: 'tasks', label: t('tabs.tasks'), icon: Layers3 },
-                    { key: 'runs', label: t('tabs.runs'), icon: Activity },
-                  ] as const
-                ).map((t) => (
-                  <button
-                    role="tab"
-                    aria-selected={view === t.key}
-                    className={view === t.key ? 'active' : ''}
-                    key={t.key}
-                    onClick={() => setView(t.key)}
-                  >
-                    <t.icon size={15} />
-                    {t.label}
-                    {t.key === 'tasks' && <span className="tab-count">{number(tasks.length)}</span>}
-                  </button>
-                ))}
-              </div>
-              <button
-                className="secondary-button context-trigger"
-                aria-controls="project-context"
-                aria-expanded={contextOpen}
-                onClick={() => setContextOpen(true)}
-              >
-                <Settings2 size={15} /> {t('project.overview')}
-              </button>
-            </section>
-            <div className={`workspace-grid ${view === 'chat' ? 'with-team' : ''}`}>
-              <section className="primary-workspace">
-                <div
-                  className="chat-workspace"
-                  style={{ display: view === 'chat' ? undefined : 'none' }}
-                >
+            {/* The conversation stays mounted so drafts and reading position survive page changes. */}
+            <div className="home-grid" hidden={page !== 'home'}>
+              <section className="home-main" aria-label={t('nav.home')}>
+                <header className="project-header">
+                  <div className="project-title">
+                    <h1>{project.name}</h1>
+                    <p className="project-status">
+                      {waitingCount > 0 && (
+                        <a
+                          className="status-attention"
+                          href={routeHref({ page: 'work', projectId: project.id })}
+                        >
+                          {t('home.status.waiting', { count: waitingCount })}
+                        </a>
+                      )}
+                      <span>
+                        {movingCount
+                          ? t('home.status.moving', { count: movingCount })
+                          : t('home.status.idle')}
+                      </span>
+                    </p>
+                  </div>
+                </header>
+                <div className="chat-workspace">
                   <div className="conversation-shell">
                     <div
                       className="conversation"
@@ -426,7 +438,7 @@ function App() {
                       <div className="conversation-content" ref={conversationContent}>
                         <ProjectActions
                           key={`project-actions:${project.id}`}
-                          onOpenTask={setTaskDetail}
+                          onOpenTask={openTask}
                           state={state}
                           project={project}
                           reload={reload}
@@ -532,35 +544,44 @@ function App() {
                     }
                   />
                 </div>
-                {view === 'tasks' ? (
-                  <TaskWorkspace
-                    state={state}
-                    tasks={tasks}
-                    repos={repos}
-                    filters={taskFilters}
-                    setFilters={setTaskFilters}
-                    schedule={currentSchedule}
-                    scheduleError={
-                      scheduleError?.projectId === project.id ? scheduleError.message : ''
-                    }
-                    scheduleLoading={scheduleLoading}
-                    onRefreshSchedule={() => setScheduleRefresh((n) => n + 1)}
-                    onOpen={setTaskDetail}
-                  />
-                ) : view === 'runs' ? (
-                  <RunList state={state} runs={runs} tasks={tasks} />
-                ) : view === 'team' ? (
-                  teamRoom('full')
-                ) : null}
               </section>
-              {view === 'chat' && teamRoom('aside')}
-              <dialog
-                id="project-context"
-                className="context-panel"
-                ref={contextRef}
-                onClose={() => setContextOpen(false)}
-                aria-label={t('project.overview')}
-              >
+              <aside className="home-brief">{brief}</aside>
+            </div>
+            {page === 'brief' && <div className="page brief-page">{brief}</div>}
+            {page === 'work' && (
+              <WorkList
+                state={state}
+                project={project}
+                query={workQuery}
+                setQuery={setWorkQuery}
+              />
+            )}
+            {page === 'task' && route.taskId && (
+              <TaskPage
+                state={state}
+                projectId={project.id}
+                taskId={route.taskId}
+                schedule={currentSchedule}
+                busy={busy}
+                act={act}
+                reload={reload}
+                onDraft={(draft) => {
+                  go({ page: 'home', projectId: project.id });
+                  composerRef.current?.setDraft(draft, 'implement');
+                }}
+              />
+            )}
+            {page === 'team' && (
+              <TeamRoom
+                state={state}
+                projectId={project.id}
+                busy={busy}
+                onOpenTask={openTask}
+                onTeam={onTeam}
+              />
+            )}
+            {page === 'project' && (
+              <div className="page project-page">
                 <ProjectContext
                   project={project}
                   state={state}
@@ -571,15 +592,27 @@ function App() {
                   act={act}
                   projectAgent={projectAgent}
                   pmProfile={pmProfile}
-                  onClose={() => setContextOpen(false)}
-                  onOpenModal={(kind) => {
-                    setContextOpen(false);
-                    setModal(kind);
-                  }}
+                  onOpenModal={setModal}
                   onConfigureRepo={setRepoConfig}
                 />
-              </dialog>
-            </div>
+                <section className="project-section" aria-label={t('project.claims')}>
+                  <ClaimOrder
+                    schedule={currentSchedule}
+                    projects={state.projects}
+                    locale={locale}
+                    refresh={() => setScheduleRefresh((n) => n + 1)}
+                    error={scheduleError?.projectId === project.id ? scheduleError.message : ''}
+                    refreshing={scheduleLoading}
+                  />
+                </section>
+                <section className="project-section" aria-label={t('project.runs')}>
+                  <h2>{t('project.runs')}</h2>
+                  <p className="muted">{t('project.runsHint')}</p>
+                  <RunList state={state} runs={runs} tasks={tasks} />
+                </section>
+              </div>
+            )}
+            {nav('bar')}
           </>
         )}
       </main>
@@ -590,7 +623,7 @@ function App() {
             submit={async (name) =>
               act(async () => {
                 const p = await api<Project>('/projects', name);
-                setSelected(p.id);
+                go({ page: 'home', projectId: p.id });
                 setModal(null);
               })
             }
@@ -688,24 +721,6 @@ function App() {
                 setRepoConfig(undefined);
               })
             }
-          />
-        </Modal>
-      )}
-      {detail && (
-        <Modal
-          title={detail.title}
-          subtitle={`${t(`stage.${detail.stage}`)} · ${t(profileKeys[detail.profile])}`}
-          wide
-          onClose={() => setTaskDetail(undefined)}
-        >
-          <DeferredTaskDetail
-            key={detail.id}
-            task={detail}
-            state={state!}
-            schedule={currentSchedule}
-            busy={busy}
-            act={act}
-            reload={reload}
           />
         </Modal>
       )}

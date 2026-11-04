@@ -9,6 +9,7 @@ import {
   Settings2,
   Sun,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { Snapshot } from '../shared/types.ts';
 import { LanguageControl, useLocale } from './locale/provider.tsx';
 import { PreferenceControl } from './preference-control.tsx';
@@ -25,6 +26,7 @@ export function Sidebar({
   onSelect,
   onNewProject,
   onSettings,
+  projectNav,
 }: {
   state?: Snapshot;
   selectedId?: string;
@@ -34,6 +36,8 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onNewProject: () => void;
   onSettings: () => void;
+  /** The selected project's pages, listed under it. */
+  projectNav?: ReactNode;
 }) {
   const { t } = useLocale();
   const { preference, setPreference, resolved } = useTheme();
@@ -66,7 +70,7 @@ export function Sidebar({
           const developing = state.runs.filter(
             (r) => r.projectId === p.id && r.role === 'dev' && isRunning(r.status),
           ).length;
-          return (
+          return [
             <button
               key={p.id}
               className={`project-link ${selectedId === p.id ? 'selected' : ''}`}
@@ -82,8 +86,13 @@ export function Sidebar({
                   {developing}
                 </span>
               )}
-            </button>
-          );
+            </button>,
+            selectedId === p.id && projectNav ? (
+              <div key={`${p.id}:pages`} className="project-pages-slot">
+                {projectNav}
+              </div>
+            ) : null,
+          ];
         })}
       </nav>
       <div className="sidebar-bottom">

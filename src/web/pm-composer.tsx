@@ -20,7 +20,8 @@ export interface PMSubmission {
   deliveryMode: 'queue' | 'steer';
 }
 export interface PMComposerHandle {
-  setDraft: (content: string) => void;
+  /** Prefills the message, optionally as feedback, and puts the cursor at its end. */
+  setDraft: (content: string, intent?: PMSubmission['intent']) => void;
 }
 export function PMComposer({
   busy,
@@ -53,7 +54,21 @@ export function PMComposer({
   const imageDrafts = useRef(images);
   const draftRef = useRef<HTMLTextAreaElement>(null);
   const sending = useRef(false);
-  useImperativeHandle(ref, () => ({ setDraft }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      setDraft: (content, next) => {
+        setDraft(content);
+        if (next) setIntent(next);
+        requestAnimationFrame(() => {
+          const field = draftRef.current;
+          field?.focus();
+          field?.setSelectionRange(content.length, content.length);
+        });
+      },
+    }),
+    [],
+  );
   function updateImages(next: typeof images) {
     for (const image of imageDrafts.current) {
       if (!next.includes(image)) URL.revokeObjectURL(image.url);

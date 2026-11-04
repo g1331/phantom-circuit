@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
+import { openPage } from './browser-pages.ts';
 
 export async function checkTyping(page: Page) {
   const input = page.locator('.composer textarea');
@@ -189,8 +190,8 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
     await page.getByLabel('给 PM 的消息', { exact: true }).inputValue(),
     'Draft survives model switching',
   );
-  await page.getByRole('tab', { name: /^任务/ }).click();
-  await page.getByRole('tab', { name: '与 PM 讨论', exact: true }).click();
+  await openPage(page, 'work');
+  await openPage(page, 'home');
   assert.equal(
     await page.getByLabel('给 PM 的消息', { exact: true }).inputValue(),
     'Draft survives model switching',
@@ -220,7 +221,7 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
   await menu.waitFor();
   await page.keyboard.press('ArrowDown');
   assert.equal(await menu.evaluate((element) => element.contains(document.activeElement)), true);
-  await page.locator('.sidebar').click({ position: { x: 5, y: 5 } });
+  await page.locator('.conversation').click({ position: { x: 5, y: 5 } });
   await menu.waitFor({ state: 'hidden' });
   store.finishRun(run.id, 'completed');
   await page.reload();

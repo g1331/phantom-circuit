@@ -25,17 +25,25 @@ import { checkUsability } from './usability-browser-check.ts';
 import { checkRuntimeUI } from './runtime-browser-check.ts';
 import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
+import { backToWork, clickInSidebar, closeDrawer, openPage, openTask } from './browser-pages.ts';
 
 const artifacts = resolve('test-results');
 // A fixed default port collided when two checkouts ran browser checks at once.
-const freePort = () =>
-  new Promise<number>((done, fail) => {
+// Chromium refuses some ports outright (net::ERR_UNSAFE_PORT); those above 1024 are skipped.
+const unsafePorts = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697,
+  10080,
+]);
+const freePort = async (): Promise<number> => {
+  const port = await new Promise<number>((done, fail) => {
     const probe = createServer().once('error', fail);
     probe.listen(0, '127.0.0.1', () => {
       const { port } = probe.address() as AddressInfo;
       probe.close(() => done(port));
     });
   });
+  return unsafePorts.has(port) ? freePort() : port;
+};
 const port = process.env.PHANTOM_BROWSER_PORT
   ? Number(process.env.PHANTOM_BROWSER_PORT)
   : await freePort();
@@ -554,8 +562,7 @@ try {
   });
   makeTask('支持体验反馈与持续迭代');
   store.event('fixture', '浏览器验证场景已准备', { projectId: project.id });
-  const contextPanel = page.locator('#project-context');
-  await page.locator('.context-trigger').click();
+  await openPage(page, 'project');
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).waitFor();
   const documents = page.getByRole('region', { name: '领域文档', exact: true });
   await documents.getByText(/orbit-web.*CONTEXT.md/).click({ timeout: 5000 });
@@ -576,11 +583,21 @@ try {
     fullPage: true,
   });
   await documents.getByText(/orbit-web.*CONTEXT.md/).click();
-  await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
+  await openPage(page, 'home');
   await page.screenshot({ path: resolve(artifacts, '02-workspace-dark.png'), fullPage: true });
   await page.setViewportSize({ width: 1366, height: 768 });
+  // At 1366px the brief sits beside the conversation; both keep room to read.
   const conversationSize = await page.locator('.conversation').boundingBox();
-  assert.ok(conversationSize && conversationSize.width >= 850 && conversationSize.height >= 380);
+  const briefSize = await page.locator('.home-brief').boundingBox();
+  assert.ok(
+    conversationSize &&
+      briefSize &&
+      conversationSize.width >= 640 &&
+      conversationSize.height >= 380 &&
+      briefSize.width >= 300 &&
+      conversationSize.x + conversationSize.width <= briefSize.x,
+    `conversation ${JSON.stringify(conversationSize)} beside brief ${JSON.stringify(briefSize)}`,
+  );
   await page.screenshot({ path: resolve(artifacts, 'pm-desktop-1366.png') });
   for (let index = 0; index < 8; index++)
     store.addMessage(
@@ -682,8 +699,8 @@ try {
       return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
     });
     assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
-    await page.getByRole('tab', { name: '任务', exact: false }).click();
-    await page.getByRole('tab', { name: '与 PM 讨论', exact: false }).click();
+    await openPage(page, 'work');
+    await openPage(page, 'home');
     await page.getByLabel('给 PM 的消息').waitFor();
     await page.waitForFunction(() => {
       const element = document.querySelector('.conversation');
@@ -695,7 +712,7 @@ try {
     store.finishRun(followRun.id, 'completed');
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator('.context-trigger').click();
+  await openPage(page, 'project');
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).click();
   await page.waitForFunction(
     () =>
@@ -710,59 +727,71 @@ try {
   );
   assert.equal(store.repo(repo.id).enabled, false);
   assert.equal(store.activeRuns().filter((r) => r.role === 'dev').length, 1);
-  await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
-  await page.getByRole('tab', { name: '任务', exact: false }).click();
-  await page.getByRole('button', { name: /简化仓库接入与授权提示/ }).click();
-  await page.getByRole('heading', { name: '验收条件' }).waitFor();
-  const taskDialog = page.getByRole('dialog');
-  await taskDialog.getByRole('heading', { name: '任务方案' }).waitFor({ timeout: 5000 });
+  // Work is grouped by what it asks of the user, not by host stage.
+  await openPage(page, 'work');
+  for (const [group, title] of [
+    ['进行中', '简化仓库接入与授权提示'],
+    ['排队中', '支持体验反馈与持续迭代'],
+    ['已交付', '完成首次项目创建体验'],
+  ]) {
+    await page
+      .getByRole('region', { name: group, exact: true })
+      .getByRole('link')
+      .filter({ hasText: title })
+      .waitFor();
+  }
+  await openTask(page, '简化仓库接入与授权提示');
+  const taskPage = page.locator('.task-page');
+  const receipt = taskPage.getByRole('region', { name: '交付回执', exact: true });
+  await receipt.getByRole('heading', { name: '验收标准' }).waitFor();
+  await taskPage.getByRole('heading', { name: '任务方案' }).waitFor({ timeout: 5000 });
   assert.equal(
-    await taskDialog
+    await receipt
       .getByRole('region', { name: '验收条件 1', exact: true })
       .locator('li')
       .textContent(),
     '显示结果',
   );
-  await taskDialog.getByRole('heading', { name: 'Review 总结' }).waitFor();
+  await receipt.getByRole('heading', { name: 'Review 总结' }).waitFor();
+  await receipt.getByText('需要修改', { exact: true }).waitFor();
+  const finding = receipt.getByRole('region', { name: 'spec Review 发现 1', exact: true });
+  assert.equal(await finding.isVisible(), false, 'review findings start folded');
+  await receipt.getByText('1 条意见', { exact: true }).click();
+  assert.equal(await finding.locator('blockquote').innerText(), 'Review 发现');
   assert.equal(
-    await taskDialog
-      .getByRole('region', { name: 'spec Review 发现 1', exact: true })
-      .locator('blockquote')
-      .innerText(),
-    'Review 发现',
+    await receipt.getByRole('button', { name: '复制', exact: true }).count(),
+    0,
+    'receipt lines carry no copy toolbar',
   );
   for (const heading of ['体验反馈', 'Issue 原文', '文档变更']) {
-    await taskDialog
-      .getByRole('heading', { name: heading, exact: true })
-      .waitFor({ timeout: 5000 });
+    await taskPage.getByRole('heading', { name: heading, exact: true }).waitFor({ timeout: 5000 });
   }
   assert.equal(
-    await taskDialog
+    await taskPage
       .getByRole('region', { name: '待处理反馈 1', exact: true })
       .locator('blockquote')
       .innerText(),
     '待处理建议',
   );
-  const feedbackBlock = taskDialog.getByRole('region', { name: '反馈 1', exact: true });
+  const feedbackBlock = taskPage.getByRole('region', { name: '反馈 1', exact: true });
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await feedbackBlock.getByRole('button', { name: '复制', exact: true }).click();
   await feedbackBlock.getByRole('status').getByText('已复制').waitFor();
   assert.equal(await readClipboard(), '## 体验反馈\n\n- 增加说明');
-  assert.equal(await taskDialog.getByRole('button', { name: /^(原始|美化)$/ }).count(), 0);
-  await taskDialog.getByText('✓ npm test', { exact: true }).click();
-  assert.equal(
-    await taskDialog.locator('details[open] pre').textContent(),
-    '# 原始日志\n**不渲染**',
-  );
-  assert.equal(await taskDialog.locator('details[open] h1, details[open] strong').count(), 0);
+  assert.equal(await taskPage.getByRole('button', { name: /^(原始|美化)$/ }).count(), 0);
+  await receipt.getByText('1 项通过', { exact: false }).waitFor();
+  await receipt.locator('summary').filter({ hasText: 'npm test' }).click();
+  assert.equal(await receipt.locator('details[open] pre').textContent(), '# 原始日志\n**不渲染**');
+  assert.equal(await receipt.locator('details[open] pre :is(h1, strong)').count(), 0);
   await page.screenshot({ path: resolve(artifacts, '03-task-detail.png'), fullPage: true });
-  await page.getByRole('button', { name: '关闭窗口' }).click();
+  await backToWork(page);
+  // A work page is addressable: reloading it lands on the same page.
+  await openTask(page, '完成首次项目创建体验');
   for (const refresh of [false, true]) {
     if (refresh) {
       await page.reload();
-      await page.getByRole('tab', { name: '任务', exact: false }).click();
+      await page.getByRole('heading', { level: 1, name: '完成首次项目创建体验' }).waitFor();
     }
-    await page.getByRole('button', { name: /完成首次项目创建体验/ }).click();
     const issue = page.getByRole('region', { name: 'Issue 正文', exact: true });
     await issue.waitFor({ timeout: 5000 });
     assert.equal(await issue.getByText('持久化的 Issue 正文。').count(), 1);
@@ -783,13 +812,36 @@ try {
         path: resolve(artifacts, '07-completed-issue-reloaded.png'),
         fullPage: true,
       });
-    await page.getByRole('button', { name: '关闭窗口' }).click();
   }
-  await page.getByRole('button', { name: '列表', exact: true }).click();
-  await page.getByLabel('搜索任务').fill('不会匹配');
-  await page.getByText('还没有匹配的任务').waitFor();
-  await page.getByLabel('搜索任务').fill('');
-  await page.getByRole('tab', { name: '与 PM 讨论' }).click();
+  await page
+    .getByRole('region', { name: '交付回执', exact: true })
+    .getByText('已合入 main', { exact: false })
+    .waitFor();
+  // Rolling back a delivery is a request to the liaison: the conversation opens with it prefilled.
+  const deliveredTitle = await page.getByRole('heading', { level: 1 }).innerText();
+  await page.getByRole('button', { name: '撤销这次交付', exact: true }).click();
+  await page.waitForURL(/#\/p\/[^/]+$/);
+  const rollbackDraft = page.getByLabel('给 PM 的消息', { exact: true });
+  assert.ok((await rollbackDraft.inputValue()).includes(`撤销已交付的「${deliveredTitle}」`));
+  assert.equal(
+    await page
+      .getByRole('button', { name: '交给 PM 做', exact: true })
+      .getAttribute('aria-pressed'),
+    'true',
+    'a rollback becomes new work, so it is sent as an implementation request',
+  );
+  await rollbackDraft.fill('');
+  await page.getByRole('button', { name: '聊一聊', exact: true }).click();
+  await page.goBack();
+  await page.getByRole('heading', { level: 1, name: deliveredTitle, exact: true }).waitFor();
+  await backToWork(page);
+  const search = page.getByLabel('搜索工作');
+  await search.fill('不会匹配');
+  await page.getByText('没有匹配的工作。', { exact: true }).waitFor();
+  await search.fill('持续迭代');
+  assert.equal(await page.locator('.work-page').getByRole('link').count(), 1);
+  await search.fill('');
+  await openPage(page, 'home');
   const markdown = [
     '# 交付说明',
     '',
@@ -1021,8 +1073,7 @@ try {
         true,
       );
 
-      await page.getByRole('tab', { name: '任务', exact: false }).click();
-      await page.getByRole('button', { name: /简化仓库接入与授权提示/ }).click();
+      await openTask(page, '简化仓库接入与授权提示');
       const description = page.getByRole('region', { name: '任务说明', exact: true });
       await description.getByRole('heading', { name: '长内容' }).waitFor();
       assert.equal(
@@ -1033,20 +1084,19 @@ try {
         true,
       );
       assert.equal(
-        await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
+        await page.locator('.task-page').evaluate((el) => el.scrollWidth <= el.clientWidth),
         true,
+        `${width}px ${theme}: task page overflow`,
       );
-
       assert.equal(
-        await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
         true,
       );
       await page.screenshot({
         path: resolve(artifacts, `markdown-task-${width}-${theme}.png`),
       });
-      await page.getByRole('button', { name: '关闭窗口' }).click();
-      await page.getByRole('tab', { name: '与 PM 讨论' }).click();
-      await page.locator('.context-trigger').click();
+      await backToWork(page);
+      await openPage(page, 'project');
       await documents.getByText(/orbit-web.*CONTEXT.md/).click();
       const documentBlock = documents.getByRole('region', {
         name: '领域文档 CONTEXT.md',
@@ -1086,7 +1136,7 @@ try {
       }
 
       await documents.getByText(/orbit-web.*CONTEXT.md/).click();
-      await contextPanel.getByRole('button', { name: '关闭窗口' }).click();
+      await openPage(page, 'home');
     }
   }
   assert.equal(store.task(task.id).spec, longMarkdown);
@@ -1124,10 +1174,13 @@ try {
   await page.getByText('窄屏图片反馈', { exact: true }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '05-mobile-light.png'), fullPage: true });
   const mobileComposer = await page.locator('.composer').boundingBox();
+  const pagesBar = await page.getByRole('navigation', { name: '项目页面' }).boundingBox();
   assert.ok(
     mobileComposer &&
+      pagesBar &&
       mobileComposer.height <= 300 &&
-      mobileComposer.y + mobileComposer.height <= 844,
+      mobileComposer.y + mobileComposer.height <= pagesBar.y,
+    'the phone composer stays above the bottom page bar',
   );
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -1135,7 +1188,7 @@ try {
     'mobile must not overflow horizontally',
   );
   await choosePreference(page, 'theme', 'dark');
-  await page.getByRole('button', { name: '运行设置' }).click();
+  await clickInSidebar(page, '运行设置');
   await page.screenshot({
     path: resolve(artifacts, '06-mobile-settings.png'),
     fullPage: false,
@@ -1146,6 +1199,7 @@ try {
     true,
   );
   await page.getByRole('button', { name: '关闭窗口' }).click();
+  await closeDrawer(page);
   await checkPriority(page, store, task, artifacts);
   await checkOwnerConversation(page, store, task, artifacts);
   assert.deepEqual(errors, []);
@@ -1154,7 +1208,7 @@ try {
   const pmProfiles = structuredClone(store.project(project.id).profiles);
   pmProfiles.pm = { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' };
   store.saveProjectProfiles(project.id, pmProfiles);
-  await page.getByRole('tab', { name: '与 PM 讨论', exact: true }).click();
+  await openPage(page, 'home');
   await page.reload();
   await checkPMModels(page, store, project.id);
   await checkLocale(page, artifacts);
@@ -1164,7 +1218,7 @@ try {
   await checkMaintenance();
   assert.deepEqual(errors, []);
   console.log(
-    'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, board/list/stage/control filters, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',
+    'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, page links and phone drawer, work grouped by attention with search, task pages with delivery receipts and back navigation, project page with claim order and run log, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',
   );
 } finally {
   await page.close();

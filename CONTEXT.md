@@ -22,6 +22,15 @@ _Avoid_: PM, Dev
 **Owner conversation**: The user's direct exchange with the Dev who owns an unfinished Task. The owner answers read-only; a change of direction goes to the PM before anything changes, and the PM's conversation records a summary of each exchange.
 _Avoid_: Dev chat, steer
 
+**Reassign**: Handing an unfinished Task to a fresh Dev. The worktree and branch stay; the previous Dev's conversation does not, and the rework budget restarts.
+_Avoid_: retry, restart
+
+**Brief**: The user's summary beside the conversation: what needs them, what is in progress, and what was delivered since they last looked.
+_Avoid_: dashboard, feed
+
+**Receipt**: A Task's delivery record as the user reads it: acceptance, host validation at the pinned head, the independent review verdict with its model, and the merge.
+_Avoid_: report, evidence log
+
 **Run**: One bounded execution of a PM, Dev, Review or On-call role.
 _Avoid_: Task
 

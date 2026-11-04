@@ -1,15 +1,20 @@
 import type { Locator, Page } from 'playwright';
+import { closeDrawer, openDrawer } from './browser-pages.ts';
 
 export async function choosePreference(
   page: Page,
   preference: 'language' | 'theme',
   value: string,
-  scope: Locator = page.locator('.sidebar'),
+  scope?: Locator,
 ) {
-  const trigger = scope.locator(`.${preference}-control`);
+  // On a phone the sidebar is a drawer: open it for the choice and close it again.
+  const drawer =
+    !scope && !(await page.locator('.drawer-scrim').count()) && (await openDrawer(page));
+  const trigger = (scope ?? page.locator('.sidebar')).locator(`.${preference}-control`);
   await trigger.click();
   const id = await trigger.getAttribute('aria-controls');
   await page.locator(`[id="${id}"] [role="menuitemradio"][data-value="${value}"]`).click();
+  if (drawer) await closeDrawer(page);
 }
 
 /** Settings pages are tabs; on the models page, `agent` picks whose role models are shown. */

@@ -82,8 +82,8 @@ export async function checkReviewClarification() {
       .waitFor();
     assert.ok((await projectCard.innerText()).includes(pinned.head!));
     await projectCard.getByRole('button', { name: task.title, exact: true }).click();
-    const dialog = page.getByRole('dialog');
-    const card = dialog.locator('.clarification-card');
+    await page.getByRole('heading', { level: 1, name: task.title, exact: true }).waitFor();
+    const card = page.locator('.task-page .clarification-card');
     await card.getByText('Who may read the archive?', { exact: true }).waitFor();
     await card.locator('textarea').first().fill('保留七年');
     await card.getByRole('button', { name: '提交已填写的回答', exact: true }).click();
@@ -96,7 +96,8 @@ export async function checkReviewClarification() {
       .waitFor();
     assert.equal(await card.locator('textarea').first().inputValue(), '保留七年');
     assert.equal(await card.locator('textarea').last().isDisabled(), true);
-    await page.keyboard.press('Escape');
+    // The work page is an address: the browser's back button returns to the conversation.
+    await page.goBack();
     await projectCard.getByText('已回答', { exact: true }).waitFor();
     assert.deepEqual(
       store.get('clarification', clarification.id)?.answers?.map((a) => a.value),

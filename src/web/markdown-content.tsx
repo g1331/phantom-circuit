@@ -25,9 +25,12 @@ const components: Components = {
 export const MarkdownContent = memo(function MarkdownContent({
   content,
   label,
+  copyable = true,
 }: {
   content: string;
   label?: string;
+  /** Short lines inside a larger record (a receipt) read better without their own toolbar. */
+  copyable?: boolean;
 }) {
   const { t } = useLocale();
   const [copyResult, setCopyResult] = useState<{ content: string; ok: boolean }>();
@@ -41,16 +44,18 @@ export const MarkdownContent = memo(function MarkdownContent({
   }
   return (
     <section className="markdown-block" aria-label={label ?? t('markdown.content')}>
-      <div className="markdown-tools" role="group" aria-label={t('markdown.controls')}>
-        <button type="button" onClick={() => void copy()}>
-          {t('markdown.copy')}
-        </button>
-        <span role="status">
-          {copyResult?.content === content
-            ? t(copyResult.ok ? 'markdown.copied' : 'markdown.copyFailed')
-            : ''}
-        </span>
-      </div>
+      {copyable && (
+        <div className="markdown-tools" role="group" aria-label={t('markdown.controls')}>
+          <button type="button" onClick={() => void copy()}>
+            {t('markdown.copy')}
+          </button>
+          <span role="status">
+            {copyResult?.content === content
+              ? t(copyResult.ok ? 'markdown.copied' : 'markdown.copyFailed')
+              : ''}
+          </span>
+        </div>
+      )}
       <div className="markdown-rendered">
         <Markdown remarkPlugins={[remarkGfm]} skipHtml components={components}>
           {content}

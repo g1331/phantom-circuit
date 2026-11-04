@@ -4,6 +4,7 @@ import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
+import { clickInSidebar, openPage } from './browser-pages.ts';
 
 export async function checkProfiles(page: Page, store: Store, artifacts: string) {
   const checkRequests: string[] = [];
@@ -12,9 +13,8 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   };
   page.on('request', trackCheck);
   async function openProjectSettings() {
-    await page.locator('.context-trigger').click();
-    await page.locator('#project-context').getByRole('button', { name: '项目模型设置' }).click();
-    await page.locator('#project-context').waitFor({ state: 'hidden' });
+    await openPage(page, 'project');
+    await page.locator('.project-page').getByRole('button', { name: '项目模型设置' }).click();
     await settingsPage(page.locator('.modal'), 'models', 'codex');
   }
   const project = store.list('project')[0];
@@ -33,7 +33,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     complex: 'pinned',
   });
   const original = project.profiles.pm.effort;
-  await page.getByRole('button', { name: '运行设置', exact: true }).click();
+  await clickInSidebar(page, '运行设置');
   await settingsPage(page.locator('.modal'), 'models', 'codex');
   await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -83,7 +83,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
   try {
     // Exercise creation through the same authenticated browser interface as Provider management.
-    await page.getByRole('button', { name: '运行设置', exact: true }).click();
+    await clickInSidebar(page, '运行设置');
     await settingsPage(page.locator('.modal'), 'providers');
     const region = page.getByRole('region', { name: 'Provider 管理' });
     await region.getByRole('button', { name: '新增 Provider' }).click();
@@ -118,8 +118,11 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     const run = store.run('pm', project.id, 'pm');
     store.finishRun(run.id, 'completed');
     await page.reload();
-    await page.getByRole('tab', { name: '运行记录', exact: true }).click();
-    await page.getByText(/Profile browser upstream.*manual-model/).waitFor();
+    await openPage(page, 'project');
+    await page
+      .getByRole('region', { name: '运行日志', exact: true })
+      .getByText(/Profile browser upstream.*manual-model/)
+      .waitFor();
   } finally {
     page.off('request', trackCheck);
     upstream.closeAllConnections();

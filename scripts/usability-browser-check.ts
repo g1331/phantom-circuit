@@ -7,6 +7,7 @@ import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
 import { createServer } from 'vite';
 import { stageLabels, type Stage } from '../src/shared/types.ts';
+import { clickInSidebar, closeDrawer, openDrawer, openPage, openTask } from './browser-pages.ts';
 
 // Browser-only fixtures: no live database, repository work switch or model calls.
 export async function checkUsability() {
@@ -235,6 +236,8 @@ export async function checkUsability() {
         await choosePreference(page, 'language', locale);
         for (const width of [1366, 1100, 851, 850, 768, 660, 390]) {
           await page.setViewportSize({ width, height: 768 });
+          // At phone widths the sidebar is a drawer; measure it open.
+          const drawer = await openDrawer(page);
           const controls = await page
             .locator('.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control)')
             .evaluateAll((rows) =>
@@ -263,7 +266,7 @@ export async function checkUsability() {
           const projectIcon = await page.locator('.project-link svg').first().boundingBox();
           assert.ok(
             projectIcon && Math.abs(projectIcon.x - controls[0].iconX) < 1,
-            `${context}: project and control icon columns`,
+            `${context}: project and control icon columns (${projectIcon?.x} vs ${controls[0].iconX})`,
           );
           if (controls[0].labelVisible) {
             const projectLabel = await page.locator('.project-link > span').first().boundingBox();
@@ -303,6 +306,7 @@ export async function checkUsability() {
               `sidebar-${width}-${locale}-${collapsed ? 'collapsed' : 'expanded'}.png`,
             ),
           });
+          if (drawer) await closeDrawer(page);
         }
       }
     }
@@ -313,6 +317,7 @@ export async function checkUsability() {
       await choosePreference(page, 'theme', theme);
       for (const width of [1366, 390]) {
         await page.setViewportSize({ width, height: 768 });
+        const drawer = await openDrawer(page);
         for (const preference of ['language', 'theme']) {
           const trigger = page.locator(`.sidebar .${preference}-control`);
           await trigger.click();
@@ -375,6 +380,7 @@ export async function checkUsability() {
             'outside click dismisses the menu',
           );
         }
+        if (drawer) await closeDrawer(page);
       }
     }
     await page.setViewportSize({ width: 1366, height: 768 });
@@ -434,6 +440,8 @@ export async function checkUsability() {
       true,
       'final answer is retained',
     );
+    // The turn rail needs a 900px conversation; with the brief beside it that takes a wide screen.
+    await page.setViewportSize({ width: 1600, height: 768 });
     await page.getByRole('button', { name: '跳转到第 1 轮', exact: true }).focus();
     await page.getByRole('tooltip').getByText('Question 1', { exact: true }).waitFor();
     await page.keyboard.press('Enter');
@@ -520,6 +528,7 @@ export async function checkUsability() {
       true,
       'a reply moving into a completed process stays visible while being read',
     );
+    await page.setViewportSize({ width: 1366, height: 768 });
     await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
     await page.reload();
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
@@ -544,50 +553,69 @@ export async function checkUsability() {
     });
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.getByRole('button', { name: 'UI fixture', exact: true }).click();
-    await page.getByRole('tab', { name: '任务' }).click();
-    await page.locator('.claim-order time').waitFor();
-    assert.equal(
-      await page.locator('.board-column').count(),
-      7,
-      'board is the default and contains every stage',
-    );
-    const unchanged = JSON.stringify(store.snapshot());
-    const expectedTitles = await page.locator('.task-card strong').allTextContents();
-    await page.getByRole('button', { name: '列表', exact: true }).click();
+    // Work is grouped by what it asks of the user, in a fixed order, instead of by host stage.
+    await openPage(page, 'work');
+    const workPage = page.locator('.work-page');
+    const titlesIn = (group: string) =>
+      page
+        .getByRole('region', { name: group, exact: true })
+        .locator('.work-row strong')
+        .allTextContents()
+        .then((titles) => titles.sort());
+    await workPage.getByRole('heading', { name: /^进行中/ }).waitFor();
     assert.deepEqual(
-      (await page.locator('.task-row-main strong').allTextContents()).sort(),
-      expectedTitles.sort(),
+      (await workPage.locator('.work-group > :is(h2, summary)').allInnerTexts()).map((text) =>
+        text.replace(/\s+/g, ' '),
+      ),
+      ['等你处理 1', '进行中 2', '排队中 3', '已交付 1', '已取消 1'],
+      'groups follow the order of attention and count their work',
     );
-    await page.reload();
-    await page.getByRole('tab', { name: '任务' }).click();
-    assert.equal(
-      await page.getByRole('button', { name: '列表', exact: true }).getAttribute('aria-pressed'),
-      'true',
-    );
-    for (const stage of Object.keys(stageLabels)) {
-      await page.getByLabel('任务状态筛选').selectOption(stage);
-      assert.equal(await page.locator('.task-row').count(), stage === 'ready' ? 2 : 1);
-    }
-    await page.getByLabel('任务状态筛选').selectOption('active');
-    assert.equal(await page.locator('.task-row').count(), 6);
-    await page.getByLabel('任务状态筛选').selectOption('all');
-    await page.getByLabel('执行状态筛选').selectOption('paused');
-    assert.equal(await page.locator('.task-row').count(), 1);
-    await page.getByRole('button', { name: '看板', exact: true }).click();
-    assert.equal(await page.locator('.task-card').count(), 1);
-    await page.getByLabel('搜索任务').fill('developing');
-    await page.locator('.task-card').focus();
+    assert.deepEqual(await titlesIn('等你处理'), ['Stage developing']);
+    assert.deepEqual(await titlesIn('进行中'), ['Stage merging', 'Stage reviewing']);
+    assert.deepEqual(await titlesIn('排队中'), [
+      'Persistent task',
+      'Stage clarifying',
+      'Stage ready',
+    ]);
+    assert.deepEqual(await titlesIn('已交付'), ['Stage done']);
+    const cancelled = workPage.locator('details.work-group');
+    assert.equal(await cancelled.evaluate((el: HTMLDetailsElement) => el.open), false);
+    await cancelled.locator('summary').click();
+    await cancelled.getByText('Stage cancelled', { exact: true }).waitFor();
+    await page
+      .getByRole('region', { name: '排队中', exact: true })
+      .getByText('等待：Persistent task', { exact: true })
+      .first()
+      .waitFor();
+    const unchanged = JSON.stringify(store.snapshot());
+    const search = page.getByLabel('搜索工作', { exact: true });
+    // The search covers titles and specifications; matching cancelled work is shown, not folded.
+    await search.fill('Original specification');
+    assert.equal(await workPage.locator('.work-row').count(), 7);
+    await page.getByRole('region', { name: '已取消', exact: true }).waitFor();
+    await search.fill('developing');
+    assert.equal(await workPage.locator('.work-row').count(), 1);
+    await workPage.locator('.work-row').focus();
     await page.keyboard.press('Enter');
-    await page.getByRole('dialog').waitFor();
-    await page.keyboard.press('Escape');
-    assert.equal(await page.getByLabel('搜索任务').inputValue(), 'developing');
-    await page.getByLabel('执行状态筛选').selectOption('all');
-    await page.getByLabel('搜索任务').fill('');
+    await page.getByRole('heading', { level: 1, name: 'Stage developing', exact: true }).waitFor();
+    await page.goBack();
+    assert.equal(
+      await search.inputValue(),
+      'developing',
+      'the search survives opening a piece of work and coming back',
+    );
+    await search.fill('');
+    // The work page is an address: a reload stays on it.
+    await page.reload();
+    await workPage.getByRole('heading', { name: /^等你处理/ }).waitFor();
     assert.equal(
       JSON.stringify(store.snapshot()),
       unchanged,
-      'view and filters must not mutate server state',
+      'browsing and searching work must not mutate server state',
     );
+    // The claim order lives on the project page.
+    await openPage(page, 'project');
+    await page.locator('.claim-order time').waitFor();
     let release!: () => void;
     hold = new Promise<void>((resolve) => {
       release = resolve;
@@ -612,11 +640,7 @@ export async function checkUsability() {
       release();
       hold = undefined;
     }
-    await page.getByLabel('搜索任务').fill('Persistent');
-    const stableToolbar = await page.locator('.list-toolbar').boundingBox();
-    const stableScroll = await page
-      .locator('.task-workspace')
-      .evaluate((element) => element.scrollTop);
+    const stableClaims = await page.locator('.claim-order').boundingBox();
     hold = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -635,28 +659,28 @@ export async function checkUsability() {
     assert.equal(
       await page.getByText('正在更新，显示上次成功结果', { exact: true }).count(),
       0,
-      'background refresh must not flash transient text in the task workspace',
+      'background refresh must not flash transient text in the claim order',
     );
     assert.equal(
-      (await page.locator('.list-toolbar').boundingBox())?.y,
-      stableToolbar?.y,
-      'refresh must not collapse the schedule or move filters',
+      (await page.locator('.claim-order').boundingBox())?.y,
+      stableClaims?.y,
+      'refresh must not move the claim order',
     );
-    assert.equal(
-      await page.locator('.task-workspace').evaluate((element) => element.scrollTop),
-      stableScroll,
-    );
-    assert.equal(
-      await page.getByLabel('搜索任务').evaluate((element) => element === document.activeElement),
-      true,
-    );
-    await page
-      .locator('.task-card strong')
-      .getByText('Persistent task updated', { exact: true })
-      .waitFor();
     release();
     hold = undefined;
-    await page.locator('.task-card').click();
+    // A background update keeps the work page's search focused and its place.
+    await openPage(page, 'work');
+    await search.fill('Persistent');
+    const stableScroll = await workPage.evaluate((element) => element.scrollTop);
+    store.updateTask(task.id, { title: 'Persistent task revised' });
+    await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
+    await workPage
+      .locator('.work-row strong')
+      .getByText('Persistent task revised', { exact: true })
+      .waitFor();
+    assert.equal(await workPage.evaluate((element) => element.scrollTop), stableScroll);
+    assert.equal(await search.evaluate((element) => element === document.activeElement), true);
+    await openTask(page, 'Persistent task revised');
     await page.locator('.claim-conditions').waitFor();
     hold = new Promise<void>((resolve) => {
       release = resolve;
@@ -679,7 +703,7 @@ export async function checkUsability() {
     await page.screenshot({ path: resolve('test-results', 'usability-detail-refresh.png') });
     release();
     hold = undefined;
-    await page.keyboard.press('Escape');
+    await openPage(page, 'project');
     fail = true;
     await page.locator('.claim-order button').click();
     await page.locator('.claim-order [role="alert"]').waitFor();
@@ -721,6 +745,7 @@ export async function checkUsability() {
       ),
     ]);
     await page.locator('.project-link').filter({ hasText: secondProject.name }).click();
+    await openPage(page, 'project');
     await page.locator('.claim-order time').waitFor();
     assert.equal((await page.locator('.claim-order').innerText()).includes(project.name), false);
     release();
@@ -728,7 +753,8 @@ export async function checkUsability() {
     await page.waitForTimeout(100);
     assert.equal((await page.locator('.claim-order').innerText()).includes(project.name), false);
     await page.locator('.project-link').filter({ hasText: project.name }).click();
-    await page.getByLabel('搜索任务').fill('');
+    await openPage(page, 'work');
+    await search.fill('');
     let releaseState!: () => void;
     stateGate = new Promise<void>((resolve) => {
       releaseState = resolve;
@@ -745,15 +771,15 @@ export async function checkUsability() {
     ]);
     store.updateTask(task.id, { title: 'Latest task revision' });
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
-    await page
-      .locator('.task-card strong')
+    await workPage
+      .locator('.work-row strong')
       .getByText('Latest task revision', { exact: true })
       .waitFor();
     releaseState();
     await page.waitForTimeout(100);
     assert.equal(
-      await page
-        .locator('.task-card strong')
+      await workPage
+        .locator('.work-row strong')
         .getByText('Latest task revision', { exact: true })
         .count(),
       1,
@@ -762,17 +788,16 @@ export async function checkUsability() {
     await choosePreference(page, 'language', 'en');
     assert.equal(await page.locator('html').getAttribute('lang'), 'en');
     assert.equal(await page.title(), 'Phantom Circuit · Local workspace');
-    await page.getByRole('button', { name: 'Board', exact: true }).waitFor();
-    await page.getByLabel('Filter task status').selectOption('reviewing');
-    assert.equal(await page.locator('.board-column').count(), 1);
-    await page.getByLabel('Filter task status').selectOption('all');
+    await workPage.getByRole('heading', { name: /^Needs you/ }).waitFor();
     await page.reload();
-    await page.getByRole('tab', { name: 'Tasks' }).click();
-    assert.equal(
-      await page.getByRole('button', { name: 'Board', exact: true }).getAttribute('aria-pressed'),
-      'true',
-    );
+    await workPage.getByRole('heading', { name: 'Work', exact: true }).waitFor();
     await mkdir(resolve('test-results'), { recursive: true });
+    const views = [
+      { page: 'home', name: 'Conversation' },
+      { page: 'work', name: 'Work' },
+      { page: 'team', name: 'Team' },
+      { page: 'project', name: 'Project' },
+    ] as const;
     for (const viewport of [
       { width: 1440, height: 1000 },
       { width: 1366, height: 768 },
@@ -783,20 +808,20 @@ export async function checkUsability() {
       for (const theme of ['dark', 'light']) {
         if ((await page.locator('html').getAttribute('data-theme')) !== theme)
           await choosePreference(page, 'theme', theme);
-        for (const view of ['Discuss with PM', 'Tasks', 'Runs']) {
-          await page.getByRole('tab', { name: view, exact: view !== 'Tasks' }).click();
+        for (const view of views) {
+          await openPage(page, view.page);
           assert.equal(
             await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
             true,
-            `${viewport.width} ${view} page width`,
+            `${viewport.width} ${view.name} page width`,
           );
           if (viewport.width > 660) {
             assert.equal(
               await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
               true,
-              `${view} must fit desktop height`,
+              `${view.name} must fit desktop height`,
             );
-            if (view === 'Discuss with PM') {
+            if (view.page === 'home') {
               const composer = await page.locator('.composer').boundingBox();
               assert.ok(composer && composer.y + composer.height <= viewport.height);
               assert.equal(
@@ -807,40 +832,34 @@ export async function checkUsability() {
               );
             }
           }
-          if (view === 'Tasks') {
-            await page.locator('.task-board').scrollIntoViewIfNeeded();
-            await page.locator('.task-board').focus();
-            await page.keyboard.press('End');
-            await page.locator('.task-card').last().focus();
+          if (view.page === 'work') {
+            // Keyboard: the last row opens its page, and the browser's back button returns.
+            await workPage.locator('.work-row:visible').last().focus();
             await page.keyboard.press('Enter');
-            await page.getByRole('dialog').waitFor();
-            await page.keyboard.press('Escape');
-            await page.locator('.task-board').evaluate((el) => {
-              el.scrollLeft = 0;
-            });
-            await page.locator('.board-column h3').first().scrollIntoViewIfNeeded();
-            await page.locator('.task-workspace').evaluate((element) => {
+            await page.locator('.task-page').waitFor();
+            await page.goBack();
+            await workPage.evaluate((element) => {
               element.scrollTop = 0;
             });
-            const claimBox = await page.locator('.claim-order').boundingBox();
-            const searchBox = await page.getByLabel('Search tasks').boundingBox();
-            const cardBox = await page.locator('.task-card').first().boundingBox();
+            const titleBox = await workPage.getByRole('heading', { level: 1 }).boundingBox();
+            const groupBox = await workPage.locator('.work-group > h2').first().boundingBox();
+            const rowsBox = await workPage.locator('.work-rows').first().boundingBox();
             assert.ok(
-              claimBox &&
-                searchBox &&
-                cardBox &&
-                Math.abs(claimBox.x - searchBox.x) < 1 &&
-                Math.abs(cardBox.x - searchBox.x) < 1,
-              'claim order, filters and first board card share the same page gutter after scrolling',
+              titleBox &&
+                groupBox &&
+                rowsBox &&
+                Math.abs(titleBox.x - groupBox.x) < 1 &&
+                Math.abs(rowsBox.x - titleBox.x) < 1,
+              'page title, group headings and rows share the same page gutter',
             );
-          } else if (view === 'Discuss with PM') {
+          } else if (view.page === 'home') {
             await page.getByLabel('Message to PM').focus();
             await page.locator('.composer').scrollIntoViewIfNeeded();
           }
           await page.screenshot({
             path: resolve(
               'test-results',
-              `usability-${viewport.width}x${viewport.height}-${theme}-${view.split(' ')[0]}.png`,
+              `usability-${viewport.width}x${viewport.height}-${theme}-${view.name}.png`,
             ),
           });
         }
@@ -895,46 +914,36 @@ export async function checkUsability() {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       for (const theme of ['light', 'dark']) {
         await choosePreference(page, 'theme', theme);
-        await page.getByRole('button', { name: 'New project', exact: true }).click();
+        await clickInSidebar(page, 'New project');
         await captureModal('new-project', width, theme);
-        await page.locator('.context-trigger').click();
-        await page.locator('#project-context').waitFor();
-        const contextHeader = await page.locator('.context-heading').boundingBox();
-        await page.locator('#project-context').evaluate((element) => {
-          element.scrollTop = element.scrollHeight;
-        });
-        const scrolledContextHeader = await page.locator('.context-heading').boundingBox();
-        assert.ok(
-          contextHeader &&
-            scrolledContextHeader &&
-            Math.abs(contextHeader.y - scrolledContextHeader.y) < 1,
-          'project overview keeps its title and close control visible while scrolling',
+        // Project facts are a page now, not a dialog: it scrolls with the page and never overflows.
+        await openPage(page, 'project');
+        const projectPage = page.locator('.project-page');
+        assert.equal(
+          await projectPage.evaluate((element) => element.scrollWidth <= element.clientWidth),
+          true,
+          `${width}px project page overflow`,
         );
-        await page.locator('#project-context').evaluate((element) => {
-          element.scrollTop = 0;
-        });
         await page.screenshot({
-          path: resolve('test-results', `audit-project-overview-${width}-${theme}.png`),
+          path: resolve('test-results', `audit-project-page-${width}-${theme}.png`),
         });
-        await page.getByRole('button', { name: 'Configure fixture-repo', exact: true }).click();
-        await captureModal('repository-commands', width, theme);
-        await page
-          .locator('#project-context')
-          .getByRole('button', { name: 'Connect repository', exact: true })
+        await projectPage
+          .getByRole('button', { name: 'Configure fixture-repo', exact: true })
           .click();
+        await captureModal('repository-commands', width, theme);
+        await projectPage.getByRole('button', { name: 'Connect repository', exact: true }).click();
         await captureModal('connect-repository', width, theme);
-        await page.locator('.context-trigger').click();
-        await page
-          .locator('#project-context')
+        await projectPage
           .getByRole('button', { name: 'Project model settings', exact: true })
           .click();
         await captureModal('project-settings', width, theme);
-        await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+        await clickInSidebar(page, 'Runtime settings');
         await captureModal('global-settings', width, theme);
-        await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
+        await clickInSidebar(page, 'Runtime settings');
         await settingsPage(page.locator('.modal'), 'providers');
         await page.getByLabel('Select provider', { exact: true }).selectOption('ui-provider');
         await captureModal('provider-settings', width, theme);
+        await closeDrawer(page);
       }
     }
     assert.deepEqual(errors, []);

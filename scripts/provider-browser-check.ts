@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import type { Page } from 'playwright';
+import { clickInSidebar } from './browser-pages.ts';
 
 export async function checkProviders(page: Page, artifacts: string) {
   let authenticated = true;
@@ -19,7 +20,7 @@ export async function checkProviders(page: Page, artifacts: string) {
       const key = `browser-fixture-private-${width}`;
       const replacement = `browser-fixture-replacement-${width}`;
       await page.setViewportSize({ width, height: 900 });
-      await page.getByRole('button', { name: '运行设置' }).click();
+      await clickInSidebar(page, '运行设置');
       await settingsPage(page.locator('.modal'), 'providers');
       const region = page.getByRole('region', { name: 'Provider 管理' });
       await region.getByText('使用现有 Codex 官方登录，无需复制凭据。').waitFor();
@@ -99,14 +100,14 @@ export async function checkProviders(page: Page, artifacts: string) {
       );
       assert.ok(!persisted.includes(key) && !persisted.includes(replacement));
       await page.getByRole('button', { name: '关闭窗口' }).click();
-      await page.getByRole('button', { name: '运行设置' }).click();
+      await clickInSidebar(page, '运行设置');
       await settingsPage(page.locator('.modal'), 'providers');
       await region.getByLabel('选择 Provider').selectOption(id);
       assert.equal(await region.getByLabel('已显示的 API key').count(), 0);
       await region.getByRole('button', { name: '显示密钥', exact: true }).click();
       await region.getByLabel('已显示的 API key').waitFor();
       await page.reload();
-      await page.getByRole('button', { name: '运行设置' }).click();
+      await clickInSidebar(page, '运行设置');
       await settingsPage(page.locator('.modal'), 'providers');
       await region.getByLabel('选择 Provider').selectOption(id);
       assert.equal(await region.getByLabel('已显示的 API key').count(), 0);
