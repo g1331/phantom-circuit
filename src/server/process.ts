@@ -7,8 +7,13 @@ import { Fault, redact } from './store.ts';
 export const systemTool = (name: string) =>
   win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name);
 
+/**
+ * Stops a child and what it started. Windows kills the process tree; elsewhere a child spawned
+ * `detached` leads its own process group, so the whole group is signalled: a shell wrapper alone
+ * would die and leave the server it started running.
+ */
 export async function terminate(child: ChildProcess) {
-  if (!child.pid || child.exitCode !== null) return;
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === 'win32') {
     await command(
       'taskkill',
@@ -18,7 +23,24 @@ export async function terminate(child: ChildProcess) {
       15000,
       false,
     );
-  } else child.kill('SIGTERM');
+    return;
+  }
+  const pid = child.pid;
+  const signal = (name: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, name);
+    } catch (e) {
+      // No group led by this pid: the child was not spawned detached.
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+      child.kill(name);
+    }
+  };
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  signal('SIGTERM');
+  // Like taskkill's /F after its timeout: a child that ignores SIGTERM is killed outright.
+  const force = setTimeout(() => signal('SIGKILL'), 15000);
+  await exited;
+  clearTimeout(force);
 }
 /**
  * How much stdout a single command may return. Output past this is dropped from the front, so a

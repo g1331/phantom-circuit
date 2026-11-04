@@ -68,7 +68,7 @@ export interface PreservedWorkspace {
 }
 
 export interface SourceSignature {
-  files: { path: string; size: number; mtimeMs: number; ctimeMs: number }[];
+  files: { path: string; size: number; mtimeMs: number; ctimeMs?: number }[];
 }
 
 export interface DataDirectoryOptions {
@@ -717,6 +717,10 @@ async function sourceSignature(directory: string): Promise<SourceSignature | und
   if (!files.length) return undefined;
   const output: SourceSignature['files'] = [];
   for (const path of [...new Set(files)]) await signatureTree(path, directory, output);
+  // SQLite running as root re-owns the WAL to match the database whenever it opens it, so our own
+  // read-only snapshot moves the WAL's ctime. Its size and mtime still record any write.
+  const wal = relative(directory, `${dbPath}-wal`);
+  for (const entry of output) if (entry.path === wal) delete entry.ctimeMs;
   output.sort((a, b) => a.path.localeCompare(b.path));
   return { files: output };
 }

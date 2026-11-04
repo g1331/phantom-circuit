@@ -204,8 +204,10 @@ test(
     assert.equal(result.statusCode, 504, result.body);
     assert.ok(performance.now() - started < 20000);
     assert.deepEqual(store.settings(), next);
-    if (child?.exitCode === null) await new Promise((resolve) => child!.once('exit', resolve));
-    assert.ok(child && child.exitCode !== null, 'timed out backend process is stopped');
+    // Windows reports an exit code; elsewhere a process stopped by a signal reports the signal.
+    const stopped = () => child?.exitCode !== null || child?.signalCode !== null;
+    if (child && !stopped()) await new Promise((resolve) => child!.once('exit', resolve));
+    assert.ok(child && stopped(), 'timed out backend process is stopped');
   },
 );
 

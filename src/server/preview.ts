@@ -83,6 +83,8 @@ export class Previews {
             })
           : spawn('/bin/sh', ['-c', cmd], {
               cwd: path,
+              // Its own process group, so stopping the preview stops the server the shell started.
+              detached: true,
               stdio: ['ignore', 'pipe', 'pipe'],
               env: { ...process.env, PORT: String(repo.commands.port) },
             });
