@@ -3149,6 +3149,39 @@ Call reply exactly once.`,
       for (const run of this.store.activeRuns().filter((r) => r.taskId === taskId))
         this.active.get(run.id)?.abort.abort();
   }
+  /**
+   * A fresh developer takes the work over (ADR 0013): the same worktree and branch, none of the
+   * previous conversation, and a new rework budget. The current developer must have stopped.
+   */
+  async reassign(taskId: string, context: TaskControlContext) {
+    const t = this.store.task(taskId);
+    if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束', 409);
+    if (!t.worktree) throw new Fault('这项工作还没有开发接手', 409);
+    if (
+      this.store
+        .list('run')
+        .some(
+          (r) =>
+            r.taskId === t.id &&
+            r.role === 'dev' &&
+            (this.active.has(r.id) || r.status === 'running' || r.status === 'waiting'),
+        )
+    )
+      throw new Fault('开发还在工作，先暂停这项工作再换人接手', 409);
+    this.store.updateTask(taskId, {
+      devThreadId: undefined,
+      devThreadProviderId: undefined,
+      devThreadAgentKind: undefined,
+      devThreadProfileVersion: undefined,
+      devThreadProfile: undefined,
+      retries: 0,
+    });
+    this.store.event('task', `换了一位开发接手「${t.title}」：从现有代码继续，返工轮次重新计算`, {
+      projectId: t.projectId,
+      taskId: t.id,
+    });
+    if (t.control === 'paused') await this.resume(taskId, undefined, context);
+  }
   async resume(
     taskId: string,
     guidance?: { guidance: string; upgrade: boolean },

@@ -685,10 +685,11 @@ export function createApp(
   });
   app.post('/api/tasks/:id/:action', async (req) => {
     const { id, action } = z
-      .object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel']) })
+      .object({ id: z.string(), action: z.enum(['pause', 'resume', 'cancel', 'reassign']) })
       .parse(req.params);
     const context = { source: 'user' as const, reason: 'http_task_control' };
     if (action === 'resume') await engine.resume(id, undefined, context);
+    else if (action === 'reassign') await engine.reassign(id, context);
     else engine.control(id, action, context);
     return store.task(id);
   });
