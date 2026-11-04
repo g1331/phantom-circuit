@@ -1655,6 +1655,20 @@ export class Engine {
       evidence: JSON.stringify({ runId: run.id, role: run.role, model: run.modelIdentity }),
     });
     if (incident.assessmentRunId) return incident;
+    // A model the provider no longer lists is a settings problem: the liaison cannot change
+    // settings and a retry fails the same way, so the user hears it directly.
+    if (error instanceof Fault && error.descriptor?.code === 'model_unavailable') {
+      const roles: Record<Run['role'], string> = {
+        pm: '对接人',
+        dev: '开发',
+        review: '评审',
+        oncall: '值班',
+      };
+      const message = `${roles[run.role]}使用的模型「${error.descriptor.params?.model}」已不在服务商的模型列表里。请在设置里给这个角色换一个可用的模型，然后恢复这项工作。`;
+      this.store.updateIncident(incident.id, { status: 'waiting_user', message });
+      if (run.taskId) this.block(run.taskId, message);
+      return incident;
+    }
     let assessment: Run;
     try {
       assessment = this.store.run(

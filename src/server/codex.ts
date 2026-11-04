@@ -635,7 +635,11 @@ export class Codex extends EventEmitter implements AgentBackend {
     const model = (await this.models()).find(
       (m) => m.model === profile.model || m.id === profile.model,
     );
-    if (!model) throw new Fault(`模型不可用：${profile.model}`, 409);
+    if (!model)
+      throw new Fault(`模型不可用：${profile.model}`, 409, {
+        code: 'model_unavailable',
+        params: { model: profile.model },
+      });
     if (!model.supportedReasoningEfforts.some((x) => x.reasoningEffort === profile.effort))
       throw new Fault(`模型不支持推理档位：${profile.model} / ${profile.effort}`, 409);
   }

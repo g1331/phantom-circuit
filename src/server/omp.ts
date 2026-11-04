@@ -667,7 +667,11 @@ export class OmpRpcClient extends EventEmitter {
       const model = models.find(
         (candidate) => candidate?.id === requestedModel || candidate?.id === profile.model,
       );
-      if (!model) throw new Fault(`模型不可用：${profile.model}`, 409);
+      if (!model)
+        throw new Fault(`模型不可用：${profile.model}`, 409, {
+          code: 'model_unavailable',
+          params: { model: profile.model },
+        });
       await this.request('set_model', { provider: model.provider, modelId: model.id });
     }
     await this.request('set_thinking_level', { level: profile.effort });
@@ -1230,7 +1234,11 @@ export class OmpBackend extends EventEmitter implements AgentBackend {
         (candidate.id === requestedId || candidate.id === profile.model) &&
         (!provider || !candidate.provider || candidate.provider === provider),
     );
-    if (!model) throw new Fault(`模型不可用：${profile.model}`, 409);
+    if (!model)
+      throw new Fault(`模型不可用：${profile.model}`, 409, {
+        code: 'model_unavailable',
+        params: { model: profile.model },
+      });
     if (!model.reasoningEfforts.includes(profile.effort))
       throw new Fault(`模型不支持推理档位：${profile.model} / ${profile.effort}`, 409);
   }
