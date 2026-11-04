@@ -2,6 +2,7 @@ import { Check, CircleDashed, GitMerge, ListChecks, ScanEye, TerminalSquare, X }
 import type { ReactNode } from 'react';
 import type { Evidence, ReviewResult, Snapshot, Task } from '../shared/types.ts';
 import { MarkdownContent } from './markdown-content.tsx';
+import { Clamp } from './fold.tsx';
 import { useLocale } from './locale/provider.tsx';
 
 type Tone = 'pass' | 'fail' | 'pending';
@@ -112,7 +113,7 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
               {tests.map((evidence) => (
                 <details
                   key={evidence.command}
-                  className={`test-evidence ${evidence.exitCode === 0 ? 'passed' : 'failed'}`}
+                  className={`fold fold-quiet test-evidence ${evidence.exitCode === 0 ? 'passed' : 'failed'}`}
                 >
                   <summary>
                     <code>{evidence.command}</code>
@@ -120,7 +121,7 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
                       <span>{duration(evidence.durationMs / 1000)}</span>
                     )}
                   </summary>
-                  <pre>{evidence.output}</pre>
+                  <pre className="log-block">{evidence.output}</pre>
                 </details>
               ))}
             </>
@@ -146,13 +147,15 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
                     {model && <> · {t('receipt.reviewBy', { model })}</>}
                     {r.head && <> · {t('receipt.validationAt', { head: short(r.head) })}</>}
                   </p>
-                  <MarkdownContent
-                    content={r.summary}
-                    label={t('review.summary', { axis: r.axis })}
-                    copyable={false}
-                  />
+                  <Clamp height={120}>
+                    <MarkdownContent
+                      content={r.summary}
+                      label={t('review.summary', { axis: r.axis })}
+                      copyable={false}
+                    />
+                  </Clamp>
                   {r.findings.length > 0 && (
-                    <details>
+                    <details className="fold fold-quiet">
                       <summary>{t('receipt.findings', { count: r.findings.length })}</summary>
                       {r.findings.map((f, i) => (
                         <MarkdownContent

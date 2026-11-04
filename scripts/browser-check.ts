@@ -25,7 +25,14 @@ import { checkUsability } from './usability-browser-check.ts';
 import { checkRuntimeUI } from './runtime-browser-check.ts';
 import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
-import { backToWork, clickInSidebar, closeDrawer, openPage, openTask } from './browser-pages.ts';
+import {
+  backToWork,
+  clickInSidebar,
+  closeDrawer,
+  openPage,
+  openSection,
+  openTask,
+} from './browser-pages.ts';
 
 const artifacts = resolve('test-results');
 // A fixed default port collided when two checkouts ran browser checks at once.
@@ -564,8 +571,9 @@ try {
   store.event('fixture', '浏览器验证场景已准备', { projectId: project.id });
   await openPage(page, 'project');
   await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).waitFor();
+  await openSection(page, 'project.tab.docs');
   const documents = page.getByRole('region', { name: '领域文档', exact: true });
-  await documents.getByText(/orbit-web.*CONTEXT.md/).click({ timeout: 5000 });
+  await documents.getByText('CONTEXT.md', { exact: true }).click({ timeout: 5000 });
   await documents.getByRole('heading', { name: '项目词汇' }).waitFor();
   assert.equal(await documents.locator('script, a[href]').count(), 0);
 
@@ -582,7 +590,7 @@ try {
     path: resolve(artifacts, 'markdown-domain-desktop.png'),
     fullPage: true,
   });
-  await documents.getByText(/orbit-web.*CONTEXT.md/).click();
+  await documents.getByText('CONTEXT.md', { exact: true }).click();
   await openPage(page, 'home');
   await page.screenshot({ path: resolve(artifacts, '02-workspace-dark.png'), fullPage: true });
   await page.setViewportSize({ width: 1366, height: 768 });
@@ -744,7 +752,6 @@ try {
   const taskPage = page.locator('.task-page');
   const receipt = taskPage.getByRole('region', { name: '交付回执', exact: true });
   await receipt.getByRole('heading', { name: '验收标准' }).waitFor();
-  await taskPage.getByRole('heading', { name: '任务方案' }).waitFor({ timeout: 5000 });
   assert.equal(
     await receipt
       .getByRole('region', { name: '验收条件 1', exact: true })
@@ -763,6 +770,13 @@ try {
     0,
     'receipt lines carry no copy toolbar',
   );
+  await receipt.getByText('1 项通过', { exact: false }).waitFor();
+  await receipt.locator('summary').filter({ hasText: 'npm test' }).click();
+  assert.equal(await receipt.locator('details[open] pre').textContent(), '# 原始日志\n**不渲染**');
+  assert.equal(await receipt.locator('details[open] pre :is(h1, strong)').count(), 0);
+  // What was asked and every feedback round live in the specification section.
+  await openSection(page, 'task.tab.spec');
+  await taskPage.getByRole('heading', { name: '任务方案' }).waitFor({ timeout: 5000 });
   for (const heading of ['体验反馈', 'Issue 原文', '文档变更']) {
     await taskPage.getByRole('heading', { name: heading, exact: true }).waitFor({ timeout: 5000 });
   }
@@ -779,14 +793,11 @@ try {
   await feedbackBlock.getByRole('status').getByText('已复制').waitFor();
   assert.equal(await readClipboard(), '## 体验反馈\n\n- 增加说明');
   assert.equal(await taskPage.getByRole('button', { name: /^(原始|美化)$/ }).count(), 0);
-  await receipt.getByText('1 项通过', { exact: false }).waitFor();
-  await receipt.locator('summary').filter({ hasText: 'npm test' }).click();
-  assert.equal(await receipt.locator('details[open] pre').textContent(), '# 原始日志\n**不渲染**');
-  assert.equal(await receipt.locator('details[open] pre :is(h1, strong)').count(), 0);
   await page.screenshot({ path: resolve(artifacts, '03-task-detail.png'), fullPage: true });
   await backToWork(page);
-  // A work page is addressable: reloading it lands on the same page.
+  // A work page and its section are addressable: reloading lands on the same section.
   await openTask(page, '完成首次项目创建体验');
+  await openSection(page, 'task.tab.spec');
   for (const refresh of [false, true]) {
     if (refresh) {
       await page.reload();
@@ -813,6 +824,7 @@ try {
         fullPage: true,
       });
   }
+  await openSection(page, 'task.tab.overview');
   await page
     .getByRole('region', { name: '交付回执', exact: true })
     .getByText('已合入 main', { exact: false })
@@ -1074,6 +1086,7 @@ try {
       );
 
       await openTask(page, '简化仓库接入与授权提示');
+      await openSection(page, 'task.tab.spec');
       const description = page.getByRole('region', { name: '任务说明', exact: true });
       await description.getByRole('heading', { name: '长内容' }).waitFor();
       assert.equal(
@@ -1097,7 +1110,8 @@ try {
       });
       await backToWork(page);
       await openPage(page, 'project');
-      await documents.getByText(/orbit-web.*CONTEXT.md/).click();
+      await openSection(page, 'project.tab.docs');
+      await documents.getByText('CONTEXT.md', { exact: true }).click();
       const documentBlock = documents.getByRole('region', {
         name: '领域文档 CONTEXT.md',
         exact: true,
@@ -1135,7 +1149,7 @@ try {
         });
       }
 
-      await documents.getByText(/orbit-web.*CONTEXT.md/).click();
+      await documents.getByText('CONTEXT.md', { exact: true }).click();
       await openPage(page, 'home');
     }
   }

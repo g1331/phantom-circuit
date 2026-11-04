@@ -337,3 +337,12 @@
     display: none;
   }
 }
+/* On a rail the toggle joins the icon column instead of hugging the right edge. */
+.sidebar-collapsed .sidebar-toggle {
+  align-self: center;
+}
+@media (min-width: 661px) and (max-width: 850px) {
+  .sidebar-toggle {
+    align-self: center;
+  }
+}

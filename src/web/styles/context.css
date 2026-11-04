@@ -60,44 +60,6 @@
   margin-left: 7px;
   font-size: 11px;
 }
-.project-capacity {
-  margin-bottom: 30px;
-}
-.project-capacity label {
-  font-size: 11px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.project-capacity > span {
-  display: block;
-  color: var(--faint);
-  font-size: 11px;
-  margin-top: 10px;
-}
-.domain-documents {
-  padding: 24px 18px;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-  line-height: 1.9;
-  min-width: 0;
-}
-.domain-documents h2 {
-  font-size: 16px;
-  margin: 0 0 16px;
-}
-.domain-documents details {
-  border-top: 1px solid var(--line);
-  padding: 12px 0;
-}
-.domain-documents summary {
-  cursor: pointer;
-  overflow-wrap: anywhere;
-  color: var(--muted);
-}
-.domain-documents .markdown-block {
-  margin-top: 16px;
-}
 .repo-empty {
   color: var(--muted);
   padding: 25px 0 30px;

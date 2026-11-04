@@ -64,3 +64,25 @@ export async function backToWork(page: Page) {
   await page.getByRole('link', { name: t['work.back'], exact: true }).click();
   await page.waitForURL(/#\/p\/[^/]+\/work$/);
 }
+
+/** A section within the task or project page, as named in that page's section navigation. */
+export type PageSection =
+  | 'task.tab.overview'
+  | 'task.tab.spec'
+  | 'task.tab.process'
+  | 'project.tab.overview'
+  | 'project.tab.docs'
+  | 'project.tab.runs';
+
+/** Switches the open task or project page to one of its sections. */
+export async function openSection(page: Page, section: PageSection) {
+  const t = await copy(page);
+  const link = page
+    .getByRole('navigation', {
+      name: t[section.startsWith('task.') ? 'tabs.task' : 'tabs.project'],
+      exact: true,
+    })
+    .getByRole('link', { name: new RegExp(`^${literal(t[section])}(\\s*\\d+)?$`) });
+  await link.click();
+  await link.and(page.locator('[aria-current="page"]')).waitFor();
+}

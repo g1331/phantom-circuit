@@ -1,9 +1,19 @@
 import { useMemo } from 'react';
-import { ArrowLeft, Undo2, UserRoundPlus } from 'lucide-react';
+import {
+  ArrowLeft,
+  ExternalLink,
+  GitPullRequest,
+  Pause,
+  Play,
+  Undo2,
+  UserRoundPlus,
+} from 'lucide-react';
 import type { SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
 import { api } from './api.ts';
 import { DeferredTaskDetail } from './deferred-panels.tsx';
+import { PageTabs } from './fold.tsx';
+import type { TaskView } from './task-detail.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
 
@@ -21,6 +31,7 @@ export function TaskPage({
   state,
   projectId,
   taskId,
+  view: requested,
   schedule,
   busy,
   act,
@@ -30,6 +41,7 @@ export function TaskPage({
   state: Snapshot;
   projectId: string;
   taskId: string;
+  view?: string;
   schedule?: SchedulingExplanation;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
@@ -55,6 +67,10 @@ export function TaskPage({
       </div>
     );
   const group = workGroup(work);
+  const finished = task.stage === 'done' || task.stage === 'cancelled';
+  const section: TaskView =
+    requested === 'spec' || requested === 'process' ? requested : 'overview';
+  const rounds = task.feedback.length + (task.pendingFeedback?.length ?? 0);
   const devWorking = view.members.some((m) => m.taskId === taskId && m.role === 'dev');
   // A fresh developer only helps unfinished work that already has code and nobody on it now.
   const canReassign = !!task.worktree && !['done', 'cancelled'].includes(task.stage) && !devWorking;
@@ -83,7 +99,7 @@ export function TaskPage({
           )}
           <span>{t(profileKeys[task.profile])}</span>
         </p>
-        <div className="task-interventions">
+        <div className="task-interventions" role="group" aria-label={t('task.controls')}>
           {canReassign && !stuck && reassign}
           {task.stage === 'done' && (
             <button
@@ -100,6 +116,40 @@ export function TaskPage({
               <Undo2 size={14} /> {t('task.rollback')}
             </button>
           )}
+          {!finished && (
+            <>
+              <button
+                className="secondary-button"
+                disabled={busy}
+                onClick={() =>
+                  void act(() =>
+                    api(`/tasks/${task.id}/${task.control === 'paused' ? 'resume' : 'pause'}`, {}),
+                  )
+                }
+              >
+                {task.control === 'paused' ? <Play size={14} /> : <Pause size={14} />}{' '}
+                {task.control === 'paused' ? t('ui.resumeTask') : t('ui.pauseTask')}
+              </button>
+              <button
+                className="danger-button"
+                disabled={busy}
+                onClick={() => void act(() => api(`/tasks/${task.id}/cancel`, {}))}
+              >
+                {t('ui.cancelTask')}
+              </button>
+            </>
+          )}
+          {(task.issueUrl || task.prUrl) && <span className="task-links-gap" aria-hidden="true" />}
+          {task.issueUrl && (
+            <a className="quiet-link" href={task.issueUrl} target="_blank" rel="noreferrer">
+              Issue #{task.issue ?? ''} <ExternalLink size={12} />
+            </a>
+          )}
+          {task.prUrl && (
+            <a className="quiet-link" href={task.prUrl} target="_blank" rel="noreferrer">
+              <GitPullRequest size={13} /> PR #{task.pr ?? ''} <ExternalLink size={12} />
+            </a>
+          )}
         </div>
       </header>
       {stuck && (
@@ -111,8 +161,19 @@ export function TaskPage({
           {reassign}
         </div>
       )}
+      <PageTabs
+        label={t('tabs.task')}
+        route={{ page: 'task', projectId, taskId }}
+        current={section}
+        tabs={[
+          { view: 'overview', label: t('task.tab.overview') },
+          { view: 'spec', label: t('task.tab.spec'), count: rounds },
+          { view: 'process', label: t('task.tab.process') },
+        ]}
+      />
       <DeferredTaskDetail
         key={task.id}
+        view={section}
         task={task}
         state={state}
         schedule={schedule}

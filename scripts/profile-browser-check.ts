@@ -4,7 +4,7 @@ import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
-import { clickInSidebar, openPage } from './browser-pages.ts';
+import { clickInSidebar, openPage, openSection } from './browser-pages.ts';
 
 export async function checkProfiles(page: Page, store: Store, artifacts: string) {
   const checkRequests: string[] = [];
@@ -119,6 +119,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     store.finishRun(run.id, 'completed');
     await page.reload();
     await openPage(page, 'project');
+    await openSection(page, 'project.tab.runs');
     await page
       .getByRole('region', { name: '运行日志', exact: true })
       .getByText(/Profile browser upstream.*manual-model/)

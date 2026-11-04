@@ -6,21 +6,29 @@ export interface Route {
   page: Page;
   projectId?: string;
   taskId?: string;
+  /** A section within the page (the task's process, the project's documents); absent means the first. */
+  view?: string;
 }
 
 const pages: Page[] = ['brief', 'work', 'team', 'project'];
 
 export function parseRoute(hash: string): Route {
-  const [p, projectId, section, taskId] = hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+  const [p, projectId, section, a, b] = hash
+    .replace(/^#\/?/, '')
+    .split('/')
+    .map(decodeURIComponent);
   if (p !== 'p' || !projectId) return { page: 'home' };
-  if (section === 'work' && taskId) return { page: 'task', projectId, taskId };
-  return { page: pages.includes(section as Page) ? (section as Page) : 'home', projectId };
+  if (section === 'work' && a) return { page: 'task', projectId, taskId: a, ...(b && { view: b }) };
+  const page = pages.includes(section as Page) ? (section as Page) : 'home';
+  return { page, projectId, ...(page === 'project' && a && { view: a }) };
 }
 
-export function routeHref({ page, projectId, taskId }: Route) {
+export function routeHref({ page, projectId, taskId, view }: Route) {
   if (!projectId) return '#/';
   const base = `#/p/${encodeURIComponent(projectId)}`;
-  if (page === 'task' && taskId) return `${base}/work/${encodeURIComponent(taskId)}`;
+  const tail = view ? `/${encodeURIComponent(view)}` : '';
+  if (page === 'task' && taskId) return `${base}/work/${encodeURIComponent(taskId)}${tail}`;
+  if (page === 'project') return `${base}/project${tail}`;
   return page === 'home' ? base : `${base}/${page}`;
 }
 

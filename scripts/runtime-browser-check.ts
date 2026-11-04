@@ -5,7 +5,7 @@ import { createServer } from 'vite';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
-import { openPage, openTask, backToWork } from './browser-pages.ts';
+import { openPage, openSection, openTask, backToWork } from './browser-pages.ts';
 import type { PriceCard, Snapshot } from '../src/shared/types.ts';
 
 export async function checkRuntimeUI() {
@@ -579,6 +579,7 @@ export async function checkRuntimeUI() {
           );
           await page.keyboard.press('Escape');
           await openTask(page, task.title);
+          await openSection(page, 'task.tab.process');
           const taskPage = page.locator('.task-page');
           await taskPage.getByText('USD 0.000000000123', { exact: false }).first().waitFor();
           await taskPage.getByText('EUR 0.1234567890123456789', { exact: false }).waitFor();
@@ -591,7 +592,7 @@ export async function checkRuntimeUI() {
             .click();
           await runRecord.getByText('0.0000001025', { exact: true }).waitFor();
           await page
-            .locator('.usage-panel > h3')
+            .locator('.usage-panel')
             .evaluate((element) => element.scrollIntoView({ block: 'start' }));
           await page.screenshot({
             path: resolve('test-results', `runtime-usage-${locale}-${width}-${theme}.png`),

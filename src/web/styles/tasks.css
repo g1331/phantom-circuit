@@ -101,28 +101,6 @@
 .review-result.changes h3 span {
   color: var(--danger);
 }
-.task-detail details {
-  border-top: 1px solid var(--line);
-  padding: 15px 0;
-}
-.task-detail summary {
-  cursor: pointer;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-.task-detail details > pre {
-  font:
-    11px/1.8 ui-monospace,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 350px;
-  overflow: auto;
-  padding: 13px;
-  background: var(--input);
-  border-radius: 8px;
-}
 @media (max-width: 660px) {
   .task-row {
     padding: var(--surface-padding) var(--page-gutter);

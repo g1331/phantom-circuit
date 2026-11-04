@@ -1,94 +1,68 @@
+import { useState } from 'react';
 import { Activity } from 'lucide-react';
 import type { Snapshot, Task } from '../shared/types.ts';
-import { TaskRuntimeBadges } from './project-actions.tsx';
-import { RunRecord } from './usage-panel.tsx';
+import { RunRow } from './process-record.tsx';
 import { useLocale } from './locale/provider.tsx';
-import { isRunning } from './sidebar.tsx';
-import { Empty, unset } from './ui.tsx';
+import { routeHref } from './route.ts';
+import { Empty } from './ui.tsx';
 
 type Run = Snapshot['runs'][number];
+const page = 60;
 
+/** Every model run in the project, newest first, consecutive runs of one piece of work together. */
 export function RunList({ state, runs, tasks }: { state: Snapshot; runs: Run[]; tasks: Task[] }) {
-  const { t, time, host, duration } = useLocale();
+  const { t } = useLocale();
+  const [count, setCount] = useState(page);
   if (!runs.length)
     return (
-      <div className="run-workspace">
-        <Empty
-          icon={<Activity size={26} />}
-          title={t('runs.emptyTitle')}
-          text={t('runs.emptyDescription')}
-        />
-      </div>
+      <Empty
+        icon={<Activity size={26} />}
+        title={t('runs.emptyTitle')}
+        text={t('runs.emptyDescription')}
+      />
     );
-  const statusLabel = {
-    running: t('ui.running'),
-    waiting: t('ui.waiting'),
-    paused: t('ui.paused'),
-    interrupted: t('ui.interrupted'),
-    failed: t('ui.failed'),
-    completed: t('ui.completed'),
-    queued: t('ui.queued'),
-  };
-  const title = (run: Run) =>
-    tasks.find((task) => task.id === run.taskId)?.title ??
-    t('ui.projectRequirementsAndCoordination');
-  // Consecutive Runs for the same work share one heading.
+  const newest = runs.slice().reverse();
   const groups: Run[][] = [];
-  for (const run of runs.slice().reverse()) {
+  for (const run of newest.slice(0, count)) {
     const last = groups.at(-1);
     if (last && last[0].taskId === run.taskId) last.push(run);
     else groups.push([run]);
   }
   return (
-    <div className="run-workspace">
-      {groups.map((group) => (
-        <section className="run-group" key={group[0].id} aria-label={title(group[0])}>
-          <h3>{title(group[0])}</h3>
-          {group.map((r) => (
-            <div className={`run-row status-${r.status}`} key={r.id}>
-              <span className={`status-dot ${isRunning(r.status) ? 'live' : ''}`} />
-              <div>
-                <strong>
-                  {t(`team.role.${r.role}`)} <RunModel run={r} />
-                </strong>
-                {r.error && <em>{host(r.error, r.errorDescriptor)}</em>}
-                <TaskRuntimeBadges state={state} taskId={r.taskId} runId={r.id} />
-                <RunRecord run={r} />
-              </div>
-              <div className="run-meta">
-                <span className={`run-status ${r.status}`}>{statusLabel[r.status]}</span>
-                <span>
-                  {r.endedAt && (
-                    <span className="run-duration">
-                      {duration((Date.parse(r.endedAt) - Date.parse(r.startedAt)) / 1000)} ·{' '}
-                    </span>
-                  )}
-                  <time dateTime={r.startedAt}>{time(r.startedAt)}</time>
-                </span>
-              </div>
-            </div>
-          ))}
-        </section>
-      ))}
-    </div>
-  );
-}
-
-/** Which model ran: a Run that started before anyone configured one says so plainly. */
-function RunModel({ run: r }: { run: Run }) {
-  const { t } = useLocale();
-  const model = r.modelIdentity?.model ?? r.model?.model ?? r.profileConfig?.model;
-  if (model && unset(model)) return <span>{t('runtime.unconfigured')}</span>;
-  const provider =
-    r.agentKind === 'omp'
-      ? (r.modelIdentity?.providerId ?? r.profileConfig?.providerId ?? t('usage.unknown'))
-      : r.provider?.kind === 'custom'
-        ? r.provider.name
-        : t('ui.officialCodexLogin');
-  return (
-    <span>
-      {provider} · {model ?? t('ui.modelNotRecorded')} /{' '}
-      {r.profileConfig?.effort ?? t('ui.unknownEffort')}
-    </span>
+    <section className="run-log" aria-label={t('project.runs')}>
+      {groups.map((group) => {
+        const task = tasks.find((x) => x.id === group[0].taskId);
+        return (
+          <section className="run-group" key={group[0].id}>
+            <h3>
+              {task ? (
+                <a
+                  href={routeHref({
+                    page: 'task',
+                    projectId: task.projectId,
+                    taskId: task.id,
+                    view: 'process',
+                  })}
+                >
+                  {task.title}
+                </a>
+              ) : (
+                t('ui.projectRequirementsAndCoordination')
+              )}
+            </h3>
+            <ol className="record-list">
+              {group.map((run) => (
+                <RunRow key={run.id} state={state} run={run} />
+              ))}
+            </ol>
+          </section>
+        );
+      })}
+      {newest.length > count && (
+        <button className="record-more" onClick={() => setCount((c) => c + page * 2)}>
+          {t('process.earlier', { count: newest.length - count })}
+        </button>
+      )}
+    </section>
   );
 }

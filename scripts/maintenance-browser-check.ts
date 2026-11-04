@@ -10,7 +10,14 @@ import { createApp } from '../src/server/app.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { choosePreference } from './browser-preferences.ts';
-import { backToWork, clickInSidebar, closeDrawer, openPage, openTask } from './browser-pages.ts';
+import {
+  backToWork,
+  clickInSidebar,
+  closeDrawer,
+  openPage,
+  openSection,
+  openTask,
+} from './browser-pages.ts';
 
 /** Exercises the built production assets, never a Vite development server. */
 export async function checkMaintenance() {
@@ -236,9 +243,13 @@ export async function checkMaintenance() {
     assert.equal(await dialog.locator('.inline-warning').count(), 0);
     assert.equal(await dialog.getByRole('button', { name: /Resume|Pause/ }).count(), 0);
     assert.equal(
-      await dialog.getByRole('link', { name: 'PR', exact: true }).getAttribute('href'),
+      await dialog
+        .locator('.task-interventions')
+        .getByRole('link', { name: 'PR #7', exact: true })
+        .getAttribute('href'),
       'https://github.com/example/history/pull/7',
     );
+    await openSection(page, 'task.tab.spec');
     await dialog.getByText('External delivery:', { exact: false }).waitFor();
     assert.ok(scripts.some((url) => /\/task-detail-/.test(url)));
     const originalDialog = await dialog.elementHandle();
@@ -247,6 +258,9 @@ export async function checkMaintenance() {
       .getByRole('button', { name: 'Copy', exact: true })
       .first()
       .elementHandle();
+    // A short window makes the specification section scroll.
+    const viewport = page.viewportSize()!;
+    await page.setViewportSize({ width: viewport.width, height: 360 });
     await dialog.evaluate((element) => {
       element.scrollTop = 140;
     });
@@ -267,6 +281,7 @@ export async function checkMaintenance() {
       true,
     );
     assert.equal(await dialog.evaluate((element) => element.scrollTop), detailScroll);
+    await page.setViewportSize(viewport);
     await backToWork(page);
     await card.click();
     await dialog.locator('.historical-completion').waitFor();
@@ -408,6 +423,7 @@ export async function checkMaintenance() {
         await dialog.getByText(`Incident ${added.id}`, { exact: false }).waitFor();
       }
       await openPage(page, 'project');
+      await openSection(page, 'project.tab.runs');
       const runRow = page
         .getByRole('region', { name: 'Run log', exact: true })
         .locator('.run-row')

@@ -584,23 +584,34 @@
 .receipt-review.changes .receipt-note strong {
   color: var(--danger);
 }
-.receipt .test-evidence summary {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 12px;
+.receipt .fold {
+  margin-inline: -8px;
+}
+.receipt .fold > summary {
+  min-height: 34px;
+  padding: 6px 8px 6px 26px;
+  gap: 12px;
+}
+.receipt .fold > summary::before {
+  left: 10px;
 }
 .receipt .test-evidence summary code {
+  flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
+  font-size: 12px;
 }
 .receipt .test-evidence summary span {
   color: var(--faint);
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
-.receipt details > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
+.receipt .test-evidence.failed summary code {
+  color: var(--danger);
+}
+.receipt details > .log-block,
+.receipt details > .markdown-block {
+  margin: 4px 8px 10px 26px;
 }
 
 .task-interventions {
@@ -649,43 +660,6 @@
   font-size: 11px;
   white-space: nowrap;
 }
-.project-page .context-heading {
-  position: static;
-  margin: 0 0 16px;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-.project-page .context-heading h1 {
-  font-size: 20px;
-}
-.project-page .metrics {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  max-width: none;
-  padding: 10px 0 22px;
-  gap: 14px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 20px;
-}
-.project-page .domain-documents {
-  max-height: none;
-  overflow: visible;
-  margin-top: 22px;
-}
-.project-section {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--line);
-}
-.project-section > h2 {
-  font-size: 15px;
-  font-weight: 650;
-}
-.project-section > p.muted {
-  margin: 4px 0 14px;
-  font-size: 12px;
-}
-
 /* ---------- Phone ---------- */
 @media (max-width: 660px) {
   .main {

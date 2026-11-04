@@ -529,7 +529,26 @@ export async function checkUsability() {
       'a reply moving into a completed process stays visible while being read',
     );
     await page.setViewportSize({ width: 1366, height: 768 });
+    // Collapsed or narrowed to a rail, every sidebar icon shares one vertical axis.
+    const railCenters = () =>
+      page.locator('.sidebar').evaluate((sidebar) =>
+        [...sidebar.querySelectorAll('svg')]
+          .map((icon) => icon.getBoundingClientRect())
+          .filter((box) => box.width > 0)
+          .map((box) => Math.round(box.left + box.width / 2)),
+      );
+    const assertRailAligned = async (label: string) => {
+      const centers = await railCenters();
+      assert.ok(
+        Math.max(...centers) - Math.min(...centers) <= 1,
+        `${label}: sidebar icons are centered on one axis, got ${centers.join(', ')}`,
+      );
+    };
     await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
+    await assertRailAligned('collapsed sidebar');
+    await page.setViewportSize({ width: 760, height: 768 });
+    await assertRailAligned('760px rail');
+    await page.setViewportSize({ width: 1366, height: 768 });
     await page.reload();
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await page.setViewportSize({ width: 390, height: 500 });

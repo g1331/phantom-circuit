@@ -15,7 +15,8 @@ import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
 import { RunList } from './run-list.tsx';
 import { ClaimOrder } from './task-priority.tsx';
-import { ProjectContext } from './project-context.tsx';
+import { DomainDocuments, ProjectContext, ProjectHeader } from './project-context.tsx';
+import { PageTabs } from './fold.tsx';
 import { Modal } from './ui.tsx';
 import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
 import { TeamRoom } from './team-room.tsx';
@@ -35,6 +36,7 @@ function App() {
   const [state, setState] = useState<Snapshot>();
   const [route, go] = useRoute();
   const page = route.page;
+  const projectView = route.view === 'docs' || route.view === 'runs' ? route.view : 'overview';
   const [drawer, setDrawer] = useState(false);
   const [workQuery, setWorkQuery] = useState('');
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
@@ -561,6 +563,7 @@ function App() {
                 state={state}
                 projectId={project.id}
                 taskId={route.taskId}
+                view={route.view}
                 schedule={currentSchedule}
                 busy={busy}
                 act={act}
@@ -582,34 +585,50 @@ function App() {
             )}
             {page === 'project' && (
               <div className="page project-page">
-                <ProjectContext
-                  project={project}
-                  state={state}
-                  repos={repos}
-                  tasks={tasks}
-                  active={active}
-                  busy={busy}
-                  act={act}
-                  projectAgent={projectAgent}
-                  pmProfile={pmProfile}
-                  onOpenModal={setModal}
-                  onConfigureRepo={setRepoConfig}
+                <ProjectHeader project={project} onOpenModal={setModal} />
+                <PageTabs
+                  label={t('tabs.project')}
+                  route={{ page: 'project', projectId: project.id }}
+                  current={projectView}
+                  tabs={[
+                    { view: 'overview', label: t('project.tab.overview') },
+                    {
+                      view: 'docs',
+                      label: t('project.tab.docs'),
+                      count: state.documents.filter((d) => d.projectId === project.id).length,
+                    },
+                    { view: 'runs', label: t('project.tab.runs') },
+                  ]}
                 />
-                <section className="project-section" aria-label={t('project.claims')}>
-                  <ClaimOrder
-                    schedule={currentSchedule}
-                    projects={state.projects}
-                    locale={locale}
-                    refresh={() => setScheduleRefresh((n) => n + 1)}
-                    error={scheduleError?.projectId === project.id ? scheduleError.message : ''}
-                    refreshing={scheduleLoading}
+                {projectView === 'overview' && (
+                  <ProjectContext
+                    project={project}
+                    state={state}
+                    repos={repos}
+                    tasks={tasks}
+                    active={active}
+                    busy={busy}
+                    act={act}
+                    projectAgent={projectAgent}
+                    pmProfile={pmProfile}
+                    onOpenModal={setModal}
+                    onConfigureRepo={setRepoConfig}
+                    claims={
+                      <ClaimOrder
+                        schedule={currentSchedule}
+                        projects={state.projects}
+                        locale={locale}
+                        refresh={() => setScheduleRefresh((n) => n + 1)}
+                        error={
+                          scheduleError?.projectId === project.id ? scheduleError.message : ''
+                        }
+                        refreshing={scheduleLoading}
+                      />
+                    }
                   />
-                </section>
-                <section className="project-section" aria-label={t('project.runs')}>
-                  <h2>{t('project.runs')}</h2>
-                  <p className="muted">{t('project.runsHint')}</p>
-                  <RunList state={state} runs={runs} tasks={tasks} />
-                </section>
+                )}
+                {projectView === 'docs' && <DomainDocuments state={state} project={project} />}
+                {projectView === 'runs' && <RunList state={state} runs={runs} tasks={tasks} />}
               </div>
             )}
             {nav('bar')}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren } from 'lucide-react';
 import type { Role, Snapshot } from '../shared/types.ts';
 import { teamView, type TeamMember, type TeamWork, type WorkStep } from '../shared/team.ts';
@@ -103,6 +103,16 @@ function Work({ work, onOpen }: { work: TeamWork; onOpen: (id: string) => void }
   );
 }
 
+function feedGroups<T extends { taskTitle?: string }>(items: T[]) {
+  const groups: T[][] = [];
+  for (const item of items) {
+    const last = groups.at(-1);
+    if (last && last[0].taskTitle === item.taskTitle) last.push(item);
+    else groups.push([item]);
+  }
+  return groups;
+}
+
 export function TeamRoom({
   state,
   projectId,
@@ -170,14 +180,16 @@ export function TeamRoom({
         </section>
       )}
 
-      <section className="team-section team-members-section">
-        {view.members.length > 0 && <h3>{t('team.members')}</h3>}
-        <ul className="team-members">
-          {view.members.map((member) => (
-            <Member key={member.id} member={member} now={now} />
-          ))}
-        </ul>
-      </section>
+      {view.members.length > 0 && (
+        <section className="team-section team-members-section">
+          <h3>{t('team.members')}</h3>
+          <ul className="team-members">
+            {view.members.map((member) => (
+              <Member key={member.id} member={member} now={now} />
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="team-section">
         <h3>{t('team.work')}</h3>
@@ -196,25 +208,25 @@ export function TeamRoom({
       <section className="team-section">
         <h3>{t('team.feed')}</h3>
         {view.feed.length ? (
-          <ol className="team-feed">
-            {view.feed.map((item, i, items) => (
-              <React.Fragment key={item.id}>
-                {/* Consecutive entries for the same work share one heading. */}
-                {item.taskTitle !== items[i - 1]?.taskTitle && (
-                  <li className="team-feed-task">{item.taskTitle ?? t('team.feedGeneral')}</li>
-                )}
-                <li className={`feed-${item.kind} role-${item.role}`}>
-                  <time dateTime={item.at}>{time(item.at)}</time>
-                  <span>
-                    <strong>{t(`team.role.${item.role}`)}</strong> {t(`team.feed.${item.kind}`)}
-                  </span>
-                  <span className="team-feed-took">
-                    {t('team.turnTook', { duration: duration(item.durationMs / 1000) })}
-                  </span>
-                </li>
-              </React.Fragment>
-            ))}
-          </ol>
+          // Consecutive entries for the same work share one heading, as in the run log.
+          feedGroups(view.feed).map((group) => (
+            <section className="team-feed-group" key={group[0].id}>
+              <h4>{group[0].taskTitle ?? t('team.feedGeneral')}</h4>
+              <ol className="team-feed record-list">
+                {group.map((item) => (
+                  <li key={item.id} className={`feed-${item.kind} role-${item.role}`}>
+                    <time dateTime={item.at}>{time(item.at)}</time>
+                    <span>
+                      <strong>{t(`team.role.${item.role}`)}</strong> {t(`team.feed.${item.kind}`)}
+                    </span>
+                    <span className="team-feed-took">
+                      {t('team.turnTook', { duration: duration(item.durationMs / 1000) })}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ))
         ) : (
           <p className="team-empty">{t('team.feedEmpty')}</p>
         )}
