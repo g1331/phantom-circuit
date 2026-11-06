@@ -570,7 +570,7 @@ function App() {
                 reload={reload}
                 onDraft={(draft) => {
                   go({ page: 'home', projectId: project.id });
-                  composerRef.current?.setDraft(draft, 'implement');
+                  composerRef.current?.setDraft(draft.content, draft.intent);
                 }}
               />
             )}

@@ -8,8 +8,32 @@ import { OwnerConversation } from './owner-conversation.tsx';
 import { Receipt } from './receipt.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, taskAttention } from '../shared/task-history.ts';
+import { hasOwner, teamView, type TeamMember, type TeamWork } from '../shared/team.ts';
 
 export type TaskView = 'overview' | 'spec' | 'process';
+
+function progressFor({
+  task,
+  work,
+  member,
+  needsDecision,
+}: {
+  task: Task;
+  work?: TeamWork;
+  member?: TeamMember;
+  needsDecision: boolean;
+}) {
+  if (task.stage === 'done') return 'delivered';
+  if (task.stage === 'cancelled') return 'cancelled';
+  if (task.pausedByUser && task.control === 'paused') return 'paused';
+  if (needsDecision) return 'needsYou';
+  if (member) return member.activity;
+  if (work?.attention === 'blocked') return 'teamHandling';
+  if (work?.step === 'planned') return 'queued';
+  if (task.stage === 'reviewing') return 'reviewQueued';
+  if (task.stage === 'merging') return 'merging';
+  return 'waiting';
+}
 
 /** One section of a task page: where it stands, what was asked, or how it went. */
 export function TaskDetail({
@@ -65,54 +89,125 @@ function TaskOverview({
   const historicalIncidents =
     state.incidents?.filter((incident) => incidentAttention(incident, detail).historicalReason) ??
     [];
+  const team = teamView(state, detail.projectId);
+  const work = team.work.find((work) => work.taskId === detail.id);
+  const member = team.members.find((member) => member.taskId === detail.id);
+  const requests = team.waiting.filter(
+    (request) =>
+      request.taskId === detail.id &&
+      request.kind !== 'blocked' &&
+      (request.kind !== 'decision' ||
+        state.incidents?.some(
+          (incident) =>
+            incident.id === request.id && incidentAttention(incident, detail).actionable,
+        )),
+  );
+  const status = progressFor({ task: detail, work, member, needsDecision: requests.length > 0 });
+  const next =
+    status === 'delivered' || status === 'cancelled' || status === 'paused' || status === 'needsYou'
+      ? status
+      : 'team';
+  const conversation =
+    hasOwner(detail) || state.ownerMessages?.some((line) => line.taskId === detail.id);
   return (
-    <div className="task-detail">
-      <TaskRuntimeBadges state={state} taskId={detail.id} />
-      <ProjectActions
-        state={{
-          ...state,
-          incidents: [],
-          recoveryItems: [],
-          clarifications: state.clarifications?.filter((c) => c.taskId === detail.id && c.review),
-        }}
-        project={state.projects.find((p) => p.id === detail.projectId)!}
-        reload={reload}
-      />
-      {attention.historicalReason && (
-        <section className="historical-completion" aria-label={t('tasks.historicalCompletion')}>
-          <p>{t('tasks.historicalCompletion')}</p>
-          <p className="muted">{attention.historicalReason}</p>
-          {!!historicalIncidents.length && (
-            <Fold className="historical-incidents" title={t('tasks.historicalIncidents')}>
-              {historicalIncidents.map((incident) => (
-                <article key={incident.id}>
-                  <p>
-                    Incident {incident.id} · {t(`actions.${incident.status}`)}
-                  </p>
-                  <p>{incident.message}</p>
-                  <Fold className="fold-quiet" title={t('ui.technicalRecords')}>
-                    <pre className="log-block">{JSON.stringify(incident, null, 2)}</pre>
-                  </Fold>
-                </article>
+    <div className="task-detail task-workspace">
+      <section className="task-progress" aria-label={t('task.progress')}>
+        <p className="task-section-label">{t('task.progress')}</p>
+        <h2>{t(`task.progress.${status}`)}</h2>
+        <p className="muted task-next-step">{t(`task.next.${next}`)}</p>
+        {requests.length > 0 && (
+          <div className="task-decisions">
+            {requests.map((request) => (
+              <p key={request.id}>{request.text}</p>
+            ))}
+          </div>
+        )}
+        {attention.blocked && (
+          <div className="task-blocker inline-warning">
+            <Clamp height={100}>
+              <p>{host(attention.blocked, detail.blockedDescriptor)}</p>
+            </Clamp>
+          </div>
+        )}
+        <ProjectActions
+          state={{
+            ...state,
+            incidents: [],
+            recoveryItems: [],
+            clarifications: state.clarifications?.filter((c) => c.taskId === detail.id && c.review),
+          }}
+          project={state.projects.find((p) => p.id === detail.projectId)!}
+          reload={reload}
+        />
+      </section>
+      <div className="task-owner-context">
+        {conversation ? (
+          <OwnerConversation task={detail} state={state} busy={busy} act={act} />
+        ) : (
+          <section className="task-owner-empty">
+            <h3>{t('task.ownerPending')}</h3>
+            <p className="muted">{t(finished ? 'task.ownerFinished' : 'task.ownerPendingHint')}</p>
+          </section>
+        )}
+      </div>
+      <section className="task-acceptance-summary" aria-label={t('task.expected')}>
+        <h3>{t('task.expected')}</h3>
+        {detail.acceptance.length ? (
+          <Clamp height={140}>
+            <ul>
+              {detail.acceptance.map((criterion, index) => (
+                <li key={index}>
+                  <MarkdownContent
+                    content={criterion}
+                    copyable={false}
+                    label={t('task.criterion', { count: index + 1 })}
+                  />
+                </li>
               ))}
-            </Fold>
-          )}
-        </section>
-      )}
-      {attention.blocked && (
-        <div className="inline-warning">{host(attention.blocked, detail.blockedDescriptor)}</div>
-      )}
-      <Receipt task={detail} state={state} />
-      <OwnerConversation task={detail} state={state} busy={busy} act={act} />
-      {!finished && (
-        <section className="detail-schedule">
-          <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />
-          <ClaimConditions
-            entry={schedule?.tasks.find((entry) => entry.taskId === detail.id)}
-            locale={locale}
-          />
-        </section>
-      )}
+            </ul>
+          </Clamp>
+        ) : (
+          <p className="muted">{t('task.noAcceptance')}</p>
+        )}
+      </section>
+      <div className="task-evidence">
+        {attention.historicalReason && (
+          <section className="historical-completion" aria-label={t('tasks.historicalCompletion')}>
+            <p>{t('tasks.historicalCompletion')}</p>
+            <p className="muted">{attention.historicalReason}</p>
+            {!!historicalIncidents.length && (
+              <Fold className="historical-incidents" title={t('tasks.historicalIncidents')}>
+                {historicalIncidents.map((incident) => (
+                  <article key={incident.id}>
+                    <p>
+                      Incident {incident.id} · {t(`actions.${incident.status}`)}
+                    </p>
+                    <p>{incident.message}</p>
+                    <Fold className="fold-quiet" title={t('ui.technicalRecords')}>
+                      <pre className="log-block">{JSON.stringify(incident, null, 2)}</pre>
+                    </Fold>
+                  </article>
+                ))}
+              </Fold>
+            )}
+          </section>
+        )}
+        <Fold className="task-receipt-details" title={t('task.evidence')}>
+          <TaskRuntimeBadges state={state} taskId={detail.id} />
+          <Receipt task={detail} state={state} />
+        </Fold>
+        {!finished && (
+          <Fold className="task-scheduling" title={t('task.scheduling')}>
+            <section className="detail-schedule">
+              <PriorityEditor key={detail.id} task={detail} locale={locale} reload={reload} />
+              <ClaimConditions
+                entry={schedule?.tasks.find((entry) => entry.taskId === detail.id)}
+                locale={locale}
+              />
+            </section>
+          </Fold>
+        )}
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { chromium, type Page } from 'playwright';
 import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { checkOwnerConversation } from './browser-owner.ts';
+import { checkWorkspace } from './browser-workspace.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer, type AddressInfo } from 'node:net';
@@ -750,6 +751,7 @@ try {
   }
   await openTask(page, '简化仓库接入与授权提示');
   const taskPage = page.locator('.task-page');
+  await taskPage.locator('.task-receipt-details > summary').click();
   const receipt = taskPage.getByRole('region', { name: '交付回执', exact: true });
   await receipt.getByRole('heading', { name: '验收标准' }).waitFor();
   assert.equal(
@@ -825,12 +827,14 @@ try {
       });
   }
   await openSection(page, 'task.tab.overview');
+  await page.locator('.task-receipt-details > summary').click();
   await page
     .getByRole('region', { name: '交付回执', exact: true })
     .getByText('已合入 main', { exact: false })
     .waitFor();
   // Rolling back a delivery is a request to the liaison: the conversation opens with it prefilled.
   const deliveredTitle = await page.getByRole('heading', { level: 1 }).innerText();
+  await page.locator('.task-controls > summary').click();
   await page.getByRole('button', { name: '撤销这次交付', exact: true }).click();
   await page.waitForURL(/#\/p\/[^/]+$/);
   const rollbackDraft = page.getByLabel('给 PM 的消息', { exact: true });
@@ -1230,6 +1234,7 @@ try {
   await checkRuntimeUI();
   await checkReviewClarification();
   await checkMaintenance();
+  await checkWorkspace();
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, page links and phone drawer, work grouped by attention with search, task pages with delivery receipts and back navigation, project page with claim order and run log, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',

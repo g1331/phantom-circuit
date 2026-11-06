@@ -8,11 +8,13 @@ import {
   Undo2,
   UserRoundPlus,
 } from 'lucide-react';
-import type { SchedulingExplanation, Snapshot } from '../shared/types.ts';
+import type { Message, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
+import { incidentAttention } from '../shared/task-history.ts';
 import { api } from './api.ts';
 import { DeferredTaskDetail } from './deferred-panels.tsx';
-import { PageTabs } from './fold.tsx';
+import { Fold, PageTabs } from './fold.tsx';
+import { TaskExperience } from './task-experience.tsx';
 import type { TaskView } from './task-detail.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
@@ -25,6 +27,8 @@ export const profileKeys = {
   pm: 'profile.pm',
   review: 'profile.review',
 } as const;
+
+export type TaskDraft = { content: string; intent: NonNullable<Message['intent']> };
 
 /** One piece of work as an addressable page: where it stands, its receipt, then the detail. */
 export function TaskPage({
@@ -46,14 +50,12 @@ export function TaskPage({
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
   reload: () => Promise<void>;
-  /** Prefills the liaison conversation, for requests that become new work (a rollback). */
-  onDraft: (content: string) => void;
+  onDraft: (draft: TaskDraft) => void;
 }) {
   const { t } = useLocale();
   const task = state.tasks.find((x) => x.id === taskId && x.projectId === projectId);
   const view = useMemo(() => teamView(state, projectId), [state, projectId]);
   const work = view.work.find((w) => w.taskId === taskId);
-  const member = view.members.find((m) => m.taskId === taskId);
   const back = (
     <a className="page-back" href={routeHref({ page: 'work', projectId })}>
       <ArrowLeft size={14} /> {t('work.back')}
@@ -75,6 +77,15 @@ export function TaskPage({
   // A fresh developer only helps unfinished work that already has code and nobody on it now.
   const canReassign = !!task.worktree && !['done', 'cancelled'].includes(task.stage) && !devWorking;
   const stuck = canReassign && (work.rounds >= maxReworks || work.attention === 'blocked');
+  const needsDecision = view.waiting.some(
+    (request) =>
+      request.taskId === task.id &&
+      request.kind !== 'blocked' &&
+      (request.kind !== 'decision' ||
+        state.incidents?.some(
+          (incident) => incident.id === request.id && incidentAttention(incident, task).actionable,
+        )),
+  );
   const reassign = (
     <button
       className={stuck ? 'primary-button' : 'secondary-button'}
@@ -90,27 +101,78 @@ export function TaskPage({
       <header className="page-header task-header">
         <h1>{task.title}</h1>
         <p className={`task-status group-${group}`}>
-          <span className="task-status-group">{t(`work.group.${group}`)}</span>
+          <span className="task-status-group">
+            {t(
+              group === 'needs_you' && !needsDecision
+                ? 'task.progress.teamHandling'
+                : `work.group.${group}`,
+            )}
+          </span>
           {group === 'moving' && <span>{t(`team.step.${work.step}`)}</span>}
-          {member && (
-            <span>
-              {t(`team.role.${member.role}`)} · {t(`team.doing.${member.activity}`)}
-            </span>
-          )}
-          <span>{t(profileKeys[task.profile])}</span>
         </p>
+      </header>
+      <PageTabs
+        label={t('tabs.task')}
+        route={{ page: 'task', projectId, taskId }}
+        current={section}
+        tabs={[
+          { view: 'overview', label: t('task.tab.overview') },
+          { view: 'spec', label: t('task.tab.spec'), count: rounds },
+          { view: 'process', label: t('task.tab.process') },
+        ]}
+      />
+      {section === 'overview' &&
+        (task.stage === 'done' ? (
+          <TaskExperience task={task} state={state} busy={busy} act={act} onDraft={onDraft} />
+        ) : (
+          <div className="task-collaborate">
+            <p className="muted">{t('task.adjustHint')}</p>
+            <button
+              className="secondary-button"
+              onClick={() =>
+                onDraft({
+                  content: t('task.discussDraft', { title: task.title }),
+                  intent: 'discuss',
+                })
+              }
+            >
+              {t('task.discuss')}
+            </button>
+          </div>
+        ))}
+      {stuck && (
+        <div className="task-trouble" role="status">
+          <p>
+            <strong>{t('task.trouble')}</strong> {t('task.reassignHint')}
+          </p>
+          {reassign}
+        </div>
+      )}
+      <DeferredTaskDetail
+        key={task.id}
+        view={section}
+        task={task}
+        state={state}
+        schedule={schedule}
+        busy={busy}
+        act={act}
+        reload={reload}
+      />
+      <Fold className="task-controls" title={t('task.controls')}>
+        <p className="muted task-control-hint">{t('task.controlHint')}</p>
         <div className="task-interventions" role="group" aria-label={t('task.controls')}>
           {canReassign && !stuck && reassign}
           {task.stage === 'done' && (
             <button
               className="secondary-button"
               onClick={() =>
-                onDraft(
-                  t('task.rollbackDraft', {
+                onDraft({
+                  content: t('task.rollbackDraft', {
                     title: task.title,
                     pr: task.pr ? ` (PR #${task.pr})` : '',
                   }),
-                )
+                  intent: 'implement',
+                })
               }
             >
               <Undo2 size={14} /> {t('task.rollback')}
@@ -151,36 +213,8 @@ export function TaskPage({
             </a>
           )}
         </div>
-      </header>
-      {stuck && (
-        // The team surfaces the control that fits the trouble it sees (ADR 0013).
-        <div className="task-trouble" role="status">
-          <p>
-            <strong>{t('task.trouble')}</strong> {t('task.reassignHint')}
-          </p>
-          {reassign}
-        </div>
-      )}
-      <PageTabs
-        label={t('tabs.task')}
-        route={{ page: 'task', projectId, taskId }}
-        current={section}
-        tabs={[
-          { view: 'overview', label: t('task.tab.overview') },
-          { view: 'spec', label: t('task.tab.spec'), count: rounds },
-          { view: 'process', label: t('task.tab.process') },
-        ]}
-      />
-      <DeferredTaskDetail
-        key={task.id}
-        view={section}
-        task={task}
-        state={state}
-        schedule={schedule}
-        busy={busy}
-        act={act}
-        reload={reload}
-      />
+        <p className="muted task-technical-profile">{t(profileKeys[task.profile])}</p>
+      </Fold>
     </div>
   );
 }
