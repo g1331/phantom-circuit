@@ -637,8 +637,16 @@ export class Store {
     return this.saveProjectRuntimeConfig(projectId, { secondaryReviewProfiles: profiles });
   }
   bindRunThread(run: Run, threadId: string) {
-    this.put('run', run.id, { ...this.get('run', run.id)!, threadId });
+    const bound = { ...this.get('run', run.id)!, threadId };
+    this.put('run', run.id, bound);
     if (run.ownerMessageId) return;
+    if (
+      run.role === 'dev' &&
+      run.taskId &&
+      bound.status === 'running' &&
+      hasOwner(this.task(run.taskId))
+    )
+      this.updateTask(run.taskId, { ownerRunId: run.id });
     const project = this.project(run.projectId);
     // A late reply must not restore a binding invalidated while this Run was in flight.
     if ((project.profileVersion ?? 0) !== (run.profileVersion ?? 0)) return;
@@ -653,7 +661,6 @@ export class Store {
       });
     if (run.role === 'dev' && run.taskId)
       this.updateTask(run.taskId, {
-        ownerRunId: run.id,
         devThreadId: threadId,
         devThreadProviderId: run.profileConfig?.providerId ?? run.model?.providerId ?? 'codex',
         devThreadAgentKind: run.agentKind,

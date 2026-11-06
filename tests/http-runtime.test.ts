@@ -332,6 +332,52 @@ test('task usage keeps multi-currency totals and per-run unknown coverage visibl
   assert.equal(body.usage.runs, 3);
 });
 
+test('task records include the complete scoped history after it leaves the recent event feed', async (t) => {
+  const { request, store } = await fixture(t);
+  const project = store.createProject('History', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'history',
+    path: '/fixture/history',
+    github: 'owner/history',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const source = store.addMessage(project.id, 'user', 'Keep the work history', 'implement');
+  const task = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId: source.id,
+    title: 'Historical work',
+    spec: 'Keep the complete record',
+    acceptance: ['Every event remains readable'],
+    dependencies: [],
+    kind: 'backend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const initialEvents = store.snapshot().events.filter((event) => event.taskId === task.id);
+  const recorded = Array.from({ length: 225 }, (_, index) =>
+    store.event('command', `work history ${index}`, { projectId: project.id, taskId: task.id }),
+  );
+  for (let index = 0; index < 225; index++)
+    store.event('pm', `unrelated event ${index}`, { projectId: project.id });
+  assert.equal(
+    store.snapshot().events.some((event) => event.taskId === task.id),
+    false,
+  );
+  const response = await request('GET', `/tasks/${task.id}/usage`);
+  assert.equal(response.statusCode, 200, response.body);
+  const events = response.json().events;
+  assert.deepEqual(
+    events?.map((event: { id: number }) => event.id),
+    [...initialEvents.map((event) => event.id).sort((a, b) => a - b), ...recorded],
+  );
+  assert.equal(events.at(-225).message, 'work history 0');
+  assert.equal(events.at(-1).message, 'work history 224');
+  assert.ok(events.every((event: { taskId: string }) => event.taskId === task.id));
+});
+
 test('project-scoped runtime actions reject cross-project IDs and invalid input with locale descriptors', async (t) => {
   const { request, store } = await fixture(t);
   const first = store.createProject('First', '');

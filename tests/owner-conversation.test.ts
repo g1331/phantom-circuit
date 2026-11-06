@@ -17,6 +17,7 @@ async function scenario(
   options: {
     live?: boolean;
     forkError?: boolean;
+    beforeThread?: () => Promise<void>;
     owner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
     ownerStop?: () => Promise<void>;
   } = {},
@@ -43,6 +44,7 @@ async function scenario(
       this.options = o;
       const id = o.threadId ?? `thread-${++serial}`;
       if (!history.has(id)) history.set(id, []);
+      await options.beforeThread?.();
       return id;
     }
     async forkReadOnlyThread(o: AgentReadOnlyForkOptions) {
@@ -248,6 +250,44 @@ test('project backend changes do not hand the existing owner history to another 
       'owner must not reinstate the invalidated scheduler binding',
     );
   } finally {
+    await s.close();
+  }
+});
+
+test('an owner starting during a configuration change keeps its working memory without restoring resume bindings', async () => {
+  let requested = false;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const s = await scenario({
+    live: true,
+    beforeThread: async () => {
+      requested = true;
+      await gate;
+    },
+  });
+  try {
+    await s.engine.start();
+    await s.tickUntil(() => requested, 'Dev creating its thread');
+    s.store.saveProjectAgentSelection(s.task.projectId, { mode: 'override', agent: 'omp' });
+    release();
+    await s.tickUntil(s.developing, 'Dev started');
+    const question = s.store.addOwnerMessage(s.task.id, '为什么这样实现？');
+    await s.tickUntil(
+      () => ['answered', 'failed'].includes(s.store.get('ownerMessage', question.id)!.status!),
+      'question settled',
+    );
+    assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
+    assert.equal(s.store.task(s.task.id).devThreadId, undefined);
+    assert.equal(
+      s.store.get('run', s.store.get('ownerMessage', question.id)!.runId!)!.agentKind,
+      'codex',
+    );
+    assert.equal(s.lines().find((message) => message.role === 'owner')!.content, decision);
+    assert.equal(s.devInterrupted(), false);
+  } finally {
+    release();
     await s.close();
   }
 });

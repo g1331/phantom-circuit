@@ -347,6 +347,7 @@ export function EventLog({ events }: { events: Event[] }) {
 }
 
 type TaskUsageResult = {
+  events: Event[];
   usage?: UsageAggregate;
   cost?: CostEstimate;
   costs?: CostEstimate[];
@@ -370,6 +371,7 @@ export function TaskProcess({
   const { t, duration, number } = useLocale();
   const [result, setResult] = useState<TaskUsageResult>();
   const [error, setError] = useState<string | Error>('');
+  const latestEvent = state.events.find((event) => event.taskId === taskId)?.id;
   useEffect(() => {
     let current = true;
     setError('');
@@ -383,7 +385,7 @@ export function TaskProcess({
     return () => {
       current = false;
     };
-  }, [taskId, revision]);
+  }, [taskId, revision, latestEvent]);
   const usage = result?.usage;
   const costs = result?.costs ?? (result?.cost ? [result.cost] : []);
   const count = (value?: number) => (value === undefined ? t('usage.unknown') : number(value));
@@ -445,7 +447,7 @@ export function TaskProcess({
         </header>
         {result && <RunRows state={state} runs={runs} costs={result.runCosts} />}
       </section>
-      <EventLog events={state.events.filter((e) => e.taskId === taskId)} />
+      {result && <EventLog events={result.events} />}
     </div>
   );
 }

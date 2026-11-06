@@ -632,6 +632,7 @@ export function createApp(
       costs,
       runCosts,
       runs,
+      events: store.taskEvents(id),
       coverage: { available, total: usageFields.length, missing },
       durationMs,
       elapsedMs,
