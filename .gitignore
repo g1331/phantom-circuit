@@ -2,5 +2,7 @@ node_modules/
 dist/
 .phantom/
 .cache/
+.audit/
+.cortexkit/
 test-results/
 *.log
