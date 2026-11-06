@@ -242,6 +242,7 @@ export async function checkMaintenance() {
     assert.equal(await historicalIncidents.locator('button').count(), 0);
     assert.equal(await dialog.locator('.inline-warning').count(), 0);
     assert.equal(await dialog.getByRole('button', { name: /Resume|Pause/ }).count(), 0);
+    await dialog.locator('.task-controls > summary').click();
     assert.equal(
       await dialog
         .locator('.task-interventions')
@@ -294,6 +295,7 @@ export async function checkMaintenance() {
       0,
       'new evidence failure with identical prose remains an actionable warning',
     );
+    await dialog.locator('.task-receipt-details > summary').click();
     await dialog
       .getByRole('region', { name: 'Delivery receipt', exact: true })
       .getByText('1 check failed', { exact: false })

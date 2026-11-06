@@ -257,6 +257,7 @@ export async function checkRuntimeUI() {
           },
         },
         runs: snapshot.runs.filter((run) => run.taskId === task.id),
+        events: snapshot.events.filter((event) => event.taskId === task.id),
         durationMs: 50_000,
         elapsedMs: 300_000,
       };

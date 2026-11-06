@@ -11,6 +11,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
   await openTask(page, task.title);
   // The work page is where the task's controls live now; the work list shows no priority.
   const taskPage = page.locator('.task-page');
+  await taskPage.locator('.task-scheduling > summary').click();
   const priority = taskPage.getByRole('region', { name: '优先级', exact: true });
   await priority.getByText('旧版优先级 1', { exact: false }).waitFor();
   await taskPage.getByText('任务已暂停', { exact: true }).waitFor();
@@ -59,6 +60,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
   await taskPage.getByRole('status').getByText('优先级已保存', { exact: true }).waitFor();
   assert.deepEqual(store.activeRuns(), runs);
   await page.reload();
+  await taskPage.locator('.task-scheduling > summary').click();
   await priority.getByText('优先级: 紧急', { exact: true }).waitFor();
   await backToWork(page);
   const makeCandidate = (title: string, priority: 'low' | 'high') =>
@@ -87,6 +89,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
     .getByText('高候选 / High candidate', { exact: false })
     .waitFor();
   await openTask(page, low.title);
+  await taskPage.locator('.task-scheduling > summary').click();
   await taskPage.getByLabel('选择优先级', { exact: true }).selectOption('urgent');
   await taskPage.getByLabel('优先级原因', { exact: true }).fill('Immediate delivery impact');
   await taskPage.getByRole('button', { name: '保存优先级', exact: true }).click();
@@ -102,6 +105,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
   await page.getByRole('button', { name: '刷新认领顺序', exact: true }).click();
   await order.getByText('此刻没有可认领任务，请查看各任务的等待条件。', { exact: true }).waitFor();
   await openTask(page, high.title);
+  await taskPage.locator('.task-scheduling > summary').click();
   await taskPage.getByText('等待仓库执行名额', { exact: true }).waitFor();
   store.finishRun(claimed.id, 'completed');
   store.updateTask(low.id, { stage: 'done' });
@@ -138,6 +142,7 @@ export async function checkPriority(page: Page, store: Store, task: Task, artifa
           path: resolve(artifacts, `priority-order-${locale}-${width}-${theme}.png`),
         });
         await openTask(page, task.title);
+        await taskPage.locator('.task-scheduling > summary').click();
         await taskPage
           .getByText(locale === 'en' ? 'Priority history' : '优先级历史', { exact: true })
           .click();

@@ -174,6 +174,7 @@ export async function checkUsability() {
         usage: {},
         cost: null,
         runs: [],
+        events: store.taskEvents(new URL(route.request().url()).pathname.split('/')[3]),
         coverage: { available: 0, total: 0 },
         durationMs: 0,
         elapsedMs: null,
@@ -700,6 +701,7 @@ export async function checkUsability() {
     assert.equal(await workPage.evaluate((element) => element.scrollTop), stableScroll);
     assert.equal(await search.evaluate((element) => element === document.activeElement), true);
     await openTask(page, 'Persistent task revised');
+    await page.locator('.task-scheduling > summary').click();
     await page.locator('.claim-conditions').waitFor();
     hold = new Promise<void>((resolve) => {
       release = resolve;
