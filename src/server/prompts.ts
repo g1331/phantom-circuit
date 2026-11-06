@@ -1,8 +1,9 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
 import type { Role, Task } from '../shared/types.ts';
+import { runtimePath } from './runtime-paths.ts';
 export const SKILL_REVISION = '3cca18b368ae95cdbdebbff572ccafa662551015';
-const root = resolve('.agents/skills');
+const root = runtimePath('.agents', 'skills');
 /**
  * Skills are an optional method library, not a workflow. Each role sees a catalog (name, purpose,
  * absolute path) and reads a body only when the Task calls for it; host policy decides the process.
@@ -21,7 +22,7 @@ async function skill(name: string) {
   return { file, body, description };
 }
 export async function instructions(role: Role, options: { conflict?: boolean } = {}) {
-  const base = await readFile(resolve(`prompts/${role}.md`), 'utf8');
+  const base = await readFile(runtimePath('prompts', `${role}.md`), 'utf8');
   const entries = await Promise.all(catalog[role].map(skill));
   const list = catalog[role]
     .map((name, i) => `- ${name} — ${entries[i].description} — ${entries[i].file}`)

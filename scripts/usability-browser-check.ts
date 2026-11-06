@@ -258,6 +258,9 @@ export async function checkUsability() {
                   labelX: labelBox.x,
                   labelVisible: labelBox.width > 0,
                   labelFits: label.scrollWidth <= label.clientWidth,
+                  labelText: label.textContent,
+                  labelClientWidth: label.clientWidth,
+                  labelScrollWidth: label.scrollWidth,
                   selectRight: select ? select.right : undefined,
                 };
               }),
@@ -289,7 +292,10 @@ export async function checkUsability() {
                 Math.abs(control.labelX - controls[0].labelX) < 1,
                 `${context}: text column`,
               );
-              assert.ok(control.labelFits, `${context}: readable labels`);
+              assert.ok(
+                control.labelFits,
+                `${context}: readable labels (${control.labelText}: ${control.labelScrollWidth}px required, ${control.labelClientWidth}px available)`,
+              );
             }
           }
           assert.ok(
@@ -890,13 +896,14 @@ export async function checkUsability() {
       const modal = page.locator('.modal');
       await modal.waitFor();
       // Relative to the dialog: a centered dialog moves as lazy content loads or its entrance animation ends.
-      const headerOffset = async () => {
-        const [box, frame] = [
-          await modal.locator('header').boundingBox(),
-          await modal.boundingBox(),
-        ];
-        return box && frame ? box.y - frame.y : undefined;
-      };
+      // Read both rectangles in one browser task so loading cannot move the frame between reads.
+      const headerOffset = () =>
+        modal.evaluate((element) => {
+          const header = element.querySelector('header');
+          return header
+            ? header.getBoundingClientRect().y - element.getBoundingClientRect().y
+            : undefined;
+        });
       const header = await headerOffset();
       // Settings start with their page list; other dialogs with their first field.
       const firstField = modal.locator('.modal-body :is(.settings-nav, .form label)').first();

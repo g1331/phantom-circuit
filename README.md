@@ -1,10 +1,12 @@
 # Phantom Circuit
 
-A Windows-first, self-hosted AI engineering orchestrator. Discuss requirements with a project PM, open a repository's work switch, and let isolated Dev and Review sessions work toward a verified PR merge. GitHub remains the engineering record; the local Web app handles conversation, execution and experience feedback.
+A self-hosted AI engineering team for Windows and Linux. Discuss requirements with a project PM, open a repository's work switch, and let independent Dev and Review sessions work toward a verified PR merge. GitHub remains the engineering record; the Web app handles conversation, execution and experience feedback.
 
 ## Run locally
 
-Requirements: Node.js 24+, Git, PowerShell 7+ (`pwsh.exe` on PATH on Windows), GitHub CLI (`gh auth login`), and an authenticated Oh My Pi (`omp`) installation. Codex CLI is an optional backend. The adapters have been exercised with OMP 18.1.19 and Codex app-server; run the capability probes for your installed versions. Target repositories must already have a local checkout whose `origin` matches GitHub. Configured install/build/test commands use PowerShell 7 on Windows, including `&&` chains.
+For an independently installed Linux background service, follow [Run Phantom Circuit as a Linux service](docs/linux-service.md). The development checkout and installed runtime have separate lifetimes.
+
+Requirements: Node.js 24+, Git, GitHub CLI (`gh auth login`), and an authenticated Oh My Pi (`omp`) or Codex CLI installation. Windows also requires PowerShell 7+ (`pwsh.exe` on PATH). The adapters have been exercised with OMP 18.1.19 and Codex app-server; run the capability probes for your installed versions. Target repositories must already have a local checkout whose `origin` matches GitHub. Configured install/build/test commands use PowerShell 7 on Windows and a POSIX shell on Linux.
 
 ```powershell
 npm ci
@@ -101,4 +103,4 @@ Tests use real temporary Git repositories, commits, worktrees and test commands,
 
 ## MVP boundaries
 
-Single user, loopback-only local service, trusted repositories, Windows-native execution. Worktrees and prompts do not provide container-level protection against hostile repository code. OMP and Codex are supported; cloud workers, multi-user access and automatic production deployment are outside this implementation. Arbitrary project stacks need valid commands; unsupported model/permission states are surfaced explicitly.
+Single user, loopback-only local service, trusted repositories, Windows and Linux execution. Worktrees and prompts do not provide container-level protection against hostile repository code. OMP and Codex are supported; cloud workers, multi-user access and automatic production deployment are outside this implementation. Arbitrary project stacks need valid commands; unsupported model/permission states are surfaced explicitly.

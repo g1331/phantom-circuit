@@ -82,3 +82,59 @@ test('a recovered Review runs after startup instead of holding the scheduler bar
     await rm(f.root, { recursive: true, force: true });
   }
 });
+
+test('shutdown drains a Review whose cancellation listener binds after abort', async () => {
+  const f = await devFixture('phantom-review-stop-');
+  f.github.publishPR = async () => ({}) as never;
+  let releaseStop!: () => void;
+  const stopping = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  let reviewEntered = false;
+  let abortedBeforeListener = false;
+  class Model extends Codex {
+    writable = false;
+    override async start() {}
+    override async stop() {
+      if (!this.writable) releaseStop();
+    }
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      this.writable = options.writable;
+      return this.writable ? 'dev' : 'review';
+    }
+    override async turn(
+      _thread: string,
+      _prompt: string,
+      _profile?: Parameters<Codex['turn']>[2],
+      signal?: AbortSignal,
+    ) {
+      if (this.writable) {
+        await writeFile(join(f.store.task(f.task.id).worktree!, 'a.txt'), 'done\n');
+        return 'done';
+      }
+      reviewEntered = true;
+      await stopping;
+      abortedBeforeListener = signal?.aborted === true;
+      return hang(signal);
+    }
+  }
+  const engine = new Engine(
+    f.store,
+    f.github,
+    new Workspaces(join(f.root, 'ws'), f.store),
+    f.root,
+    () => new Model(),
+  );
+  try {
+    await engine.start();
+    await engine.tick();
+    await until(() => reviewEntered, 'review turn before shutdown');
+    await engine.stop();
+    assert.equal(abortedBeforeListener, true, 'shutdown aborts before the turn binds its listener');
+    assert.equal(f.store.activeRuns().length, 0);
+  } finally {
+    await engine.stop();
+    f.store.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});

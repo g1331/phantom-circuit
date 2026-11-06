@@ -71,6 +71,8 @@ export const until = async (condition: () => boolean, label: string) => {
 
 /** A turn that never finishes on its own: it only ends when the host aborts it. */
 export const hang = (signal?: AbortSignal) =>
-  new Promise<string>((_, reject) =>
-    signal?.addEventListener('abort', () => reject(new Error('执行已暂停')), { once: true }),
-  );
+  new Promise<string>((_, reject) => {
+    const abort = () => reject(new Error('执行已暂停'));
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });

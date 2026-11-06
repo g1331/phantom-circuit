@@ -26,6 +26,7 @@ import { checkUsability } from './usability-browser-check.ts';
 import { checkRuntimeUI } from './runtime-browser-check.ts';
 import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
+import { checkReconnect } from './browser-reconnect.ts';
 import {
   backToWork,
   clickInSidebar,
@@ -1235,6 +1236,7 @@ try {
   await checkReviewClarification();
   await checkMaintenance();
   await checkWorkspace();
+  await checkReconnect();
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, page links and phone drawer, work grouped by attention with search, task pages with delivery receipts and back navigation, project page with claim order and run log, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',

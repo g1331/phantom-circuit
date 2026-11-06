@@ -2281,6 +2281,7 @@ export class Store {
         (item) =>
           item.taskId === task.id &&
           item.status === 'resumed' &&
+          !item.successorRunId &&
           (item.role === 'dev' || this.get('run', item.oldRunId)?.role === 'dev'),
       );
       const run = this.run('dev', task.projectId, task.profile, task, {
@@ -2453,6 +2454,9 @@ export class Store {
   }
 
   recover(): RecoveryItem[] {
+    const interruptedRuns = this.list('run').filter((run) =>
+      ['running', 'waiting', 'interrupted'].includes(run.status),
+    );
     for (const operation of this.list('operation'))
       if (operation.kind === 'steer' && operation.status === 'pending')
         this.put('operation', operation.id, {
@@ -2465,7 +2469,7 @@ export class Store {
         // Automatic recovery resumes this message's PM Run and settles the message itself.
         const resumes =
           (this.project(m.projectId).recoveryPolicy ?? 'automatic') === 'automatic' &&
-          this.activeRuns().some((r) => r.role === 'pm' && r.sourceMessageId === m.id);
+          interruptedRuns.some((r) => r.role === 'pm' && r.sourceMessageId === m.id);
         if (resumes) continue;
         this.put('message', m.id, { ...m, status: 'failed', draftStatus: 'failed' });
         this.addMessage(
@@ -2479,10 +2483,8 @@ export class Store {
         );
       }
     const recovered: RecoveryItem[] = this.list('recovery').map((item) => structuredClone(item));
-    for (const r of this.activeRuns()) {
-      const existing = this.list('recovery').find(
-        (item) => item.oldRunId === r.id || item.successorRunId === r.id,
-      );
+    for (const r of interruptedRuns) {
+      const existing = this.list('recovery').find((item) => item.oldRunId === r.id);
       if (existing) {
         if (!recovered.some((item) => item.id === existing.id))
           recovered.push(structuredClone(existing));

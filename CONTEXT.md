@@ -72,3 +72,6 @@ _Avoid_: Invoice, amount charged
 
 **Recovery item**: A durable record of interrupted work and the successor Run that continues its last verified phase.
 _Avoid_: Retry, new Task
+
+**Installed release**: A fixed version of the team software that runs independently of a development checkout.
+_Avoid_: Workspace, Project, development server

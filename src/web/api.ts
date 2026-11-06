@@ -22,8 +22,8 @@ export class LocalRequestError extends Error {
     super(kind === 'connection' ? 'Cannot connect to local service' : `Request failed (${status})`);
   }
 }
-export async function session() {
-  const r = await fetch('/api/session');
+export async function session(signal?: AbortSignal) {
+  const r = await fetch('/api/session', { signal });
   if (!r.ok) throw new LocalRequestError('connection');
   csrf = (await r.json()).csrf;
 }

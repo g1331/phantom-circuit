@@ -6,7 +6,6 @@ import { readFile } from 'node:fs/promises';
 import { MessageImages, imageLimits } from './images.ts';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { z } from 'zod';
 import { Store, Fault, redact } from './store.ts';
 import { Engine } from './engine.ts';
@@ -34,6 +33,7 @@ import type {
 } from '../shared/types.ts';
 import type { AgentBackend } from './agent-backend.ts';
 import { commandSchema, limit, profileSchema, profileSetSchema } from './schemas.ts';
+import { runtimePath } from './runtime-paths.ts';
 
 type RuntimeEngineContract = Engine & {
   answerClarification(
@@ -740,8 +740,8 @@ export function createApp(
       .catch((e) => store.event('preview', String(e), { projectId: store.repo(id).projectId }));
     return { starting: true };
   });
-  if (existsSync(resolve('dist/index.html'))) {
-    void app.register(fastifyStatic, { root: resolve('dist'), prefix: '/' });
+  if (existsSync(runtimePath('dist', 'index.html'))) {
+    void app.register(fastifyStatic, { root: runtimePath('dist'), prefix: '/' });
     app.setNotFoundHandler((req, reply) =>
       req.url.startsWith('/api/')
         ? reply.code(404).send({ error: '接口不存在' })

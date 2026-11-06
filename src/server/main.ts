@@ -50,16 +50,6 @@ try {
   app.log.info({ dataDir, port: config.port }, 'starting Phantom Circuit');
   // Bind before recovering or scheduling: a second instance must not touch running task state.
   await app.listen({ host: '127.0.0.1', port: config.port });
-  await engine.start();
-  store.changes.on('delivery', (repoId: string) => {
-    if (store!.repo(repoId).commands.start)
-      void previews!
-        .start(repoId)
-        .catch((e) =>
-          store!.event('preview', String(e), { projectId: store!.repo(repoId).projectId }),
-        );
-  });
-  app.log.info({ url: `http://127.0.0.1:${config.port}` }, 'Phantom Circuit ready');
   let stopping = false;
   async function shutdown() {
     if (stopping) return;
@@ -80,6 +70,18 @@ try {
   }
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+  await engine.start();
+  if (!stopping) {
+    store.changes.on('delivery', (repoId: string) => {
+      if (store!.repo(repoId).commands.start)
+        void previews!
+          .start(repoId)
+          .catch((e) =>
+            store!.event('preview', String(e), { projectId: store!.repo(repoId).projectId }),
+          );
+    });
+    app.log.info({ url: `http://127.0.0.1:${config.port}` }, 'Phantom Circuit ready');
+  }
 } catch (error) {
   if (app) app.log.fatal({ err: error }, 'startup failed');
   else

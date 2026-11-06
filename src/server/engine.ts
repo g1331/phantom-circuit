@@ -2,7 +2,8 @@ import { Providers } from './providers.ts';
 import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
 import { mkdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { runtimePath } from './runtime-paths.ts';
 import { z } from 'zod';
 import { Store, Fault, now, redact, type OwnerSource } from './store.ts';
 import { Codex, CodexTurnError, type ToolSpec } from './codex.ts';
@@ -369,7 +370,13 @@ export class Engine {
   async stop() {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
-    for (const x of this.active.values()) x.abort.abort();
+    for (const [runId, x] of this.active) {
+      const run = this.store.get('run', runId);
+      const task = run?.taskId ? this.store.get('task', run.taskId) : undefined;
+      if (!x.abort.signal.aborted && !task?.pausedByUser)
+        this.store.finishRun(runId, 'interrupted', 'Engine 正在停止，运行留待下次启动恢复');
+      x.abort.abort();
+    }
     await Promise.allSettled([...this.active.values()].map((x) => x.agent?.stop()));
     // A failed Run may enqueue its Incident assessment from a rejection handler. Drain repeatedly
     // so those descendants finish before the caller closes the Store; one snapshot is not enough.
@@ -824,25 +831,30 @@ export class Engine {
         this.store.finishRecovery(item.id, 'cancelled');
         return this.store.get('recovery', item.id);
       }
-      const run = this.store.ensureRecoverySuccessor(item.id, {
-        role: 'pm',
-        profile: oldRun.profile,
-        task,
-        sourceMessageId: source?.id,
-        incidentId: item.incidentId,
-        incidentPhase: oldRun.incidentPhase,
-        incidentEvidence: oldRun.incidentEvidence,
-        recoveryPrompt: content,
-      });
-      if (item.incidentId) this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
       const settle = (status: 'completed' | 'failed') => {
         // Manual policy marked it failed at restart; a later successful resume settles it too.
         if (source?.role === 'user' && this.store.get('message', source.id)?.status !== 'completed')
           this.store.updateMessage(source.id, { status, draftStatus: status });
       };
-      try {
-        await this.pmQueue(item.projectId, () =>
-          this.pmTurn(
+      await this.pmQueue(item.projectId, async () => {
+        // A queued recovery has not started work. Leave it pending when shutdown drains the queue.
+        if (this.stopping) return;
+        const current = this.store.get('recovery', item.id);
+        if (!current || current.status === 'cancelled' || current.successorRunId) return;
+        const run = this.store.ensureRecoverySuccessor(item.id, {
+          role: 'pm',
+          profile: oldRun.profile,
+          task,
+          sourceMessageId: source?.id,
+          incidentId: item.incidentId,
+          incidentPhase: oldRun.incidentPhase,
+          incidentEvidence: oldRun.incidentEvidence,
+          recoveryPrompt: content,
+        });
+        if (item.incidentId)
+          this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
+        try {
+          await this.pmTurn(
             item.projectId,
             content,
             source,
@@ -850,13 +862,13 @@ export class Engine {
             item.incidentId ? '恢复：继续 Incident 评估' : '恢复：继续 PM 会话',
             item.id,
             run,
-          ),
-        );
-      } catch (error) {
-        settle('failed');
-        throw error;
-      }
-      settle('completed');
+          );
+        } catch (error) {
+          settle('failed');
+          throw error;
+        }
+        settle('completed');
+      });
       return this.store.get('recovery', item.id);
     }
     if (!task) return this.store.get('recovery', item.id);
@@ -1933,7 +1945,7 @@ export class Engine {
     try {
       await this.withAgent(run, async (c, signal) => {
         const profile = this.agentProfile(run);
-        const duty = await readFile(resolve('prompts/oncall.md'), 'utf8');
+        const duty = await readFile(runtimePath('prompts', 'oncall.md'), 'utf8');
         const dirty = async () =>
           !!(await this.workspaces.git(task.worktree!, ['status', '--porcelain'], signal));
         const thread = await c.thread({
@@ -2151,7 +2163,7 @@ ${detail}`,
     try {
       reply = await this.withAgent(run, async (c, signal) => {
         const profile = this.agentProfile(run);
-        const duty = await readFile(resolve('prompts/owner.md'), 'utf8');
+        const duty = await readFile(runtimePath('prompts', 'owner.md'), 'utf8');
         const thread = await c.forkReadOnlyThread({
           sourceThreadId: source.threadId,
           cwd: task.worktree!,

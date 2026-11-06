@@ -310,7 +310,8 @@
 /* Both automatic narrow mode and manual collapse use the actual sidebar width. */
 @container (min-width: 81px) and (max-width: 180px) {
   .sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control) {
-    grid-template-columns: 17px minmax(0, 1fr) 62px;
+    grid-template-columns: 17px minmax(0, 1fr) 64px;
+    padding-right: 4px;
     font-size: 11px;
   }
   .sidebar-bottom > :is(.language-control, .theme-control) .choice-value {

@@ -1,6 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowUpRight, ChevronDown, Layers3, Menu, Plus, Radio, ShieldCheck, X } from 'lucide-react';
+import {
+  ArrowUpRight,
+  ChevronDown,
+  Layers3,
+  Menu,
+  Plus,
+  Radio,
+  ShieldCheck,
+  X,
+} from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { teamView, workGroup } from '../shared/team.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
@@ -43,7 +52,9 @@ function App() {
     null,
   );
   const [repoConfig, setRepoConfig] = useState<Repo>();
-  const [error, setError] = useState<string | Error>('');
+  const [actionError, setError] = useState<string | Error>('');
+  const [connectionError, setConnectionError] = useState<Error>();
+  const error = actionError || connectionError || '';
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -84,30 +95,73 @@ function App() {
     setAtLatest(atBottom);
   }, []);
   const stateRequest = useRef(0);
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (signal?: AbortSignal) => {
     const request = ++stateRequest.current;
-    const result = await api<Snapshot>('/state');
-    if (request === stateRequest.current) setState(result);
+    const result = await api<Snapshot>('/state', undefined, 'GET', signal);
+    if (!signal?.aborted && request === stateRequest.current) setState(result);
   }, []);
   useEffect(() => {
     let source: EventSource | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    let delay = 500;
     let alive = true;
-    void session()
-      .then(reload)
-      .then(() => {
-        if (!alive) return;
-        source = new EventSource('/api/events');
-        source.addEventListener('ready', () => setConnected(true));
-        source.onerror = () => setConnected(false);
-        source.addEventListener('change', () => {
-          if (timer) clearTimeout(timer);
-          timer = setTimeout(
-            () => void reload().catch((e) => setError(e instanceof Error ? e : String(e))),
-            180,
-          );
+    function reconnect() {
+      if (!alive || retry !== undefined) return;
+      source?.close();
+      controller?.abort();
+      if (timer) clearTimeout(timer);
+      if (deadline) clearTimeout(deadline);
+      setConnected(false);
+      setConnectionError(new LocalRequestError('connection'));
+      setStream({});
+      retry = setTimeout(() => {
+        retry = undefined;
+        void connect();
+      }, delay);
+      delay = Math.min(delay * 2, 5000);
+    }
+    async function connect() {
+      const attempt = new AbortController();
+      controller = attempt;
+      deadline = setTimeout(reconnect, 10_000);
+      try {
+        await session(attempt.signal);
+        await reload(attempt.signal);
+        if (!alive || attempt.signal.aborted) return;
+        const events = new EventSource('/api/events');
+        source = events;
+        events.addEventListener('ready', () => {
+          if (!alive || attempt.signal.aborted) return;
+          // Catch changes between the initial snapshot and the stream becoming ready.
+          void reload(attempt.signal)
+            .then(() => {
+              if (!alive || attempt.signal.aborted) return;
+              if (deadline) clearTimeout(deadline);
+              delay = 500;
+              setConnectionError(undefined);
+              setConnected(true);
+            })
+            .catch(() => {
+              if (!attempt.signal.aborted) reconnect();
+            });
         });
-        source.addEventListener('delta', (event) => {
+        events.onerror = () => {
+          if (!attempt.signal.aborted) reconnect();
+        };
+        events.addEventListener('change', () => {
+          if (!alive || attempt.signal.aborted) return;
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            void reload(attempt.signal).catch(() => {
+              if (!attempt.signal.aborted) reconnect();
+            });
+          }, 180);
+        });
+        events.addEventListener('delta', (event) => {
+          if (!alive || attempt.signal.aborted) return;
           const d = JSON.parse((event as MessageEvent).data);
           if (d.role === 'pm')
             setStream((s) => ({
@@ -115,12 +169,18 @@ function App() {
               [d.runId]: d.replace ? d.text : (s[d.runId] ?? '') + d.text,
             }));
         });
-      })
-      .catch((e) => setError(e instanceof Error ? e : String(e)));
+      } catch {
+        if (!attempt.signal.aborted) reconnect();
+      }
+    }
+    void connect();
     return () => {
       alive = false;
       source?.close();
+      controller?.abort();
       if (timer) clearTimeout(timer);
+      if (retry) clearTimeout(retry);
+      if (deadline) clearTimeout(deadline);
     };
   }, [reload]);
   async function act(fn: () => Promise<unknown>) {
@@ -551,12 +611,7 @@ function App() {
             </div>
             {page === 'brief' && <div className="page brief-page">{brief}</div>}
             {page === 'work' && (
-              <WorkList
-                state={state}
-                project={project}
-                query={workQuery}
-                setQuery={setWorkQuery}
-              />
+              <WorkList state={state} project={project} query={workQuery} setQuery={setWorkQuery} />
             )}
             {page === 'task' && route.taskId && (
               <TaskPage
@@ -619,9 +674,7 @@ function App() {
                         projects={state.projects}
                         locale={locale}
                         refresh={() => setScheduleRefresh((n) => n + 1)}
-                        error={
-                          scheduleError?.projectId === project.id ? scheduleError.message : ''
-                        }
+                        error={scheduleError?.projectId === project.id ? scheduleError.message : ''}
                         refreshing={scheduleLoading}
                       />
                     }

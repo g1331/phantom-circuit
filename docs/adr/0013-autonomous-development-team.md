@@ -7,6 +7,7 @@ Status: accepted direction, partly implemented: these parts have landed:
 - direct owner conversations: each question forks the owner's saved work session natively into an independent read-only conversation, with direction changes going through the liaison;
 - handing a piece of work to a fresh Dev;
 - the page-based interface of ADR 0014. Until each remaining slice lands, ADRs 0001, 0005, 0008 and 0009 describe the host's actual behavior, and agents follow them rather than this record.
+- independent installed releases and Linux user-service operation, described in ADR 0015. Desktop packaging and application-level remote authentication remain unimplemented.
 
 Phantom Circuit is a development team and the user is its client. The user discusses requirements and evaluates delivered behavior; planning, branches, commits, pull requests, reviews, CI, role assignment and model choice are the team's own business and are not part of the user's interface. On 2026-11-03 the operator standing in for the user intervened fourteen times across three Tasks (seven messages, seven host or test fixes), and none of those interventions was a product decision. Each one was an engineering problem — missing evidence, a flaky check, a port collision, machine load, a base resync — that the team escalated instead of resolving.
 

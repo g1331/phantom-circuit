@@ -13,6 +13,7 @@
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "start": "tsx src/server/main.ts",
+    "service": "node scripts/service.mjs",
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
     "format": "prettier --write src tests scripts *.json *.md",
@@ -31,6 +32,7 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.35.4",
+    "tsx": "^4.20.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {
@@ -41,7 +43,6 @@
     "pino-pretty": "^13.2.0",
     "playwright": "^1.55.0",
     "prettier": "^3.6.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0"
   }

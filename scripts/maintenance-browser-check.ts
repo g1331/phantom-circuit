@@ -507,10 +507,15 @@ export async function checkMaintenance() {
           route.fulfill({ json: { ok: true, models: [] } }),
         );
         let reject = true;
-        await failure.route(`**/assets/${panel}-*.js`, (route) =>
-          reject ? route.abort('failed') : route.continue(),
-        );
+        let recoveredRequests = 0;
+        await failure.route(`**/assets/${panel}-*.js*`, (route) => {
+          if (reject) return route.abort('failed');
+          recoveredRequests++;
+          return route.continue();
+        });
         await failure.goto(origin);
+        const retainedDraft = `Draft survives ${panel} ${recovery}`;
+        await failure.getByLabel('Message to PM').fill(retainedDraft);
         const open = async () => {
           if (panel === 'settings-panel')
             await failure.getByRole('button', { name: 'Runtime settings', exact: true }).click();
@@ -536,6 +541,11 @@ export async function checkMaintenance() {
         await failure
           .locator(panel === 'settings-panel' ? '.runtime-settings' : '.historical-completion')
           .waitFor();
+        assert.ok(recoveredRequests > 0, 'recovery fetches a fresh production module URL');
+        if (panel === 'settings-panel') {
+          await failure.keyboard.press('Escape');
+          assert.equal(await failure.getByLabel('Message to PM').inputValue(), retainedDraft);
+        }
         await failure.close();
       }
     console.log(

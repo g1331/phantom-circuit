@@ -13,4 +13,4 @@ Use the pinned Matt Pocock skills in `.agents/skills/`. Preserve user changes, i
 
 Do not create remote repositories, push this source checkout, or mutate unrelated repositories without authorization. All runtime GitHub writes require explicit per-repository onboarding authorization. Work switches govern new claims only. Review and merge operate on pinned revisions. Do not weaken branch protection or claim that worktrees are security sandboxes.
 
-Windows is the supported MVP platform. Keep state and managed workspaces under `.phantom/`; do not write credentials to logs or tracked files. Runtime adapters must preserve the user's original checkout.
+Windows and Linux are supported. For installed releases or Linux service changes, read `docs/adr/0015-installed-runtime-and-linux-service.md` and verify the production-pruned artifact outside the checkout. Keep state and managed workspaces under `.phantom/`; do not write credentials to logs or tracked files. Runtime adapters must preserve the user's original checkout.
