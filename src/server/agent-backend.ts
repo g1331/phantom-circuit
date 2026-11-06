@@ -83,6 +83,15 @@ export interface AgentPromptOptions {
   onTurn?: (id: string) => void;
 }
 
+/** An independent native branch of a real work session. Never resumes or writes the source. */
+export interface AgentReadOnlyForkOptions {
+  sourceThreadId: string;
+  cwd: string;
+  profile: AgentProfile;
+  instructions: string;
+  dataDir: string;
+}
+
 export interface AgentTurnResult {
   sessionId: string;
   turnId?: string;
@@ -243,6 +252,7 @@ export interface AgentBackend {
   stop(): Promise<void>;
   dispose(): Promise<void>;
   thread(options: AgentThreadOptions): Promise<string>;
+  forkReadOnlyThread(options: AgentReadOnlyForkOptions): Promise<string>;
   turn(
     sessionId: string,
     prompt: string,

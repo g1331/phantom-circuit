@@ -1,7 +1,130 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Codex, isolationArgs } from '../src/server/codex.ts';
+
+test('Codex owner fork uses native read-only branching, rejects inherited host tools and verifies the effective identity', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-codex-owner-'));
+  const forkPath = join(root, 'rollout-owner-fork.jsonl');
+  const sourcePath = join(root, 'rollout-source.jsonl');
+  await writeFile(sourcePath, 'synthetic source stays untouched');
+  const codex = new Codex((_binary, _args, options) =>
+    spawn(
+      process.execPath,
+      [
+        '-e',
+        `
+    const send = value => console.log(JSON.stringify(value));
+    let calls = [], rejected = false, goal = {threadId:'owner-fork'}, unsupported = false;
+    require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+      const m = JSON.parse(line);
+      if (m.id === 'inherited-tool') { rejected = !!m.error || m.result?.success === false; return; }
+      if (!m.method || m.id === undefined) return;
+      calls.push(m);
+      let result = {};
+      if (m.method === 'thread/fork') {
+        unsupported = m.params.threadId === 'unsupported-goal';
+        require('node:fs').writeFileSync(${JSON.stringify(forkPath)}, JSON.stringify({type:'session_meta',payload:{id:'owner-fork'}})+'\\n');
+        result = { thread: { id: m.params.threadId === 'same-source' ? 'same-source' : 'owner-fork', path:${JSON.stringify(forkPath)} }, model: m.params.threadId === 'wrong-model' ? 'other' : m.params.model, modelProvider: m.params.modelProvider, reasoningEffort: m.params.config.model_reasoning_effort };
+        send({ id: m.id, result });
+        send({ id: 'inherited-tool', method: 'item/tool/call', params: { threadId: 'owner-fork', tool: 'ask_pm', arguments: { question: 'mutate' } } });
+        return;
+      }
+      if (m.method === 'fixture/read') result = { calls, rejected };
+      if (m.method === 'thread/goal/get') result = {goal};
+      if (m.method === 'thread/goal/get' && unsupported) { send({id:m.id,error:{message:'unsupported goal API'}}); return; }
+      if (m.method === 'thread/goal/clear') { goal = null; result = {cleared:true}; }
+      if (m.method === 'turn/start') {
+        send({id:m.id,result:{turn:{id:'owner-turn'}}});
+        send({method:'item/agentMessage/delta',params:{threadId:m.params.threadId,turnId:'owner-turn',itemId:'answer',delta:'read-only answer'}});
+        send({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:'owner-turn',status:goal ? 'failed' : 'completed'}}});
+        return;
+      }
+      send({ id: m.id, result });
+      if (m.method === 'fixture/exit') setImmediate(() => process.exit(0));
+    });
+  `,
+      ],
+      options,
+    ),
+  );
+  try {
+    await codex.start({
+      id: 'fork-fixture',
+      baseUrl: 'http://localhost:9876/v1',
+      apiKey: 'fixture-key',
+    });
+    const plan = {
+      sourceThreadId: 'source',
+      cwd: process.cwd(),
+      profile: { model: 'fixture', effort: 'low' },
+      instructions: 'owner read only',
+      dataDir: join(root, '.phantom'),
+    };
+    assert.equal(await codex.forkReadOnlyThread(plan), 'owner-fork');
+    assert.equal(
+      await codex.turn('owner-fork', 'fixture owner question', plan.profile),
+      'read-only answer',
+    );
+    const observed = await codex.request('fixture/read');
+    const fork = observed.calls.find((m: { method: string }) => m.method === 'thread/fork');
+    assert.equal(fork.params.threadId, 'source');
+    assert.equal(fork.params.sandbox, 'read-only');
+    assert.equal(fork.params.approvalPolicy, 'never');
+    assert.equal(fork.params.deferGoalContinuation, true);
+    assert.equal(fork.params.ephemeral, false);
+    assert.equal(fork.params.developerInstructions, 'owner read only');
+    assert.equal(fork.params.dynamicTools, undefined);
+    assert.equal(observed.rejected, true);
+    assert.deepEqual(
+      observed.calls
+        .filter((m: { method: string }) => m.method.startsWith('thread/goal/'))
+        .map((m: { method: string; params: { threadId: string } }) => [
+          m.method,
+          m.params.threadId,
+        ]),
+      [
+        ['thread/goal/get', 'owner-fork'],
+        ['thread/goal/clear', 'owner-fork'],
+        ['thread/goal/get', 'owner-fork'],
+      ],
+    );
+    const firstTurn = observed.calls.findIndex(
+      (m: { method: string }) => m.method === 'turn/start',
+    );
+    const clearGoal = observed.calls.findIndex(
+      (m: { method: string }) => m.method === 'thread/goal/clear',
+    );
+    assert.ok(clearGoal >= 0 && firstTurn > clearGoal);
+    assert.equal(observed.calls[firstTurn].params.threadId, 'owner-fork');
+    assert.ok(
+      !observed.calls.some((m: { method: string }) =>
+        ['thread/start', 'thread/resume', 'turn/steer'].includes(m.method),
+      ),
+    );
+    await assert.rejects(
+      codex.forkReadOnlyThread({ ...plan, sourceThreadId: 'same-source' }),
+      /独立/,
+    );
+    await assert.rejects(
+      codex.forkReadOnlyThread({ ...plan, sourceThreadId: 'wrong-model' }),
+      /实际模型/,
+    );
+    await assert.rejects(
+      codex.forkReadOnlyThread({ ...plan, sourceThreadId: 'unsupported-goal' }),
+      /unsupported goal API/,
+    );
+  } finally {
+    await codex.request('fixture/exit');
+    await codex.stop();
+  }
+  assert.equal(await readFile(sourcePath, 'utf8'), 'synthetic source stays untouched');
+  assert.match(await readFile(forkPath, 'utf8'), /session_meta/);
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+});
 
 async function streamingFixture(work: (codex: Codex) => Promise<void>) {
   let exited!: Promise<void>;

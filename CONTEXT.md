@@ -19,7 +19,7 @@ _Avoid_: Run, conversation
 **On-call**: Historical role for diagnosing a failed host validation. The Task's Dev now does this in its own thread and settles it as a retry, a fix, a trunk resync or a question for the user.
 _Avoid_: PM, Dev
 
-**Owner conversation**: The user's direct exchange with the Dev who owns an unfinished Task. The owner answers read-only; a change of direction goes to the PM before anything changes, and the PM's conversation records a summary of each exchange.
+**Owner conversation**: The user's direct exchange with the Dev who owns an unfinished Task, in an independent read-only branch of that Dev's saved work session. Each question uses the records saved when it was asked; a change of direction goes to the PM before anything changes, and the PM's conversation records a summary of each exchange.
 _Avoid_: Dev chat, steer
 
 **Reassign**: Handing an unfinished Task to a fresh Dev. The worktree and branch stay; the previous Dev's conversation does not, and the rework budget restarts.

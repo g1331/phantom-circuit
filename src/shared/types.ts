@@ -151,6 +151,8 @@ export interface OwnerMessage {
   /** User lines only: the owner answers them one at a time, oldest first. */
   status?: 'queued' | 'answering' | 'answered' | 'failed';
   runId?: string;
+  context?: 'work_history';
+  failureReason?: 'history_unavailable' | 'owner_changed' | 'answer_interrupted';
 }
 export interface Task {
   id: string;
@@ -177,6 +179,8 @@ export interface Task {
   branch?: string;
   worktree?: string;
   devThreadId?: string;
+  /** Real work Run, independent of the scheduler's configurable resume binding. */
+  ownerRunId?: string;
   devThreadProviderId?: string;
   devThreadAgentKind?: AgentKind;
   devThreadProfileVersion?: number;

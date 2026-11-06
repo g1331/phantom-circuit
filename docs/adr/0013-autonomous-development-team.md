@@ -1,9 +1,10 @@
 # Operate as an autonomous development team behind a requirements conversation
 
 Status: accepted direction, partly implemented: these parts have landed:
+
 - the Dev handling its own failed host validation, amending ADR 0005;
 - the team view with a team-wide pause;
-- direct owner conversations: a read-only owner turn, with direction changes going through the liaison;
+- direct owner conversations: each question forks the owner's saved work session natively into an independent read-only conversation, with direction changes going through the liaison;
 - handing a piece of work to a fresh Dev;
 - the page-based interface of ADR 0014. Until each remaining slice lands, ADRs 0001, 0005, 0008 and 0009 describe the host's actual behavior, and agents follow them rather than this record.
 
@@ -39,3 +40,7 @@ The redesign is led by the operator rather than by Phantom itself, because it ch
 5. the desktop application and remote access to several teams.
 
 Each slice that lands updates the ADRs it supersedes and `CONTEXT.md`.
+
+Owner conversations fix their backend, Provider, model and effort from the real work Run, not the Project's current settings. The Task retains its owner source separately from the scheduler's resume binding; reassignment clears both. Each question sees the work history already saved at fork time, subject to the harness's compaction and interrupted-tail handling. An in-flight operation is not evidence of completion. The owner fork never resumes, steers or writes the source session. Missing history fails the question without substituting a handoff summary, pausing development or creating recovery work. Structured answers carry a short summary to the liaison; a direction change first carries the user's original words and the owner's judgment through the PM queue, then returns a final answer on the same fork.
+
+Codex uses a persistent read-only fork with goal continuation deferred, rejects all inherited host tools, and clears and verifies only the child goal before any owner turn. Codex retains its own native storage and login, while Phantom records the fork reference without moving user caches or copying credentials. OMP starts a separate process directly with `--fork`, disables discovery sources and executable tools, and verifies the effective owner instructions and exact `read,grep,glob` tool set. OMP forks stay in the managed session directory. These process and tool restrictions are not an OS security sandbox.

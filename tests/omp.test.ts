@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +12,89 @@ import {
   OmpRpcFrameDecoder,
   OMP_RPC_MAX_FRAME_BYTES,
 } from '../src/server/omp.ts';
+
+test('OMP owner starts an independent native CLI fork with only read tools and validates its effective session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-omp-owner-'));
+  const script = `
+    const args = process.argv.slice(1), arg = name => args[args.indexOf(name)+1];
+    const send = value => console.log(JSON.stringify(value));
+    let calls = [], rejected = false;
+    const source = arg('--fork');
+    const tools = source === 'unsafe-tools' ? ['read','bash'] : ['read','grep','glob'];
+    require('node:readline').createInterface({input: process.stdin}).on('line', line => {
+      const m = JSON.parse(line); calls.push(m.type);
+      if (m.type === 'host_tool_result') { rejected = !!m.error || m.isError === true; return; }
+      let data;
+      if(m.type === 'negotiate_protocol') data = {protocolVersion:2};
+      if(m.type === 'get_state') data = { sessionId: source === 'same-source' ? source : 'owner-fork', model: {provider:'fixture',id:source === 'wrong-model' ? 'other' : 'fixture-model'}, thinkingLevel:'low', systemPrompt:[arg('--system-prompt')], dumpTools:tools.map(name=>({name})), isStreaming:false };
+      send({id:m.id,type:'response',command:m.type,success:true,data});
+      if(m.type === 'prompt') {
+        send({type:'agent_start'});
+        send({type:'message_update',message:{role:'assistant'},assistantMessageEvent:{type:'text_delta',delta:JSON.stringify({args,calls,rejected,config:JSON.parse(require('node:fs').readFileSync(arg('--config'),'utf8'))})}});
+        send({type:'agent_end'});
+      }
+      if(m.type === 'get_state') send({type:'host_tool_call',id:'inherited',toolCallId:'call',toolName:'ask_pm',arguments:{}});
+    });
+    send({type:'ready',protocolVersion:1,supportedProtocolVersions:[1,2],maxFrameBytes:1048576,maxReassembledFrameBytes:67108864});
+  `;
+  const create = () =>
+    new OmpBackend({
+      dataDir: root,
+      spawn: (_binary, args, options) =>
+        spawn(process.execPath, ['-e', script, '--', ...args], options),
+    });
+  const plan = {
+    sourceThreadId: 'source',
+    cwd: process.cwd(),
+    profile: { provider: 'fixture', model: 'fixture-model', effort: 'low' },
+    instructions: 'owner read only',
+    dataDir: root,
+  };
+  const backend = create();
+  try {
+    const id = await backend.forkReadOnlyThread(plan);
+    assert.equal(id, 'owner-fork');
+    const observed = JSON.parse(await backend.turn(id, 'inspect', plan.profile));
+    assert.equal(observed.args[observed.args.indexOf('--fork') + 1], 'source');
+    assert.equal(observed.args[observed.args.indexOf('--tools') + 1], 'read,grep,glob');
+    assert.equal(
+      observed.args[observed.args.indexOf('--session-dir') + 1],
+      join(root, 'agents', 'omp', 'sessions'),
+    );
+    assert.ok(!observed.args.includes('--resume') && !observed.args.includes('--no-session'));
+    assert.ok(
+      observed.args.includes('--no-lsp') &&
+        observed.args.includes('--no-pty') &&
+        observed.args.includes('--no-context-files') &&
+        observed.args.includes('--no-title'),
+    );
+    assert.equal(observed.config.mcp.enableProjectConfig, false);
+    assert.deepEqual(observed.config.enabledProviders, []);
+    assert.ok(
+      ['native', 'mcp-json', 'claude-plugins'].every((source) =>
+        observed.config.disabledProviders.includes(source),
+      ),
+    );
+    assert.ok(
+      !observed.calls.some((c: string) => ['fork', 'new_session', 'set_host_tools'].includes(c)),
+    );
+    assert.equal(observed.rejected, true);
+  } finally {
+    await backend.stop();
+  }
+  for (const sourceThreadId of ['same-source', 'wrong-model', 'unsafe-tools']) {
+    const invalid = create();
+    try {
+      await assert.rejects(
+        invalid.forkReadOnlyThread({ ...plan, sourceThreadId }),
+        /独立|实际模型|只读工具/,
+      );
+    } finally {
+      await invalid.stop();
+    }
+  }
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+});
 
 interface FakeProcess extends EventEmitter {
   stdin: PassThrough;

@@ -3,41 +3,89 @@ import assert from 'node:assert/strict';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Codex } from '../src/server/codex.ts';
+import type { AgentReadOnlyForkOptions } from '../src/server/agent-backend.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { devFixture, hang, until } from './dev-fixture.ts';
 
-type Handler = NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
+const decision = '使用 37 桶按用户分片，避免同一用户请求乱序。';
+const answer = (text = decision) =>
+  JSON.stringify({ result: { kind: 'answer', answer: text, summary: '已解释实现决定。' } });
 
-/** A Task whose Dev has handed in and whose review hangs, so its owner is around to talk. */
-async function scenario(prefix: string, owner: (tool: Handler) => Promise<void>) {
-  const { root, store, task, github } = await devFixture(prefix);
+/** Only the model and GitHub are fixtures. Git workspaces, Engine and Store are real. */
+async function scenario(
+  options: {
+    live?: boolean;
+    forkError?: boolean;
+    owner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    ownerStop?: () => Promise<void>;
+  } = {},
+) {
+  const { root, store, task, github } = await devFixture('phantom-owner-context-');
   github.publishPR = async () => ({}) as never;
   github.reviewComment = async () => {};
-  const ownerTurns: { writable: boolean; ephemeral?: boolean }[] = [];
+  const history = new Map<string, string[]>();
+  const forks: AgentReadOnlyForkOptions[] = [];
+  const ownerThreads: string[] = [];
   const liaisonPrompts: string[] = [];
   let reviewed = false;
+  let developing = false;
+  let devInterrupted = false;
+  let serial = 0;
   class Model extends Codex {
     options?: Parameters<Codex['thread']>[0];
+    isOwner = false;
     override async start() {}
-    override async stop() {}
+    override async stop() {
+      if (this.isOwner) await options.ownerStop?.();
+    }
     override async thread(o: Parameters<Codex['thread']>[0]) {
       this.options = o;
-      return 'thread';
+      const id = o.threadId ?? `thread-${++serial}`;
+      if (!history.has(id)) history.set(id, []);
+      return id;
     }
-    override async turn(_thread: string, prompt: string, _profile: unknown, signal?: AbortSignal) {
-      const o = this.options!;
+    async forkReadOnlyThread(o: AgentReadOnlyForkOptions) {
+      this.isOwner = true;
+      forks.push(o);
+      if (options.forkError) throw new Error('source unavailable');
+      const inherited = history.get(o.sourceThreadId);
+      if (!inherited) throw new Error('missing source');
+      const id = `fork-${++serial}`;
+      history.set(id, [...inherited]);
+      ownerThreads.push(id);
+      return id;
+    }
+    override async turn(thread: string, prompt: string, _profile: unknown, signal?: AbortSignal) {
       if (prompt.includes('## 用户直接找你')) {
-        ownerTurns.push({ writable: o.writable, ephemeral: o.ephemeral });
-        await owner(o.toolHandler!);
-        return 'answered';
+        assert.notEqual(thread, store.task(task.id).devThreadId);
+        assert.ok(
+          history.get(thread)?.includes(decision),
+          'answer requires the inherited implementation history, absent from handoff',
+        );
+        return options.owner
+          ? options.owner(prompt, signal)
+          : answer(history.get(thread)!.join('\n'));
+      }
+      if (prompt.includes('PM decision for this owner conversation')) {
+        assert.ok(liaisonPrompts.length > 0);
+        assert.ok(ownerThreads.includes(thread), 'alignment resumes the same independent fork');
+        return answer('联络人已决定可以改蓝色。');
       }
       if (prompt.includes('talking directly with the owner')) {
         liaisonPrompts.push(prompt);
         return '可以改成蓝色，我已经更新了任务要求。';
       }
-      if (o.instructions.includes('Independent Review')) {
+      if (this.options!.instructions.includes('Independent Review')) {
         reviewed = true;
+        return hang(signal);
+      }
+      history.get(thread)!.push(decision);
+      developing = true;
+      if (options.live) {
+        signal?.addEventListener('abort', () => {
+          devInterrupted = true;
+        });
         return hang(signal);
       }
       await writeFile(join(store.task(task.id).worktree!, 'a.txt'), 'implemented\n');
@@ -68,66 +116,257 @@ async function scenario(prefix: string, owner: (tool: Handler) => Promise<void>)
     store,
     task,
     engine,
-    ownerTurns,
+    forks,
+    history,
     liaisonPrompts,
     reviewed: () => reviewed,
+    developing: () => developing,
+    devInterrupted: () => devInterrupted,
     tickUntil,
     lines,
     close,
   };
 }
 
-test('the user asks the owner directly; the owner answers read-only and the liaison gets a summary', async () => {
-  const s = await scenario('phantom-owner-ask-', async (tool) => {
-    await tool('reply', {
-      answer: '代码写完了，正在独立评审。',
-      summary: '用户问进度，已说明在评审。',
-    });
-  });
+test('owner answers from an independent native branch of the working history while Dev keeps running', async () => {
+  const s = await scenario({ live: true });
   try {
-    assert.throws(() => s.store.addOwnerMessage(s.task.id, '谁在做？'), /还没有负责人/);
     await s.engine.start();
-    await s.tickUntil(s.reviewed, 'review started');
-    const question = s.store.addOwnerMessage(s.task.id, '现在做到哪了？');
-    await s.tickUntil(() => s.lines().some((m) => m.role === 'owner'), 'owner answered');
-    assert.equal(s.lines().find((m) => m.role === 'owner')!.content, '代码写完了，正在独立评审。');
-    assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
-    assert.deepEqual(s.ownerTurns, [{ writable: false, ephemeral: true }]);
+    await s.tickUntil(s.developing, 'Dev started');
+    const source = s.store.task(s.task.id).devThreadId!;
+    const sourceRun = s.store.list('run').find((r) => r.threadId === source)!;
+    for (const content of ['为什么这样分片？', '这样会不会乱序？']) {
+      const question = s.store.addOwnerMessage(s.task.id, content);
+      await s.tickUntil(
+        () => ['answered', 'failed'].includes(s.store.get('ownerMessage', question.id)!.status!),
+        'question settled',
+      );
+      assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
+    }
+    assert.deepEqual(
+      s.forks.map((f) => f.sourceThreadId),
+      [source, source],
+    );
+    assert.equal(s.store.task(s.task.id).devThreadId, source);
+    assert.equal(s.store.task(s.task.id).ownerRunId, sourceRun.id);
+    assert.deepEqual(s.store.get('run', sourceRun.id), sourceRun);
+    assert.deepEqual(s.history.get(source), [decision]);
+    assert.equal(s.devInterrupted(), false);
+    assert.equal(s.store.task(s.task.id).stage, 'developing');
+    assert.ok(
+      s
+        .lines()
+        .filter((m) => m.role === 'owner')
+        .every((m) => m.content === decision && m.context === 'work_history'),
+    );
     assert.ok(
       s.store
         .list('message')
-        .some((m) => m.role === 'system' && m.content.includes('用户问进度，已说明在评审。')),
-      'the liaison reads the summary in the project conversation',
+        .some((m) => m.role === 'system' && m.content.includes('已解释实现决定')),
     );
-    const task = s.store.task(s.task.id);
-    assert.equal(task.stage, 'reviewing', 'answering does not move the work');
-    assert.equal(task.retries ?? 0, 0);
   } finally {
     await s.close();
   }
 });
 
-test('a change of direction asked of the owner goes to the liaison before the owner answers', async () => {
-  let liaison: unknown;
-  const s = await scenario('phantom-owner-align-', async (tool) => {
-    liaison = await tool('align_with_liaison', { request: '用户想把按钮改成蓝色，属于验收变更。' });
-    await tool('reply', {
-      answer: `联络人的答复：${(liaison as { answer: string }).answer}`,
-      summary: '用户要求按钮改蓝色，已转联络人并获同意。',
-    });
+test('a direction change reaches PM before the final structured answer on the same fork', async () => {
+  const s = await scenario({
+    owner: async () =>
+      JSON.stringify({ result: { kind: 'needs_alignment', request: '按钮改蓝属于验收变更。' } }),
   });
   try {
     await s.engine.start();
     await s.tickUntil(s.reviewed, 'review started');
-    s.store.addOwnerMessage(s.task.id, '按钮能改成蓝色吗？');
-    await s.tickUntil(() => s.lines().some((m) => m.role === 'owner'), 'owner answered');
-    assert.equal(s.liaisonPrompts.length, 1);
-    assert.match(
-      s.liaisonPrompts[0],
-      /按钮能改成蓝色吗？/,
-      "the liaison sees the user's own words",
+    const question = s.store.addOwnerMessage(s.task.id, '按钮能改成蓝色吗？');
+    await s.tickUntil(
+      () =>
+        s.store.get('ownerMessage', question.id)!.status !== 'queued' &&
+        s.store.get('ownerMessage', question.id)!.status !== 'answering',
+      'answer settled',
     );
-    assert.match(s.lines().find((m) => m.role === 'owner')!.content, /已经更新了任务要求/);
+    assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
+    assert.equal(s.liaisonPrompts.length, 1);
+    assert.match(s.liaisonPrompts[0], /按钮能改成蓝色吗？/);
+    assert.match(s.liaisonPrompts[0], /按钮改蓝属于验收变更/);
+    assert.match(s.lines().find((m) => m.role === 'owner')!.content, /已决定可以改蓝色/);
+    assert.equal(s.forks.length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('fork or invalid structured output fails only the question, without pausing Dev or creating recovery', async () => {
+  for (const options of [{ forkError: true }, { owner: async () => 'not JSON' }]) {
+    const s = await scenario({ live: true, ...options });
+    try {
+      await s.engine.start();
+      await s.tickUntil(s.developing, 'Dev started');
+      const question = s.store.addOwnerMessage(s.task.id, '为什么？');
+      await s.tickUntil(
+        () => s.store.get('ownerMessage', question.id)!.status === 'failed',
+        'question failed',
+      );
+      const failed = s.store.get('ownerMessage', question.id)!;
+      assert.equal(
+        failed.failureReason,
+        options.forkError ? 'history_unavailable' : 'answer_interrupted',
+      );
+      assert.equal(s.store.get('run', failed.runId!)!.status, 'failed');
+      assert.equal(s.store.task(s.task.id).control, 'active');
+      assert.equal(s.devInterrupted(), false);
+      assert.equal(s.lines().filter((m) => m.role === 'owner').length, 0);
+      assert.ok(!s.store.list('recovery').some((r) => r.oldRunId === failed.runId));
+    } finally {
+      await s.close();
+    }
+  }
+});
+
+test('project backend changes do not hand the existing owner history to another backend', async () => {
+  const s = await scenario({ live: true });
+  try {
+    await s.engine.start();
+    await s.tickUntil(s.developing, 'Dev started');
+    const source = s.store.task(s.task.id).devThreadId!;
+    const sourceRun = s.store.list('run').find((r) => r.threadId === source)!;
+    s.store.saveProjectAgentSelection(s.task.projectId, { mode: 'override', agent: 'omp' });
+    assert.equal(s.store.task(s.task.id).devThreadId, undefined);
+    const question = s.store.addOwnerMessage(s.task.id, '为什么这样实现？');
+    await s.tickUntil(
+      () => ['answered', 'failed'].includes(s.store.get('ownerMessage', question.id)!.status!),
+      'question settled',
+    );
+    assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
+    const owner = s.store.get('run', s.store.get('ownerMessage', question.id)!.runId!)!;
+    assert.equal(owner.agentKind, 'codex');
+    assert.deepEqual(owner.profileConfig, sourceRun.profileConfig);
+    assert.deepEqual(owner.provider, sourceRun.provider);
+    assert.equal(s.forks[0].sourceThreadId, source);
+    assert.equal(
+      s.store.task(s.task.id).devThreadId,
+      undefined,
+      'owner must not reinstate the invalidated scheduler binding',
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test('reassign clears the owner source and never selects the previous worker from history', async () => {
+  const s = await scenario();
+  try {
+    await s.engine.start();
+    await s.tickUntil(s.reviewed, 'review started');
+    assert.ok(s.store.task(s.task.id).ownerRunId);
+    await s.engine.reassign(s.task.id, { source: 'user', reason: 'new_owner' });
+    assert.equal(s.store.task(s.task.id).ownerRunId, undefined);
+    const question = s.store.addOwnerMessage(s.task.id, '你为什么这样实现？');
+    await s.tickUntil(
+      () => s.store.get('ownerMessage', question.id)!.status === 'failed',
+      'no stale source',
+    );
+    assert.equal(s.store.get('ownerMessage', question.id)!.failureReason, 'history_unavailable');
+    assert.equal(s.forks.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('an answer from a superseded owner is not published, but a new Run on the same work thread remains valid', async () => {
+  for (const replaceThread of [true, false]) {
+    let finish: (value: string) => void = () => {};
+    let asked = false;
+    const s = await scenario({
+      live: true,
+      owner: async () => {
+        asked = true;
+        return new Promise<string>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    try {
+      await s.engine.start();
+      await s.tickUntil(s.developing, 'Dev started');
+      const source = s.store.task(s.task.id).devThreadId!;
+      const question = s.store.addOwnerMessage(s.task.id, '为什么？');
+      await s.tickUntil(() => asked, 'owner answering');
+      const successor = s.store.run(
+        'dev',
+        s.task.projectId,
+        s.task.profile,
+        s.store.task(s.task.id),
+      );
+      s.store.bindRunThread(successor, replaceThread ? 'new-worker-thread' : source);
+      s.store.finishRun(successor.id, 'completed');
+      finish(answer());
+      await s.tickUntil(
+        () => ['failed', 'answered'].includes(s.store.get('ownerMessage', question.id)!.status!),
+        'question settled',
+      );
+      assert.equal(
+        s.store.get('ownerMessage', question.id)!.status,
+        replaceThread ? 'failed' : 'answered',
+      );
+      if (replaceThread) {
+        assert.equal(s.store.get('ownerMessage', question.id)!.failureReason, 'owner_changed');
+        assert.equal(s.lines().filter((m) => m.role === 'owner').length, 0);
+      }
+    } finally {
+      finish(answer());
+      await s.close();
+    }
+  }
+});
+
+test('a legacy current dev binding resolves only its exact real source Run', async () => {
+  const s = await scenario({ live: true });
+  try {
+    await s.engine.start();
+    await s.tickUntil(s.developing, 'Dev started');
+    const source = s.store.task(s.task.id).devThreadId!;
+    s.store.updateTask(s.task.id, { ownerRunId: undefined });
+    const unrelated = s.store.run('dev', s.task.projectId, s.task.profile, s.store.task(s.task.id));
+    s.store.put('run', unrelated.id, { ...unrelated, threadId: 'unrelated-history' });
+    s.store.finishRun(unrelated.id, 'completed');
+    const question = s.store.addOwnerMessage(s.task.id, '为什么？');
+    await s.tickUntil(
+      () => ['failed', 'answered'].includes(s.store.get('ownerMessage', question.id)!.status!),
+      'question settled',
+    );
+    assert.equal(s.store.get('ownerMessage', question.id)!.status, 'answered');
+    assert.equal(s.forks[0].sourceThreadId, source);
+  } finally {
+    await s.close();
+  }
+});
+
+test('owner replacement while closing the fork rejects the answer and fails its Run', async () => {
+  const s = await scenario({
+    live: true,
+    ownerStop: async () => {
+      const successor = s.store.run(
+        'dev',
+        s.task.projectId,
+        s.task.profile,
+        s.store.task(s.task.id),
+      );
+      s.store.bindRunThread(successor, 'replacement-during-close');
+      s.store.finishRun(successor.id, 'completed');
+    },
+  });
+  try {
+    await s.engine.start();
+    await s.tickUntil(s.developing, 'Dev started');
+    const question = s.store.addOwnerMessage(s.task.id, '为什么？');
+    await s.tickUntil(
+      () => s.store.get('ownerMessage', question.id)!.status === 'failed',
+      'stale answer rejected',
+    );
+    const failed = s.store.get('ownerMessage', question.id)!;
+    assert.equal(failed.failureReason, 'owner_changed');
+    assert.equal(s.store.get('run', failed.runId!)!.status, 'failed');
+    assert.equal(s.lines().filter((m) => m.role === 'owner').length, 0);
   } finally {
     await s.close();
   }
@@ -137,6 +376,9 @@ test('a restart during an owner answer fails only the question; the work keeps g
   const { root, store, task } = await devFixture('phantom-owner-restart-');
   try {
     store.updateTask(task.id, { worktree: root });
+    const dev = store.run('dev', task.projectId, task.profile, store.task(task.id));
+    store.bindRunThread(dev, 'real-source');
+    store.finishRun(dev.id, 'completed');
     const question = store.addOwnerMessage(task.id, '还要多久？');
     const run = store.run('dev', task.projectId, task.profile, store.task(task.id), {
       ownerMessageId: question.id,
@@ -144,7 +386,7 @@ test('a restart during an owner answer fails only the question; the work keeps g
     store.recover();
     assert.equal(store.get('run', run.id)!.status, 'interrupted');
     assert.equal(store.get('ownerMessage', question.id)!.status, 'failed');
-    assert.equal(store.task(task.id).control, 'active', 'a read-only answer never pauses the Task');
+    assert.equal(store.task(task.id).control, 'active');
     assert.ok(!store.list('recovery').some((item) => item.oldRunId === run.id));
   } finally {
     store.close();

@@ -267,13 +267,25 @@ export const resolveIncidentInput = z
     guidance: z.string().trim().max(16000).optional(),
   })
   .strict();
-/** The on-call engineer's one disposition for an Incident; `question` is required for `ask_user`. */
-export const ownerReplyInput = z
+const ownerAnswerResult = z
   .object({
+    kind: z.literal('answer'),
     answer: z.string().trim().min(1).max(8000),
     summary: z.string().trim().min(1).max(1000),
   })
   .strict();
+export const ownerResultSchema = z
+  .object({
+    result: z.discriminatedUnion('kind', [
+      ownerAnswerResult,
+      z
+        .object({ kind: z.literal('needs_alignment'), request: z.string().trim().min(1).max(4000) })
+        .strict(),
+    ]),
+  })
+  .strict();
+export const ownerAnswerSchema = z.object({ result: ownerAnswerResult }).strict();
+/** The on-call engineer's one disposition for an Incident; `question` is required for `ask_user`. */
 export const oncallSettleInput = z
   .object({
     action: z.enum(['retry', 'fixed', 'resync', 'ask_user']),

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import {
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -6,7 +7,7 @@ import {
 } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { Fault } from './store.ts';
 import { command } from './process.ts';
@@ -27,6 +28,7 @@ import {
   type AgentProbeResult,
   type AgentProfile,
   type AgentPromptOptions,
+  type AgentReadOnlyForkOptions,
   type AgentSession,
   type AgentSessionOptions,
   type AgentSteerReconciliation,
@@ -46,6 +48,20 @@ const OMP_RPC_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TURN_TIMEOUT_MS = 45 * 60_000;
+const OWNER_DISABLED_DISCOVERY = [
+  'native',
+  'agent-plugins',
+  'claude',
+  'claude-plugins',
+  'codex',
+  'cursor',
+  'gemini',
+  'mcp-json',
+  'omp-plugins',
+  'opencode',
+  'vscode',
+  'windsurf',
+];
 
 export interface OmpSpawnOptions {
   binary?: string;
@@ -70,6 +86,7 @@ export interface OmpBackendOptions extends OmpSpawnOptions {
 
 export interface OmpStartOptions extends AgentSessionOptions {
   resume?: string;
+  readOnlyFork?: string;
 }
 
 interface OmpReadyFrame {
@@ -452,6 +469,7 @@ export class OmpRpcClient extends EventEmitter {
   #hostToolHandlers = new Map<string, AgentToolHandler>();
   #hostToolControllers = new Map<string, AbortController>();
   #startOptions?: OmpStartOptions;
+  #readOnlyConfig?: string;
   readonly #options: OmpBackendOptions;
   version?: string;
 
@@ -505,6 +523,29 @@ export class OmpRpcClient extends EventEmitter {
     else args.push('--no-tools');
     if (options.ephemeral) args.push('--no-session');
     if (options.resume) args.push('--resume', options.resume);
+    if (options.readOnlyFork) {
+      this.#readOnlyConfig = join(sessionDir, `owner-${randomUUID()}.json`);
+      await writeFile(
+        this.#readOnlyConfig,
+        JSON.stringify({
+          disabledProviders: OWNER_DISABLED_DISCOVERY,
+          enabledProviders: [],
+          mcp: { enableProjectConfig: false },
+        }),
+        { flag: 'wx' },
+      );
+      args.push(
+        '--fork',
+        options.readOnlyFork,
+        '--no-lsp',
+        '--no-pty',
+        '--no-context-files',
+        '--no-title',
+        '--no-ui',
+        '--config',
+        this.#readOnlyConfig,
+      );
+    }
     const launch =
       this.#options.spawn ??
       ((binary: string, childArgs: string[], spawnOptions: any) =>
@@ -577,7 +618,13 @@ export class OmpRpcClient extends EventEmitter {
 
   async stop(): Promise<void> {
     const child = this.#process;
-    if (!child) return;
+    if (!child) {
+      if (this.#readOnlyConfig) {
+        await unlink(this.#readOnlyConfig);
+        this.#readOnlyConfig = undefined;
+      }
+      return;
+    }
     this.#stopping = true;
     this.#reader?.close();
     this.#reader = undefined;
@@ -610,6 +657,10 @@ export class OmpRpcClient extends EventEmitter {
       });
     });
     this.#activeSessionId = undefined;
+    if (this.#readOnlyConfig) {
+      await unlink(this.#readOnlyConfig);
+      this.#readOnlyConfig = undefined;
+    }
     this.#startOptions = undefined;
     this.#stopping = false;
   }
@@ -1291,6 +1342,41 @@ export class OmpBackend extends EventEmitter implements AgentBackend {
     this.current = session;
     this.currentOptions = options;
     return session;
+  }
+
+  async forkReadOnlyThread(options: AgentReadOnlyForkOptions): Promise<string> {
+    if (this.client.started) throw new Fault('负责人问答需要独立的新进程', 409);
+    const plan = {
+      cwd: options.cwd,
+      profile: options.profile,
+      instructions: options.instructions,
+      dataDir: options.dataDir,
+      readOnlyFork: options.sourceThreadId,
+      allowedTools: ['read', 'grep', 'glob'],
+      toolHandler: async () => {
+        throw new Fault('负责人问答没有宿主工具权限', 403);
+      },
+    };
+    await this.client.start(plan);
+    const state = await this.client.getState();
+    if (state.sessionId === options.sourceThreadId || state.sessionFile === options.sourceThreadId)
+      throw new Fault('负责人问答未创建独立会话', 409);
+    assertEffectiveProfile(state, options.profile);
+    const effective = z
+      .object({
+        systemPrompt: z.array(z.string()),
+        dumpTools: z.array(z.object({ name: z.string() })),
+      })
+      .parse(state);
+    const names = effective.dumpTools.map((tool) => tool.name).sort();
+    if (
+      !effective.systemPrompt.some((block) => block.includes(options.instructions)) ||
+      names.join(',') !== 'glob,grep,read'
+    )
+      throw new Fault('负责人问答未应用只读工具或指令', 409);
+    this.currentOptions = plan;
+    this.current = new OmpSession(this, state.sessionId, plan);
+    return state.sessionId;
   }
 
   /** Legacy Codex-compatible alias: thread creation/resume returns an id. */

@@ -201,6 +201,8 @@ function normalizeSettings(value: Settings): Settings {
   };
 }
 
+export type OwnerSource = ReturnType<Store['ownerSource']>;
+
 export interface RunOptions {
   profile?: ProfileName;
   secondaryReview?: boolean;
@@ -636,6 +638,7 @@ export class Store {
   }
   bindRunThread(run: Run, threadId: string) {
     this.put('run', run.id, { ...this.get('run', run.id)!, threadId });
+    if (run.ownerMessageId) return;
     const project = this.project(run.projectId);
     // A late reply must not restore a binding invalidated while this Run was in flight.
     if ((project.profileVersion ?? 0) !== (run.profileVersion ?? 0)) return;
@@ -650,6 +653,7 @@ export class Store {
       });
     if (run.role === 'dev' && run.taskId)
       this.updateTask(run.taskId, {
+        ownerRunId: run.id,
         devThreadId: threadId,
         devThreadProviderId: run.profileConfig?.providerId ?? run.model?.providerId ?? 'codex',
         devThreadAgentKind: run.agentKind,
@@ -1152,7 +1156,12 @@ export class Store {
       return m;
     });
   }
-  ownerReply(question: OwnerMessage, content: string, runId: string) {
+  ownerReply(
+    question: OwnerMessage,
+    content: string,
+    runId: string,
+    context?: OwnerMessage['context'],
+  ) {
     return this.transaction(() => {
       this.put('ownerMessage', question.id, { ...question, status: 'answered', runId });
       const m: OwnerMessage = {
@@ -1163,6 +1172,7 @@ export class Store {
         content: redact(content),
         createdAt: now(),
         runId,
+        ...(context ? { context } : {}),
       };
       this.put('ownerMessage', m.id, m);
       return m;
@@ -1764,6 +1774,72 @@ export class Store {
     return this.effectiveAgent(this.project(projectId));
   }
 
+  ownerSource(taskId: string) {
+    const task = this.task(taskId);
+    const source = task.ownerRunId
+      ? this.get('run', task.ownerRunId)
+      : task.devThreadId
+        ? this.list('run').find(
+            (run) =>
+              run.taskId === task.id &&
+              run.role === 'dev' &&
+              !run.ownerMessageId &&
+              run.threadId === task.devThreadId &&
+              run.agentKind === task.devThreadAgentKind &&
+              run.profileConfig?.providerId === task.devThreadProviderId &&
+              run.profileConfig?.model === task.devThreadProfile?.model &&
+              run.profileConfig?.effort === task.devThreadProfile?.effort,
+          )
+        : undefined;
+    if (
+      !source ||
+      source.taskId !== task.id ||
+      source.role !== 'dev' ||
+      source.ownerMessageId ||
+      !source.threadId ||
+      !source.agentKind ||
+      !source.profileConfig?.model ||
+      !source.profileConfig.providerId ||
+      !source.profileConfig.effort ||
+      (source.agentKind === 'codex' && !source.provider)
+    )
+      throw new Fault('暂时取不到负责人的工作记录', 409);
+    return {
+      run: source,
+      threadId: source.threadId,
+      agentKind: source.agentKind,
+      profileConfig: source.profileConfig,
+    };
+  }
+
+  private ownerRun(task: Task, ownerMessageId: string): Run {
+    const source = this.ownerSource(task.id);
+    const fixed = source.run;
+    const run: Run = {
+      id: id(),
+      projectId: task.projectId,
+      taskId: task.id,
+      repoId: task.repoId,
+      role: 'dev',
+      profile: fixed.profile,
+      profileConfig: structuredClone(source.profileConfig),
+      agentKind: source.agentKind,
+      agentVersion: fixed.agentVersion,
+      provider: structuredClone(fixed.provider),
+      model: structuredClone(fixed.model),
+      modelIdentity: structuredClone(fixed.modelIdentity),
+      profileVersion: fixed.profileVersion,
+      priceSnapshot: structuredClone(fixed.priceSnapshot),
+      price: structuredClone(fixed.price),
+      status: 'running',
+      startedAt: now(),
+      ownerMessageId,
+    };
+    this.put('run', run.id, run);
+    this.changes.emit('run-start', run);
+    return run;
+  }
+
   run(
     role: Run['role'],
     projectId: string,
@@ -1776,6 +1852,10 @@ export class Store {
       task = undefined;
     }
     const taskRecord = task as Task | undefined;
+    if (options.ownerMessageId) {
+      if (!taskRecord || role !== 'dev') throw new Fault('负责人对话需要已有工作', 409);
+      return this.ownerRun(taskRecord, options.ownerMessageId);
+    }
     const project = this.project(projectId);
     const selected = this.resolveEffectiveProfile(projectId, options.profile ?? profile, options);
     const profileConfig = selected.profile;
@@ -2405,7 +2485,12 @@ export class Store {
         // A read-only answer holds no work: the question fails and the user may ask again.
         this.finishRun(r.id, 'interrupted', '服务重启，回答中断');
         const question = this.get('ownerMessage', r.ownerMessageId);
-        if (question) this.put('ownerMessage', question.id, { ...question, status: 'failed' });
+        if (question)
+          this.put('ownerMessage', question.id, {
+            ...question,
+            status: 'failed',
+            failureReason: 'answer_interrupted',
+          });
         continue;
       }
       const task = r.taskId ? this.get('task', r.taskId) : undefined;

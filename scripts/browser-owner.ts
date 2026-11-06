@@ -35,8 +35,31 @@ export async function checkOwnerConversation(
   await page.unroute('**/owner-messages');
   const question = store.addOwnerMessage(task.id, '现在卡在哪里？');
   await section.getByText('负责人稍后回答。', { exact: true }).waitFor();
-  store.ownerReply(question, '在等交付修复，修好就继续评审。', store.activeRuns()[0]?.id ?? 'run');
+  // Browser fixtures prove presentation only, not native history inheritance or model correctness.
+  store.ownerReply(
+    question,
+    '在等交付修复，修好就继续评审。',
+    'browser-owner-fixture',
+    'work_history',
+  );
   await section.getByText('在等交付修复，修好就继续评审。', { exact: true }).waitFor();
+  await section.getByText('结合提问时已保存的开发记录回答', { exact: true }).waitFor();
+  const legacy = store.addOwnerMessage(task.id, '旧问题');
+  store.ownerReply(legacy, '旧回答没有上下文标记。', 'browser-legacy-fixture');
+  await section.getByText('旧回答没有上下文标记。', { exact: true }).waitFor();
+  assert.equal(
+    await section.getByText('结合提问时已保存的开发记录回答', { exact: true }).count(),
+    1,
+  );
+  for (const [failureReason, wording] of [
+    ['history_unavailable', '暂时取不到负责人的工作记录，请稍后再问。'],
+    ['owner_changed', '负责人已更换，请向当前负责人重新提问。'],
+    ['answer_interrupted', '回答中断了，可以再问一次。'],
+  ] as const) {
+    const failed = store.addOwnerMessage(task.id, `展示 ${failureReason}`);
+    store.setOwnerMessage(failed.id, { status: 'failed', failureReason });
+    await section.getByText(wording, { exact: true }).waitFor();
+  }
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await section.scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(artifacts, 'owner-conversation.png') });

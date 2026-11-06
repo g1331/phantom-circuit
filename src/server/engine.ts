@@ -4,7 +4,7 @@ import { hasOwner } from '../shared/team.ts';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
-import { Store, Fault, now, redact } from './store.ts';
+import { Store, Fault, now, redact, type OwnerSource } from './store.ts';
 import { Codex, CodexTurnError, type ToolSpec } from './codex.ts';
 import { OmpBackend } from './omp.ts';
 import { normalizeUsage } from './usage.ts';
@@ -24,7 +24,8 @@ import {
   validReviewQuestions,
   resolveIncidentInput,
   oncallSettleInput,
-  ownerReplyInput,
+  ownerResultSchema,
+  ownerAnswerSchema,
 } from './schemas.ts';
 import { listeners } from './process.ts';
 import { MessageImages } from './images.ts';
@@ -48,7 +49,10 @@ import type {
 } from '../shared/types.ts';
 
 /** The host only depends on this narrow adapter seam; Codex fakes remain valid constructors. */
-type AgentRuntime = Pick<AgentBackend, 'start' | 'stop' | 'thread' | 'turn'> &
+type AgentRuntime = Pick<
+  AgentBackend,
+  'start' | 'stop' | 'thread' | 'turn' | 'forkReadOnlyThread'
+> &
   Partial<Pick<AgentBackend, 'steer' | 'followUp' | 'abort' | 'reconcileSteer' | 'on' | 'off'>>;
 type AgentFactory = () => AgentRuntime;
 type AgentHooks = {
@@ -456,7 +460,9 @@ export class Engine {
     });
     try {
       if (this.stopping) throw new Fault('Engine 正在停止', 409);
-      if (run.agentKind === 'omp' && !(c instanceof Codex)) {
+      if (run.ownerMessageId && run.agentKind === 'omp') {
+        // The native fork must be the independent process's first session, with owner tools only.
+      } else if (run.agentKind === 'omp' && !(c instanceof Codex)) {
         const cwd = run.taskId
           ? this.store.task(run.taskId).worktree
           : join(this.dataDir, 'projects', run.projectId);
@@ -477,7 +483,7 @@ export class Engine {
       const result = await fn(c, abort.signal);
       if (abort.signal.aborted) throw tripOf(abort.signal) ?? new Fault('执行已暂停', 409);
       activities?.close();
-      if (!hostAbort) this.store.finishRun(run.id, 'completed');
+      if (!hostAbort && !run.ownerMessageId) this.store.finishRun(run.id, 'completed');
       return result;
     } catch (caught) {
       const e = tripOf(abort.signal) ?? caught;
@@ -2091,17 +2097,22 @@ ${detail}`,
   private async ownerAnswer(question: OwnerMessage) {
     const task = this.store.task(question.taskId);
     if (!hasOwner(task)) {
-      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      this.store.setOwnerMessage(question.id, { status: 'failed', failureReason: 'owner_changed' });
       return;
     }
     let run: Run;
+    let source: OwnerSource;
     try {
+      source = this.store.ownerSource(task.id);
       run = this.store.run('dev', task.projectId, task.profile, task, {
         ownerMessageId: question.id,
         suppressSource: true,
       });
     } catch (error) {
-      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      this.store.setOwnerMessage(question.id, {
+        status: 'failed',
+        failureReason: 'history_unavailable',
+      });
       this.store.event('owner', `负责人无法回答：${redact(String(error))}`, {
         projectId: task.projectId,
         taskId: task.id,
@@ -2115,80 +2126,94 @@ ${detail}`,
       .slice(-12)
       .map((m) => `${m.role === 'user' ? '用户' : '你'}：${m.content}`)
       .join('\n');
-    const handoff = this.store
-      .taskEvents(task.id)
-      .findLast((e) => e.type === 'dev-result')?.message;
-    let reply: { answer: string; summary: string } | undefined;
+    let failureReason: OwnerMessage['failureReason'] = 'history_unavailable';
+    const requireCurrentOwner = () => {
+      let current: OwnerSource;
+      try {
+        current = this.store.ownerSource(task.id);
+      } catch {
+        failureReason = 'owner_changed';
+        throw new Fault('负责人已更换，请重新提问', 409);
+      }
+      if (
+        !hasOwner(this.store.task(task.id)) ||
+        current.threadId !== source.threadId ||
+        current.agentKind !== source.agentKind ||
+        current.profileConfig.providerId !== source.profileConfig.providerId ||
+        current.profileConfig.model !== source.profileConfig.model ||
+        current.profileConfig.effort !== source.profileConfig.effort
+      ) {
+        failureReason = 'owner_changed';
+        throw new Fault('负责人已更换，请重新提问', 409);
+      }
+    };
+    let reply: z.infer<typeof ownerAnswerSchema>['result'];
     try {
-      await this.withAgent(run, async (c, signal) => {
+      reply = await this.withAgent(run, async (c, signal) => {
         const profile = this.agentProfile(run);
-        const thread = await c.thread({
+        const duty = await readFile(resolve('prompts/owner.md'), 'utf8');
+        const thread = await c.forkReadOnlyThread({
+          sourceThreadId: source.threadId,
           cwd: task.worktree!,
           profile,
-          ephemeral: true,
-          instructions: await instructions('dev'),
-          writable: false,
-          tools: [
-            {
-              name: 'align_with_liaison',
-              description:
-                "Hand the user's request to change direction (scope, acceptance or approach) to the liaison, who decides whether the Task changes. Returns the liaison's answer.",
-              inputSchema: jsonSchema(z.object({ request: z.string().min(1) }).strict()),
-            },
-            {
-              name: 'reply',
-              description:
-                'End this turn: answer for the user, and a one or two sentence summary for the liaison.',
-              inputSchema: jsonSchema(ownerReplyInput),
-            },
-          ],
-          toolHandler: async (name: string, args: unknown) => {
-            if (name === 'align_with_liaison') {
-              const { request } = z.object({ request: z.string() }).parse(args);
-              const answer = await this.pmQueue(
-                task.projectId,
-                () =>
-                  this.pmTurn(
-                    task.projectId,
-                    `The user, talking directly with the owner of this Task, asked to change its direction. The user's words: ${question.content}
-The owner's account: ${request}
-You are the liaison: decide. Revise the Task with your tools when the change is right, or explain why not. Answer the owner briefly.`,
-                    undefined,
-                    this.store.task(task.id),
-                    '宿主事件：负责人对齐方向',
-                  ),
-                true,
-              );
-              return { answer };
-            }
-            if (name !== 'reply') throw new Fault('没有此操作权限', 403);
-            reply = ownerReplyInput.parse(args);
-            return { accepted: true };
-          },
-          ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
-        } as any);
-        const duty = await readFile(resolve('prompts/owner.md'), 'utf8');
-        await c.turn(
+          instructions: duty,
+          dataDir: this.dataDir,
+        });
+        this.saveThread(run, thread);
+        requireCurrentOwner();
+        failureReason = 'answer_interrupted';
+        const first = await this.structuredTurn(
+          c,
           thread,
           `${duty}
 ${taskPrompt(task)}
 Stage: ${task.stage}
 HEAD=${task.head ?? 'none'}
 BASE=${task.base ?? 'none'}
-Your last handoff: ${handoff ? handoff.slice(-4000) : 'none yet'}
 Earlier in this conversation:
 ${earlier || 'none'}
 The user asks: ${question.content}
-Call reply exactly once.`,
+Use your inherited work history to answer. Return the structured result.`,
           profile,
           signal,
-          undefined,
+          ownerResultSchema,
+          '负责人',
           this.onTurn(run),
         );
-        if (!reply) throw new Fault('负责人没有给出回答', 409);
+        requireCurrentOwner();
+        if (first.result.kind === 'answer') return first.result;
+        const request = first.result.request;
+        const decision = await this.pmQueue(
+          task.projectId,
+          () =>
+            this.pmTurn(
+              task.projectId,
+              `The user, talking directly with the owner of this Task, asked to change its direction. The user's words: ${question.content}
+The owner's account: ${request}
+You are the liaison: decide. Revise the Task with your tools when the change is right, or explain why not. Answer the owner briefly.`,
+              undefined,
+              this.store.task(task.id),
+              '宿主事件：负责人对齐方向',
+            ),
+          true,
+        );
+        requireCurrentOwner();
+        const final = await this.structuredTurn(
+          c,
+          thread,
+          `PM decision for this owner conversation:\n${decision}\nAnswer the user's original question: ${question.content}\nReturn only the final answer and summary. Do not change the work or request another alignment.`,
+          profile,
+          signal,
+          ownerAnswerSchema,
+          '负责人',
+          this.onTurn(run),
+        );
+        requireCurrentOwner();
+        return final.result;
       });
     } catch (error) {
-      this.store.setOwnerMessage(question.id, { status: 'failed' });
+      this.store.setOwnerMessage(question.id, { status: 'failed', failureReason });
+      this.store.finishRun(run.id, 'failed', String(error));
       this.store.event('owner', `负责人回答中断：${redact(String(error))}`, {
         projectId: task.projectId,
         taskId: task.id,
@@ -2196,12 +2221,20 @@ Call reply exactly once.`,
       });
       return;
     }
-    this.store.ownerReply(question, reply!.answer, run.id);
+    try {
+      requireCurrentOwner();
+    } catch {
+      this.store.finishRun(run.id, 'failed', '负责人已更换');
+      this.store.setOwnerMessage(question.id, { status: 'failed', failureReason: 'owner_changed' });
+      return;
+    }
+    this.store.finishRun(run.id, 'completed');
+    this.store.ownerReply(question, reply.answer, run.id, 'work_history');
     // The liaison reads the project conversation, so the summary reaches it there.
     this.store.addMessage(
       task.projectId,
       'system',
-      `你直接和「${task.title}」的负责人沟通了：${reply!.summary}`,
+      `你直接和「${task.title}」的负责人沟通了：${reply.summary}`,
     );
   }
   /**
@@ -3170,6 +3203,7 @@ Call reply exactly once.`,
       throw new Fault('开发还在工作，先暂停这项工作再换人接手', 409);
     this.store.updateTask(taskId, {
       devThreadId: undefined,
+      ownerRunId: undefined,
       devThreadProviderId: undefined,
       devThreadAgentKind: undefined,
       devThreadProfileVersion: undefined,

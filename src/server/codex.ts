@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { command, terminate } from './process.ts';
 import { Fault, redact } from './store.ts';
@@ -16,6 +17,7 @@ import type {
   AgentModelCapability,
   AgentProbeResult,
   AgentPromptOptions,
+  AgentReadOnlyForkOptions,
   AgentSteerReconciliation,
   AgentThreadOptions,
   AgentSession,
@@ -642,6 +644,55 @@ export class Codex extends EventEmitter implements AgentBackend {
       });
     if (!model.supportedReasoningEfforts.some((x) => x.reasoningEffort === profile.effort))
       throw new Fault(`模型不支持推理档位：${profile.model} / ${profile.effort}`, 409);
+  }
+  async forkReadOnlyThread(options: AgentReadOnlyForkOptions): Promise<string> {
+    await this.validate(options.profile);
+    this.toolHandler = async () => {
+      throw new Fault('负责人问答没有宿主工具权限', 403);
+    };
+    this.userInputHandler = undefined;
+    const result = z
+      .object({
+        thread: z.object({ id: z.string().min(1) }),
+        model: z.string(),
+        modelProvider: z.string(),
+        reasoningEffort: z.string(),
+      })
+      .parse(
+        await this.request('thread/fork', {
+          threadId: options.sourceThreadId,
+          cwd: options.cwd,
+          model: options.profile.model,
+          modelProvider: this.modelProvider,
+          approvalPolicy: 'never',
+          sandbox: 'read-only',
+          developerInstructions: options.instructions,
+          config: { model_reasoning_effort: options.profile.effort, 'features.multi_agent': false },
+          ephemeral: false,
+          deferGoalContinuation: true,
+        }),
+      );
+    if (result.thread.id === options.sourceThreadId)
+      throw new Fault('负责人问答未创建独立会话', 409);
+    if (result.model !== options.profile.model) throw new Fault('实际模型与请求不一致', 409);
+    if (result.modelProvider !== this.modelProvider)
+      throw new Fault('实际 Provider 与请求不一致', 409);
+    if (result.reasoningEffort !== options.profile.effort)
+      throw new Fault('实际推理档位与请求不一致', 409);
+    const goalState = z.object({ goal: z.object({ threadId: z.string() }).nullable().optional() });
+    const inherited = goalState.parse(
+      await this.request('thread/goal/get', { threadId: result.thread.id }),
+    );
+    if (inherited.goal && inherited.goal.threadId !== result.thread.id)
+      throw new Fault('负责人问答目标不属于独立会话', 409);
+    z.object({ cleared: z.boolean() }).parse(
+      await this.request('thread/goal/clear', { threadId: result.thread.id, origin: 'automatic' }),
+    );
+    const cleared = goalState.parse(
+      await this.request('thread/goal/get', { threadId: result.thread.id }),
+    );
+    if (cleared.goal) throw new Fault('负责人问答仍带有开发目标', 409);
+    return result.thread.id;
   }
   async thread(options: AgentThreadOptions) {
     await this.validate(options.profile);

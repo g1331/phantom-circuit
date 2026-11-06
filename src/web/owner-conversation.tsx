@@ -35,9 +35,20 @@ export function OwnerConversation({
                 <time dateTime={m.createdAt}>{time(m.createdAt)}</time>
               </span>
               <p>{m.content}</p>
+              {m.context === 'work_history' && <em>{t('owner.workHistory')}</em>}
               {m.status === 'queued' && <em>{t('owner.queued')}</em>}
               {m.status === 'answering' && <em>{t('owner.answering')}</em>}
-              {m.status === 'failed' && <em className="error-text">{t('owner.failed')}</em>}
+              {m.status === 'failed' && (
+                <em className="error-text">
+                  {t(
+                    m.failureReason === 'history_unavailable'
+                      ? 'owner.historyUnavailable'
+                      : m.failureReason === 'owner_changed'
+                        ? 'owner.changed'
+                        : 'owner.failed',
+                  )}
+                </em>
+              )}
             </li>
           ))}
         </ol>
