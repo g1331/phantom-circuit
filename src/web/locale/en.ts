@@ -1,6 +1,13 @@
 import { runtimeEn } from './runtime.ts';
 import { pagesEn } from './pages.ts';
 export const en = {
+  'reference.open': 'Open',
+  'reference.closed': 'Closed',
+  'reference.draft': 'Draft',
+  'reference.merged': 'Merged',
+  'reference.completed': 'Closed as completed',
+  'reference.not_planned': 'Closed as not planned',
+  'reference.unknown': 'Status unknown',
   'panel.loading': 'Loading panel…',
   'panel.failed': 'Could not load this panel.',
   'panel.retry': 'Try again',

@@ -1,11 +1,20 @@
-import { Check, CircleDashed, GitMerge, ListChecks, ScanEye, TerminalSquare, X } from 'lucide-react';
+import {
+  Check,
+  CircleDashed,
+  GitMerge,
+  ListChecks,
+  ScanEye,
+  TerminalSquare,
+  X,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Evidence, ReviewResult, Snapshot, Task } from '../shared/types.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import { Clamp } from './fold.tsx';
 import { useLocale } from './locale/provider.tsx';
+import { EngineeringReference } from './engineering-reference.tsx';
 
-type Tone = 'pass' | 'fail' | 'pending';
+type Tone = 'pass' | 'fail' | 'pending' | 'merged' | 'attention';
 const short = (sha?: string) => sha?.slice(0, 7) ?? '';
 
 /** The newest result per command at one revision: reruns replace older attempts. */
@@ -19,7 +28,7 @@ function latestPerCommand(tests: Evidence[], head?: string) {
   return [...byCommand.values()];
 }
 
-/** Reviews that still speak for the work: not superseded, and at the current revision if any are. */
+/** Reviews still applicable to the work, preferring those at its current revision. */
 function currentReviews(task: Task) {
   const live = task.reviews.filter((r) => !r.supersededByRunId);
   const atHead = live.filter((r) => r.head === task.head);
@@ -72,7 +81,7 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
       ? 'pass'
       : reviews.some((r) => !r.approved && r.verdict !== 'needs_user')
         ? 'fail'
-        : 'pending';
+        : 'attention';
   return (
     <section className="receipt" aria-label={t('receipt.title')}>
       <h2>{t('receipt.title')}</h2>
@@ -113,7 +122,10 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
               {tests.map((evidence) => (
                 <details
                   key={evidence.command}
-                  className={`fold fold-quiet test-evidence ${evidence.exitCode === 0 ? 'passed' : 'failed'}`}
+                  className={
+                    `fold fold-quiet test-evidence ` +
+                    (evidence.exitCode === 0 ? 'passed' : 'failed')
+                  }
                 >
                   <summary>
                     <code>{evidence.command}</code>
@@ -135,7 +147,12 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
             reviews.map((r) => {
               const model = reviewModel(r);
               return (
-                <div className={`receipt-review ${r.approved ? 'approved' : 'changes'}`} key={r.runId ?? r.axis}>
+                <div
+                  className={`receipt-review ${
+                    r.verdict === 'needs_user' ? 'attention' : r.approved ? 'approved' : 'changes'
+                  }`}
+                  key={r.runId ?? r.axis}
+                >
                   <p className="receipt-note">
                     <strong>
                       {r.verdict === 'needs_user'
@@ -174,8 +191,8 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
         </Line>
 
         <Line
-          tone={done ? 'pass' : 'pending'}
-          icon={task.pendingMerge ? <GitMerge size={13} /> : <CircleDashed size={13} />}
+          tone={done ? 'merged' : 'pending'}
+          icon={done || task.pendingMerge ? <GitMerge size={13} /> : <CircleDashed size={13} />}
           title={t('receipt.merge')}
         >
           <p className="receipt-note">
@@ -190,9 +207,7 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
             {task.prUrl && (
               <>
                 {' · '}
-                <a href={task.prUrl} target="_blank" rel="noreferrer">
-                  PR #{task.pr}
-                </a>
+                <EngineeringReference task={task} kind="pr" />
               </>
             )}
           </p>

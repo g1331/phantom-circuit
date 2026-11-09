@@ -3,7 +3,7 @@ import {
   ArrowRight,
   CircleDashed,
   CircleDot,
-  CircleCheck,
+  GitMerge,
   CirclePause,
   CircleX,
   Hand,
@@ -21,13 +21,14 @@ import { useLocale } from './locale/provider.tsx';
 import { incidentAttention } from '../shared/task-history.ts';
 import { routeHref } from './route.ts';
 import { Empty } from './ui.tsx';
+import { EngineeringReference } from './engineering-reference.tsx';
 
 const icons: Record<WorkGroup, typeof CircleDot> = {
   needs_you: Hand,
   moving: CircleDot,
   paused: CirclePause,
   queued: CircleDashed,
-  delivered: CircleCheck,
+  delivered: GitMerge,
   cancelled: CircleX,
 };
 /** Long finished groups show their newest entries until asked for the rest. */
@@ -108,7 +109,7 @@ function Row({
             </span>
           )}
           {repoName && <span className="work-repo">{repoName}</span>}
-          {task.pr ? <span className="work-pr">#{task.pr}</span> : null}
+          {task.pr ? <EngineeringReference task={task} kind="pr" linked={false} /> : null}
         </span>
         <ArrowRight className="work-go" size={14} aria-hidden="true" />
       </a>

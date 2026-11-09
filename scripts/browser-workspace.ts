@@ -14,6 +14,7 @@ import { profileProtocol } from '../tests/profile-protocol.ts';
 import { openPage, openSection, openTask } from './browser-pages.ts';
 import { choosePreference } from './browser-preferences.ts';
 import { legacyCompletionGap } from '../src/shared/task-history.ts';
+import { checkReferenceStates } from './browser-reference-states.ts';
 
 export async function checkWorkspace() {
   const store = new Store(':memory:');
@@ -348,6 +349,7 @@ export async function checkWorkspace() {
       'cancelled work offers no delivery preview',
     );
     await openPage(page, 'work');
+    await checkReferenceStates(page, store, store.task(task.id), artifacts);
     assert.deepEqual(errors, []);
     console.log(
       'Client workspace: discussion, feedback and rollback intents; preview lifecycle; complete long-history responsive matrix passed.',

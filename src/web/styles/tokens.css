@@ -21,6 +21,8 @@
   --input: #2f2f2f;
   --button-text: #212121;
   --focus: #8ab4f8;
+  --progress: #8ab4f8;
+  --delivery: #c4a1f5;
   --success: #83d5b1;
   --warning: #efc078;
   --danger: #f29a9a;
@@ -43,6 +45,8 @@
   --input: #f4f4f4;
   --button-text: #fff;
   --focus: #245bc1;
+  --progress: #245bc1;
+  --delivery: #7942bc;
   --success: #187451;
   --warning: #916019;
   --danger: #b42323;
