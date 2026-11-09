@@ -1,4 +1,5 @@
 import { command } from './process.ts';
+import { createHash } from 'node:crypto';
 import { Fault, Store, id, now, redact } from './store.ts';
 import { externalValue } from './redaction.ts';
 import type {
@@ -117,6 +118,20 @@ export type PublishReconciliation =
   | { action: 'none' }
   | { action: 'adopt'; pr: PullState }
   | { action: 'authorize'; evidence: string };
+export interface IssueState {
+  id: number;
+  node_id: string;
+  number: number;
+  html_url: string;
+  title: string;
+  body: string;
+  state: string;
+  pull_request?: unknown;
+}
+export type IssueReconciliation =
+  | { action: 'none' }
+  | { action: 'adopt'; issue: IssueState }
+  | { action: 'authorize'; evidence: string };
 /** Candidate PRs for one task, and whether any of them may be adopted without a write. */
 interface PullCandidates {
   /** Every PR that could be this task's delivery: on the task branch, or bearing its marker. */
@@ -220,11 +235,24 @@ export class GitHub {
   ): Promise<T> {
     const initial = this.store.get('operation', key);
     if (initial?.status === 'done') return initial.result as T;
+    if (
+      kind === 'create-issue' &&
+      initial?.taskRevision &&
+      ['pending', 'uncertain'].includes(initial.status) &&
+      initial.taskRevision !== binding
+    )
+      throw new Fault('Issue 创建内容已变化，需要内部核对原始操作', 409);
     // A read that cannot answer - transport failure, partial JSON, pagination error, an
     // unresolvable candidate set - throws and never counts as proof that the object is missing.
     const existing = await lookup();
     if (existing !== undefined) {
-      this.store.put('operation', key, { id: key, kind, status: 'done', result: existing });
+      this.store.put('operation', key, {
+        ...(kind === 'create-issue' ? initial : {}),
+        id: key,
+        kind,
+        status: 'done',
+        result: existing,
+      });
       return existing;
     }
     // Re-read now that the remote read has returned. A competing caller may have completed or
@@ -264,7 +292,13 @@ export class GitHub {
         `${kind}：经核对的远端候选缺失结论允许一次受控重试（核对方 ${authorization.actor}，任务版本 ${authorization.taskRevision}）：${authorization.evidence}`,
       );
     }
-    this.store.put('operation', key, { id: key, kind, status: 'pending', attempt });
+    this.store.put('operation', key, {
+      id: key,
+      kind,
+      status: 'pending',
+      attempt,
+      ...(kind === 'create-issue' ? { taskRevision: binding } : {}),
+    });
     try {
       const result = await write();
       this.store.put('operation', key, { id: key, kind, status: 'done', result, attempt });
@@ -276,6 +310,7 @@ export class GitHub {
         status: e instanceof GitHubRejected ? 'failed' : 'uncertain',
         error: redact(String(e)),
         attempt,
+        ...(kind === 'create-issue' ? { taskRevision: binding } : {}),
       });
       throw e;
     }
@@ -446,7 +481,7 @@ export class GitHub {
       this.store.patchRepo(repo.id, { milestone: milestone.number });
     }
   }
-  async publishIssue(task: Task) {
+  async publishIssue(task: Task): Promise<any> {
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     await this.setupProject(repo);
@@ -469,15 +504,20 @@ export class GitHub {
             'Prepared for a delegated agent; host authorization and work switches still apply.',
         }),
     );
-    const marker = `<!-- phantom-task:${task.id} -->`;
     const body = this.issueBody(task, false);
+    const revision = this.issueRevision(task);
     const issue = await this.operation(
       `issue:${task.id}`,
       'create-issue',
-      async () =>
-        (await this.paged(`repos/${repo.github}/issues?state=all&per_page=100`)).find(
-          (x) => !x.pull_request && x.body?.includes(marker),
-        ),
+      async () => {
+        const issue = await this.findTaskIssue(task);
+        const current = this.store.task(task.id);
+        if (current.control === 'paused' || ['done', 'cancelled'].includes(current.stage))
+          throw new Fault('任务已暂停或结束，Issue 发布保持等待', 409);
+        if (this.issueRevision(current) !== revision)
+          throw new Fault('Issue 查询期间任务内容已变化，需要重新核对', 409);
+        return issue;
+      },
       () =>
         this.api(`repos/${repo.github}/issues`, 'POST', {
           title: task.title,
@@ -485,6 +525,7 @@ export class GitHub {
           milestone: this.store.repo(repo.id).milestone,
           labels: ['ready-for-agent'],
         }),
+      revision,
     );
     this.store.updateTask(task.id, {
       issue: issue.number,
@@ -514,6 +555,157 @@ export class GitHub {
       this.store.updateTask(task.id, { projectItemId: data.addProjectV2ItemById.item.id });
     }
     return issue;
+  }
+  private issueRevision(task: Task) {
+    const repo = this.store.repo(task.repoId);
+    return createHash('sha256')
+      .update(
+        JSON.stringify([
+          repo.id,
+          repo.github,
+          externalValue(task.title),
+          this.issueBody(task, false),
+        ]),
+      )
+      .digest('hex');
+  }
+  /** Read every Issue, including closed ones, before adopting or proving scoped absence. */
+  private async findTaskIssue(task: Task): Promise<IssueState | undefined> {
+    const repo = this.store.repo(task.repoId);
+    const marker = `<!-- phantom-task:${task.id} -->`;
+    const title = externalValue(task.title);
+    const body = this.issueBody(task, false);
+    const operation = this.store.get('operation', `issue:${task.id}`);
+    const recovering = operation && ['pending', 'uncertain'].includes(operation.status);
+    const candidates = new Map<number, IssueState>();
+    const deadline = Date.now() + PULL_SCAN_MS;
+    for (let page = 1; page <= PULL_MAX_PAGES; page++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Fault('Issue 核对达到总时限，证据不足', 502);
+      const response = await this.gh(
+        [
+          'api',
+          `repos/${repo.github}/issues?state=all&sort=created&direction=asc` +
+            `&per_page=${PULL_PAGE_SIZE}&page=${page}`,
+        ],
+        undefined,
+        remaining,
+      );
+      if (response.truncated) throw new Fault('Issue 核对响应被截断，证据不足', 502);
+      let items: unknown;
+      try {
+        items = JSON.parse(response.stdout);
+      } catch {
+        throw new Fault('Issue 核对响应无法解析，证据不足', 502);
+      }
+      if (!Array.isArray(items)) throw new Fault('Issue 核对响应格式异常，证据不足', 502);
+      for (const item of items) {
+        if (
+          !item ||
+          !Number.isInteger(item.number) ||
+          typeof item.title !== 'string' ||
+          (item.body !== null && typeof item.body !== 'string')
+        )
+          throw new Fault('Issue 核对响应缺少必要字段，证据不足', 502);
+        if (item.pull_request) continue;
+        if (
+          item.body?.includes(marker) ||
+          (recovering && (item.title === title || item.body === body))
+        ) {
+          if (
+            !Number.isInteger(item.id) ||
+            typeof item.node_id !== 'string' ||
+            item.html_url !== `https://github.com/${repo.github}/issues/${item.number}` ||
+            !['open', 'closed'].includes(item.state)
+          )
+            throw new Fault('Issue 候选身份无法确认，证据不足', 409);
+          candidates.set(item.number, item);
+        }
+      }
+      if (items.length < PULL_PAGE_SIZE) {
+        const matches = [...candidates.values()];
+        if (!matches.length) return undefined;
+        if (matches.length > 1) {
+          const numbers = matches.map((issue) => `#${issue.number}`).join('、');
+          throw new Fault(
+            `Issue 存在 ${matches.length} 个相关候选（${numbers}），需要内部核对`,
+            409,
+          );
+        }
+        const issue = matches[0];
+        if (issue.title !== title || issue.body !== body || issue.state !== 'open')
+          throw new Fault(`Issue #${issue.number} 内容或状态发生漂移，需要内部核对`, 409);
+        return issue;
+      }
+    }
+    throw new Fault(`Issue 核对达到 ${PULL_MAX_PAGES} 页上限，证据不足`, 502);
+  }
+  /** Explicit host coordination; never creates an Issue or stacks retry authorizations. */
+  async authorizeTaskIssueRetry(
+    task: Task,
+    actor: Reconciliation['actor'],
+  ): Promise<IssueReconciliation> {
+    const key = `issue:${task.id}`;
+    const operation = this.store.get('operation', key);
+    if (!operation || operation.kind !== 'create-issue') return { action: 'none' };
+    const repo = this.store.repo(task.repoId);
+    this.authorize(repo);
+    if (this.operations.has(key)) throw new Fault('Issue 创建仍在进行，等待结果后核对', 409);
+    if (operation.status === 'done')
+      return { action: 'adopt', issue: operation.result as IssueState };
+    if (!['pending', 'uncertain'].includes(operation.status)) return { action: 'none' };
+    const taskRevision = this.issueRevision(task);
+    if (operation.taskRevision && operation.taskRevision !== taskRevision)
+      throw new Fault('Issue 创建内容已变化，需要内部核对原始操作', 409);
+    const access = await this.api(`repos/${repo.github}`);
+    if (
+      access?.full_name !== repo.github ||
+      !access.permissions?.push ||
+      access.has_issues !== true
+    )
+      throw new Fault('Issue 核对缺少完整仓库访问证据', 403);
+    const issue = await this.findTaskIssue(task);
+    const live = this.store.get('operation', key);
+    if (live?.status === 'done') return { action: 'adopt', issue: live.result as IssueState };
+    if (
+      !live ||
+      !describesOperation(operation, live) ||
+      this.operations.has(key) ||
+      this.issueRevision(this.store.task(task.id)) !== taskRevision
+    )
+      throw new Fault('Issue 核对期间任务或操作已变化，需要重新核对', 409);
+    if (issue) {
+      this.store.event('operation', `Issue 接续原始操作：${JSON.stringify(operation)}`, {
+        projectId: task.projectId,
+        taskId: task.id,
+      });
+      this.store.put('operation', key, { ...live, status: 'done', result: issue });
+      return { action: 'adopt', issue };
+    }
+    const existing = live.reconciliation;
+    if (
+      existing?.taskRevision === taskRevision &&
+      describesOperation(existing.observedOperation, live)
+    )
+      return { action: 'authorize', evidence: existing.evidence };
+    const evidence =
+      `Issue 核对：${repo.github} 已确认仓库访问，全部状态、全部分页均无` +
+      `任务标记、同标题或同正文候选；内容版本 ${taskRevision}`;
+    this.reconcileAbsent(key, {
+      actor,
+      evidence,
+      taskRevision,
+      observed: {
+        status: operation.status,
+        error: operation.error,
+        attempt: operation.attempt ?? 0,
+      },
+    });
+    this.store.event('operation', `${evidence}；原始操作：${JSON.stringify(operation)}`, {
+      projectId: task.projectId,
+      taskId: task.id,
+    });
+    return { action: 'authorize', evidence };
   }
   /** Operations of one kind whose remote outcome is still unknown to this host. */
   unresolved(kind: string): Operation[] {
