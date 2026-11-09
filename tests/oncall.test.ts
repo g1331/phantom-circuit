@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Codex } from '../src/server/codex.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
-import { devFixture, hang } from './dev-fixture.ts';
+import { devFixture, hang, until } from './dev-fixture.ts';
 import { command } from '../src/server/process.ts';
 
 type Handler = NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
@@ -14,6 +14,7 @@ type Handler = NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
 async function scenario(
   prefix: string,
   oncall: (tool: Handler, worktree: string) => Promise<void>,
+  coordinate?: (tool: Handler, prompt: string) => Promise<void>,
 ) {
   const { root, store, repo, task, github } = await devFixture(prefix);
   github.publishPR = async () => ({}) as never;
@@ -41,12 +42,20 @@ async function scenario(
     override async start() {}
     override async stop() {}
     override async thread(o: Parameters<Codex['thread']>[0]) {
-      this.role = o.instructions.includes('Independent Review') ? 'review' : 'dev';
+      this.role = o.tools?.some((tool) => tool.name === 'resolve_incident')
+        ? 'pm'
+        : o.instructions.includes('Independent Review')
+          ? 'review'
+          : 'dev';
       this.handler = o.toolHandler;
       if (o.tools?.some((tool) => tool.name === 'settle')) validationThreads.push(o.threadId);
       return `${this.role}-thread`;
     }
     override async turn(_thread: string, prompt: string, _profile: unknown, signal?: AbortSignal) {
+      if (this.role === 'pm') {
+        await coordinate?.(this.handler!, prompt);
+        return 'Coordinated';
+      }
       if (prompt.includes('## 正式验证失败')) {
         await oncall(this.handler!, store.task(task.id).worktree!);
         return 'settled';
@@ -80,8 +89,82 @@ async function scenario(
     store.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   };
-  return { root, store, task, devPrompts, validationThreads, reviewed: () => reviewed, run, close };
+  return {
+    root,
+    store,
+    task,
+    engine,
+    devPrompts,
+    validationThreads,
+    reviewed: () => reviewed,
+    run,
+    close,
+  };
 }
+
+test('missing validation disposition hands the failure to team coordination once', async () => {
+  let coordinated = false;
+  const s = await scenario(
+    'phantom-oncall-missing-',
+    async () => {},
+    async (_tool, prompt) => {
+      assert.match(prompt, /EADDRINUSE 4318/);
+      assert.match(prompt, /未给出验证失败的处置/);
+      coordinated = true;
+    },
+  );
+  try {
+    await s.run(() => s.store.list('run').some((r) => r.incidentPhase === 'validation'));
+    await until(() => s.store.activeRuns().length === 0, 'diagnosis and coordination finish');
+    assert.ok(coordinated, 'the team must own the interrupted diagnosis');
+    const incident = s.store.list('incident').find((i) => i.phase === 'validation')!;
+    assert.equal(s.store.get('run', incident.assessmentRunId!)?.role, 'pm');
+    assert.notEqual(incident.status, 'waiting_user');
+    const evidence = s.store.task(s.task.id);
+    assert.match(evidence.tests[0].output, /EADDRINUSE/);
+    assert.equal(evidence.retries, 0);
+    for (let i = 0; i < 3; i++) await s.engine.tick();
+    assert.equal(s.store.list('run').filter((r) => r.role === 'pm').length, 1);
+    assert.equal(s.devPrompts.length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('diagnostic exceptions preserve partial edits for continued delivery', async () => {
+  let originalHead = '';
+  let originalTests: unknown;
+  const s = await scenario(
+    'phantom-oncall-exception-',
+    async (_tool, worktree) => {
+      originalHead = s.store.task(s.task.id).head!;
+      originalTests = s.store.task(s.task.id).tests;
+      await writeFile(join(worktree, 'a.txt'), 'partial fix\n');
+      throw new Error('diagnostic backend exited');
+    },
+    async (tool, prompt) => {
+      assert.match(prompt, /diagnostic backend exited/);
+      const current = s.store.task(s.task.id);
+      assert.equal(current.head, originalHead);
+      assert.deepEqual(current.tests, originalTests);
+      assert.equal(await readFile(join(current.worktree!, 'a.txt'), 'utf8'), 'partial fix\n');
+      const incident = s.store.list('incident').find((item) => item.phase === 'validation')!;
+      await tool('resolve_incident', {
+        incidentId: incident.id,
+        action: 'resolved',
+        guidance: 'Continue the existing host finalization.',
+      });
+    },
+  );
+  try {
+    await s.run(s.reviewed);
+    assert.equal(s.devPrompts.length, 1);
+    assert.ok(s.store.task(s.task.id).tests.every((t) => t.exitCode === 0));
+    assert.notEqual(s.store.task(s.task.id).head, originalHead);
+  } finally {
+    await s.close();
+  }
+});
 
 test('the Dev retries an environmental validation failure after a passing rerun, without a rework round', async () => {
   let premature: unknown;
