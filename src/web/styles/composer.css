@@ -16,8 +16,13 @@
   border-radius: 8px;
   white-space: nowrap;
 }
-.image-picker label:focus-within {
-  outline: 2px solid var(--faint);
+.image-picker label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.image-picker label:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
 }
 .image-picker input {
   position: absolute;
@@ -102,56 +107,36 @@
   outline: none;
 }
 .composer-footer {
+  display: grid;
+  gap: 4px;
+  padding: 4px 10px 10px;
+}
+.send-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  padding: 4px 10px 10px;
-}
-.composer-footer > span {
   min-width: 0;
-  font-size: 11px;
-  color: var(--faint);
-  line-height: 1.8;
-}
-.composer-footer small {
-  display: block;
-  font-size: 11px;
-  color: var(--faint);
-}
-.send-actions {
-  display: grid;
-  justify-items: end;
-  gap: 4px;
-  min-width: 0;
-  margin-left: auto;
 }
 .send-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
-.delivery-select {
-  width: min(240px, 36vw);
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+.steer-button {
+  min-height: 34px;
+  padding: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.steer-button:hover {
   background: var(--raised);
   color: var(--text);
-  font-size: 11px;
-}
-.delivery-select:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.delivery-note {
-  max-width: 360px;
-  color: var(--faint);
-  font-size: 11px;
-  line-height: 1.45;
-  text-align: right;
 }
 .send-button {
   display: inline-flex;
@@ -165,14 +150,7 @@
   color: var(--button-text);
   background: var(--accent);
   font-size: 12px;
-}
-@media (max-width: 660px) {
-  .composer-footer > span {
-    font-size: 8px;
-  }
-  .composer-intents {
-    flex-wrap: wrap;
-  }
+  white-space: nowrap;
 }
 .composer {
   display: flex;
@@ -226,7 +204,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .pm-model-trigger > span {
   overflow: hidden;
@@ -333,12 +311,16 @@
     gap: 0;
   }
   .intent-row button {
-    font-size: 11px;
-    padding: 7px 5px;
+    min-height: 44px;
+    font-size: 12px;
+    padding: 7px 8px;
   }
   .image-picker label {
-    padding-inline: 5px;
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding-inline: 8px;
+    font-size: 12px;
   }
   .composer-footer {
     gap: 4px;
@@ -349,14 +331,13 @@
     justify-content: flex-end;
     max-width: 100%;
   }
-  .delivery-select {
-    flex: 1 1 auto;
-    max-width: 100%;
-  }
   .send-actions {
     max-width: 100%;
   }
-  .send-button {
-    flex-shrink: 0;
+  .send-button,
+  .steer-button,
+  .pm-model-trigger,
+  .pm-model-menu button {
+    min-height: 44px;
   }
 }

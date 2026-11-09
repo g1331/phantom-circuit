@@ -1,6 +1,6 @@
 import { choosePreference } from './browser-preferences.ts';
 import { chromium, type Page } from 'playwright';
-import { checkComposer, checkPMModels } from './composer-browser-check.ts';
+import { checkComposer, checkComposerLayout, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { checkOwnerConversation } from './browser-owner.ts';
 import { checkTeamInstructions } from './browser-team-instructions.ts';
@@ -406,14 +406,51 @@ try {
     }
     const deliveryRun = store.run('pm', project.id, 'pm');
     await page.reload();
-    const deliverySelect = page.getByLabel('PM 忙碌时的投递方式');
-    await deliverySelect.waitFor();
-    assert.equal(await deliverySelect.inputValue(), 'queue');
+    const queue = page.getByRole('button', { name: '排队发送', exact: true });
+    const steer = page.getByRole('button', { name: '立即调整', exact: true });
+    await steer.waitFor({ timeout: 5000 });
+    assert.equal(await page.getByRole('combobox', { name: 'PM 忙碌时的投递方式' }).count(), 0);
+    assert.equal(await queue.isDisabled(), true);
+    assert.equal(await steer.isDisabled(), true);
+    await checkComposerLayout(page, artifacts, 'busy-empty');
     await page.screenshot({
       path: resolve(artifacts, 'delivery-busy-desktop.png'),
       fullPage: true,
     });
     await page.getByLabel('给 PM 的消息').fill('真实服务排队文本');
+    await page.getByRole('button', { name: '交给 PM 做', exact: true }).click();
+    await page.getByLabel('选择图片').setInputFiles(imageFile);
+    await checkComposerLayout(page, artifacts, 'busy-input');
+    await page.getByLabel('给 PM 的消息').evaluate((element) => {
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          ctrlKey: true,
+          isComposing: true,
+          bubbles: true,
+        }),
+      );
+    });
+    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '真实服务排队文本');
+    assert.equal(await page.locator('.image-drafts img').count(), 1, 'IME keeps the draft');
+    const modelBefore = await page.locator('.pm-model-trigger').getAttribute('title');
+    await page.route('**/api/projects/*/messages', async (route) => {
+      assert.equal(await queue.isDisabled(), true, 'queue is disabled during submission');
+      assert.equal(await steer.isDisabled(), true, 'adjust is disabled during submission');
+      await route.fulfill({ status: 503, json: { error: 'Fixture delivery failed' } });
+    });
+    await steer.click();
+    await page.getByText('Fixture delivery failed', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '真实服务排队文本');
+    assert.equal(await page.locator('.image-drafts img').count(), 1);
+    assert.equal(
+      await page
+        .getByRole('button', { name: '交给 PM 做', exact: true })
+        .getAttribute('aria-pressed'),
+      'true',
+    );
+    await checkComposerLayout(page, artifacts, 'busy-error');
+    await page.unroute('**/api/projects/*/messages');
     await page.getByRole('button', { name: '排队发送', exact: true }).click();
     await page.locator('.message.user').filter({ hasText: '真实服务排队文本' }).waitFor();
     const queuedText = store
@@ -422,6 +459,9 @@ try {
     assert.ok(queuedText);
     assert.equal(queuedText.deliveryMode, 'queue');
     assert.equal(queuedText.status, 'queued');
+    assert.equal(queuedText.intent, 'implement');
+    assert.equal(queuedText.attachments?.length, 1);
+    assert.equal(await page.locator('.pm-model-trigger').getAttribute('title'), modelBefore);
     await page
       .locator('.message.user')
       .filter({ hasText: '真实服务排队文本' })
@@ -429,7 +469,6 @@ try {
       .getByText('已排队', { exact: true })
       .waitFor();
 
-    await deliverySelect.selectOption('steer');
     await page.screenshot({
       path: resolve(artifacts, 'delivery-steer-desktop.png'),
       fullPage: true,
@@ -445,6 +484,7 @@ try {
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByLabel('给 PM 的消息').fill('运行结束时的引导图片');
+    await page.getByRole('button', { name: '体验反馈', exact: true }).click();
     await page.getByLabel('选择图片').setInputFiles(imageFile);
     await page.locator('.image-drafts img').waitFor();
     let endedBeforeSteer = false;
@@ -453,7 +493,8 @@ try {
       endedBeforeSteer = true;
       await route.continue();
     });
-    await page.getByRole('button', { name: '引导当前 PM', exact: true }).click();
+    await steer.focus();
+    await page.keyboard.press('Enter');
     await page.locator('.message.user').filter({ hasText: '运行结束时的引导图片' }).waitFor();
     await page.unroute('**/api/projects/*/messages');
     assert.equal(endedBeforeSteer, true);
@@ -463,17 +504,25 @@ try {
     assert.ok(steeredImage);
     assert.equal(steeredImage.deliveryMode, 'steer');
     assert.equal(steeredImage.status, 'queued');
+    assert.equal(steeredImage.intent, 'feedback');
+    assert.equal(steeredImage.attachments?.length, 1);
+    assert.equal(await page.locator('.pm-model-trigger').getAttribute('title'), modelBefore);
     await page
       .locator('.message.user')
       .filter({ hasText: '运行结束时的引导图片' })
       .locator('.runtime-badge')
       .getByText('已排队', { exact: true })
       .waitFor();
-    await page.locator('.delivery-select').waitFor({ state: 'hidden' });
+    await steer.waitFor({ state: 'hidden' });
+    await checkComposerLayout(page, artifacts, 'idle-empty');
     await page.getByLabel('给 PM 的消息').fill('空闲时继续排队');
-    await page.getByRole('button', { name: '发送消息', exact: true }).click();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '空闲时继续排队\n');
+    await page.keyboard.press('Meta+Enter');
     await page.locator('.message.user').filter({ hasText: '空闲时继续排队' }).waitFor();
-    const idleText = store.list('message').find((message) => message.content === '空闲时继续排队');
+    const idleText = store
+      .list('message')
+      .find((message) => message.content.trim() === '空闲时继续排队');
     assert.ok(idleText);
     assert.equal(idleText.deliveryMode, 'queue');
     assert.equal(idleText.status, 'queued');

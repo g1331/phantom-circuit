@@ -39,7 +39,6 @@ export function PMComposer({
   const { t } = useLocale();
   const [draft, setDraft] = useState('');
   const [intent, setIntent] = useState<PMSubmission['intent']>('discuss');
-  const [deliveryMode, setDeliveryMode] = useState<'queue' | 'steer'>('queue');
   const [error, setError] = useState<Error>();
   const [images, setImages] = useState<{ file: File; url: string }[]>([]);
   const [preview, setPreview] = useState<(typeof images)[number]>();
@@ -100,10 +99,7 @@ export function PMComposer({
     element.style.height = 'auto';
     element.style.height = `${Math.min(240, Math.max(52, element.scrollHeight))}px`;
   }, [draft]);
-  useEffect(() => {
-    if (!pmBusy) setDeliveryMode('queue');
-  }, [pmBusy]);
-  async function send() {
+  async function send(deliveryMode: PMSubmission['deliveryMode'] = 'queue') {
     if ((!draft.trim() && !images.length) || busy || sending.current) return;
     sending.current = true;
     setError(undefined);
@@ -245,7 +241,10 @@ export function PMComposer({
               <button
                 key={i}
                 className={intent === i ? 'selected' : ''}
-                title={`${i === 'discuss' ? t('chat.discussNote') : t('chat.implementNote')} · ${t('chat.shortcut')}`}
+                title={[
+                  i === 'discuss' ? t('chat.discussNote') : t('chat.implementNote'),
+                  t('chat.shortcut'),
+                ].join(' · ')}
                 aria-pressed={intent === i}
                 onClick={() => setIntent(i)}
               >
@@ -261,33 +260,27 @@ export function PMComposer({
           </div>
         </div>
         <div className="send-actions">
+          {modelControl}
           <div className="send-controls">
-            {modelControl}
             {pmBusy && (
-              <select
-                className="delivery-select"
-                aria-label={t('delivery.mode')}
-                value={deliveryMode}
-                onChange={(event) => setDeliveryMode(event.target.value as 'queue' | 'steer')}
+              <button
+                className="steer-button"
+                title={t('delivery.steerFallback')}
+                disabled={(!draft.trim() && !images.length) || busy}
+                onClick={() => void send('steer')}
               >
-                <option value="queue">{t('delivery.queue')}</option>
-                <option value="steer">{t('delivery.steer')}</option>
-              </select>
+                {t('delivery.sendSteer')}
+              </button>
             )}
             <button
               className="send-button"
               disabled={(!draft.trim() && !images.length) || busy}
               onClick={() => void send()}
             >
-              <span>
-                {pmBusy
-                  ? t(deliveryMode === 'steer' ? 'delivery.sendSteer' : 'delivery.sendQueue')
-                  : t('common.send')}
-              </span>
+              <span>{pmBusy ? t('delivery.sendQueue') : t('common.send')}</span>
               <Send size={17} />
             </button>
           </div>
-          {pmBusy && <small className="delivery-note">{t('delivery.steerFallback')}</small>}
         </div>
       </div>
     </div>
