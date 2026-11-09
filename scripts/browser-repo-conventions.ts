@@ -12,6 +12,7 @@ import { Workspaces } from '../src/server/workspaces.ts';
 import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 import { command } from '../src/server/process.ts';
+import { Codex } from '../src/server/codex.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { choosePreference } from './browser-preferences.ts';
 
@@ -73,6 +74,7 @@ export async function checkRepoConventions() {
   const root = await mkdtemp(join(tmpdir(), 'phantom-browser-conventions-'));
   const store = new Store(':memory:');
   const project = store.createProject('问候组件', '给访客打招呼的小组件。');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
   store.saveTeamInstructions(
     project.id,
     {
@@ -91,7 +93,31 @@ export async function checkRepoConventions() {
     authorized: true,
   });
   const ws = new Workspaces(join(root, 'ws'), store);
-  const engine = new Engine(store, new GitHub(store), ws, root);
+  class BrowserGitHub extends GitHub {
+    override async api<T = any>(endpoint: string, method = 'GET'): Promise<T> {
+      assert.match(endpoint, /\/pulls\?/);
+      assert.equal(method, 'GET');
+      return [] as T;
+    }
+  }
+  class LearningModel extends Codex {
+    override async start() {}
+    override async stop() {}
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      assert.equal(options.writable, false);
+      assert.deepEqual(options.tools, []);
+      return 'learning';
+    }
+    override async turn(_thread: string, prompt: string) {
+      assert.match(prompt, /Keep greetings short/);
+      assert.match(prompt, /Open a pull request against main/);
+      return JSON.stringify({
+        repository: '- Keep greetings short.',
+        summary: '已读说明、模板与验证命令。',
+      });
+    }
+  }
+  const engine = new Engine(store, new BrowserGitHub(store), ws, root, () => new LearningModel());
   const port = await new Promise<number>((done, fail) => {
     const probe = createServer().once('error', fail);
     probe.listen(0, '127.0.0.1', () => {
@@ -106,7 +132,7 @@ export async function checkRepoConventions() {
     headless: true,
     channel: process.platform === 'win32' ? 'msedge' : undefined,
   });
-  const artifacts = resolve('test-results');
+  const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
   try {
     const context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
@@ -137,7 +163,7 @@ export async function checkRepoConventions() {
     assert.match(current.sections.repository, /^合并前先 squash。/);
     assert.match(current.sections.repository, /gitmoji/);
     assert.match(current.sections.repository, /`npm run lint`/);
-    for (const width of [1440, 1366, 390]) {
+    for (const width of [1440, 1366, 1280, 390]) {
       for (const theme of ['dark', 'light']) {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
         await choosePreference(page, 'theme', theme);
@@ -164,7 +190,8 @@ export async function checkRepoConventions() {
     }
     assert.deepEqual(errors, []);
     console.log(
-      'Repository convention browser checks passed: re-read from the Project page, learned block next to user text; 1440/1366/390 dark and light screenshots.',
+      'Repository convention browser checks passed: re-read from the Project page, ' +
+        'learned block next to user text; 1440/1366/1280/390 dark and light screenshots.',
     );
   } finally {
     await browser.close();

@@ -9,6 +9,7 @@ export interface RepositoryConventions {
   workflows: string[];
   ciCommands: string[];
   scripts: string[];
+  documents: { path: string; text: string; truncated: boolean }[];
 }
 
 type Git = (args: string[]) => Promise<string>;
@@ -18,7 +19,7 @@ const RECENT_COMMITS = 30;
 /** A style counts as the convention when most recent subjects follow it. */
 const STYLE_SHARE = 0.6;
 const STYLE_MIN_COMMITS = 3;
-const VERIFY_SCRIPTS = ['test', 'lint', 'check', 'typecheck', 'build', 'format'];
+const VERIFY_SCRIPT = /^(?:test|lint|check|typecheck|build|format)(?::|$)/;
 
 const gitmoji = /^(?:\p{Extended_Pictographic}|:[a-z0-9_+-]+:)/u;
 const conventional = /^[a-z]+(?:\([^)]+\))?!?: \S/;
@@ -65,11 +66,14 @@ function packageScripts(json: string, files: string[]) {
     : files.includes('yarn.lock')
       ? 'yarn'
       : 'npm';
-  return VERIFY_SCRIPTS.filter((name) => {
-    const script = scripts[name];
-    // npm init's placeholder test script fails by design; it is not a verification command.
-    return typeof script === 'string' && !/no test specified/.test(script);
-  }).map((name) => (runner === 'npm' && name !== 'test' ? `npm run ${name}` : `${runner} ${name}`));
+  return Object.keys(scripts)
+    .filter((name) => {
+      if (!VERIFY_SCRIPT.test(name)) return false;
+      const script = scripts[name];
+      // npm init's placeholder test script fails by design; it is not a verification command.
+      return typeof script === 'string' && !/no test specified/.test(script);
+    })
+    .map((name) => (runner === 'npm' && name !== 'test' ? `npm run ${name}` : `${runner} ${name}`));
 }
 
 /** Read the conventions at `ref` without touching any working tree. */
@@ -85,19 +89,40 @@ export async function readConventions(git: Git, ref: string): Promise<Repository
   const ciCommands = [
     ...new Set((await Promise.all(workflows.map(show))).flatMap(workflowCommands)),
   ];
+  const agentFiles = pick(/^(?:AGENTS|CLAUDE)\.md$/);
+  const contributing = pick(/^(?:\.github\/|docs\/)?CONTRIBUTING(?:\.[a-z]+)?$/i);
+  const pullRequestTemplates = pick(
+    /^(?:\.github\/|docs\/)?(?:pull_request_template\.md|PULL_REQUEST_TEMPLATE\/[^/]+\.md)$/i,
+  );
+  const issueTemplates = pick(
+    /^(?:\.github\/|docs\/)?(?:issue_template\.md|ISSUE_TEMPLATE\/[^/]+\.(?:md|ya?ml))$/i,
+  ).filter((file) => !/\/config\.ya?ml$/i.test(file));
+  const documents: RepositoryConventions['documents'] = [];
+  let remaining = 24000;
+  for (const path of [
+    ...agentFiles,
+    ...contributing,
+    ...pullRequestTemplates,
+    ...issueTemplates,
+    ...workflows,
+    ...(files.includes('package.json') ? ['package.json'] : []),
+  ]) {
+    if (remaining <= 0) break;
+    const body = await show(path);
+    const text = body.slice(0, Math.min(6000, remaining));
+    documents.push({ path, text, truncated: text.length < body.length });
+    remaining -= text.length;
+  }
   return {
     commitStyle: style,
     commitExamples: style
       ? subjects.filter((s) => (style.name === 'gitmoji' ? gitmoji : conventional).test(s))
       : [],
-    agentFiles: pick(/^(?:AGENTS|CLAUDE)\.md$/),
-    contributing: pick(/^(?:\.github\/|docs\/)?CONTRIBUTING(?:\.[a-z]+)?$/i),
-    pullRequestTemplates: pick(
-      /^(?:\.github\/|docs\/)?(?:pull_request_template\.md|PULL_REQUEST_TEMPLATE\/[^/]+\.md)$/i,
-    ),
-    issueTemplates: pick(
-      /^(?:\.github\/|docs\/)?(?:issue_template\.md|ISSUE_TEMPLATE\/[^/]+\.(?:md|ya?ml))$/i,
-    ).filter((f) => !/\/config\.ya?ml$/i.test(f)),
+    agentFiles,
+    contributing,
+    pullRequestTemplates,
+    issueTemplates,
+    documents,
     workflows,
     ciCommands,
     scripts: files.includes('package.json')
@@ -113,7 +138,8 @@ function found(c: RepositoryConventions) {
     c.contributing.length ||
     c.pullRequestTemplates.length ||
     c.issueTemplates.length ||
-    c.workflows.length
+    c.workflows.length ||
+    c.scripts.length
   );
 }
 
@@ -154,6 +180,7 @@ export function conventionsSummary(slug: string, c: RepositoryConventions) {
     c.pullRequestTemplates.length && `PR 按 ${c.pullRequestTemplates[0]} 的模板写`,
     c.ciCommands.length && `CI 跑 ${list(c.ciCommands.slice(0, 3))}`,
     c.agentFiles.length && `遵循 ${list(c.agentFiles)}`,
+    c.scripts.length && `验证入口有 ${list(c.scripts)}`,
   ].filter(Boolean);
   return `读了 ${slug} 的约定${parts.length ? `：${parts.join('，')}` : ''}。已写进团队说明的“仓库约定”，之后的工作照此执行。`;
 }

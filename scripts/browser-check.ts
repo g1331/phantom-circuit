@@ -38,7 +38,7 @@ import {
   openTask,
 } from './browser-pages.ts';
 
-const artifacts = resolve('test-results');
+const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
 // A fixed default port collided when two checkouts ran browser checks at once.
 // Chromium refuses some ports outright (net::ERR_UNSAFE_PORT); those above 1024 are skipped.
 const unsafePorts = new Set([
@@ -65,7 +65,7 @@ await mkdir(artifacts, { recursive: true });
 const store = new Store(':memory:');
 store.saveSettings({ ...store.settings(), defaultAgent: 'codex' });
 const imageState = await mkdtemp(join(tmpdir(), 'phantom-browser-images-'));
-const ws = new Workspaces(resolve('.cache/browser-workspaces'), store);
+const ws = new Workspaces(join(imageState, 'workspaces'), store);
 class OfflinePM extends Codex {
   override async start() {
     throw new Error('Browser fixture: PM offline');

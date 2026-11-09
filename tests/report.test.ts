@@ -1350,3 +1350,184 @@ test('CLI leaves a genuine multi-message source cycle unknown rather than assign
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('CLI compares observed rates by pinned version without claiming complete intervention coverage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-versions-'));
+  try {
+    const db = database(root);
+    project(db);
+    const mergeTask = (id: string, versions: (number | undefined)[]) => {
+      task(db, id);
+      merged(db, id);
+      versions.forEach((version, index) =>
+        run(db, `${id}-run-${index}`, id, 10, {
+          ...(version === undefined ? {} : { teamInstructionsVersion: version }),
+        }),
+      );
+    };
+    const message = (id: string, taskId: string) =>
+      put(db, 'message', {
+        id,
+        projectId: 'p',
+        role: 'user',
+        intent: 'feedback',
+        content: `Task ${taskId} 需要改`,
+        createdAt: '2026-01-01T00:00:05Z',
+      });
+    // Version 1: five merges, two with an attributed user message.
+    for (const id of ['v1-a', 'v1-b', 'v1-c', 'v1-d', 'v1-e']) mergeTask(id, [1, 1]);
+    message('m1', 'v1-a');
+    message('m2', 'v1-b');
+    // Version 2: five merges, one with an attributed user message. A retrospective
+    // Run started after the merge does not move the Task to a later version.
+    for (const id of ['v2-a', 'v2-b', 'v2-c', 'v2-d', 'v2-e']) mergeTask(id, [2]);
+    run(db, 'v2-a-after', 'v2-a', 10, {
+      role: 'pm',
+      teamInstructionsVersion: 3,
+      startedAt: '2026-01-01T00:00:20.000Z',
+    });
+    message('m3', 'v2-c');
+    put(db, 'message', {
+      id: 'missing-time',
+      projectId: 'p',
+      role: 'user',
+      intent: 'feedback',
+      content: 'Task v2-a',
+    });
+    // Version 0 (empty text) with too few samples to give a rate.
+    mergeTask('v0-a', [0]);
+    mergeTask('mixed', [1, 2]);
+    mergeTask('legacy', [undefined]);
+    mergeTask('partly-legacy', [undefined, 2]);
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /按团队说明版本（合并前 Run 固定的版本）：/);
+    assert.match(
+      stdout,
+      /  v2：合并 5；观测无干预合并率（按现有持久归因）4\/5 \(80%\)；已发现干预 1；可归因不明 1；未覆盖\/漏记仍可能存在\n/,
+    );
+    assert.match(
+      stdout,
+      /  v1：合并 5；观测无干预合并率（按现有持久归因）3\/5 \(60%\)；已发现干预 2；可归因不明 0；未覆盖\/漏记仍可能存在\n/,
+    );
+    assert.match(
+      stdout,
+      /  v0（空说明）：合并 1；样本不足 5，不给比率；未发现归因干预 1；已发现干预 0；可归因不明 0；未覆盖\/漏记仍可能存在\n/,
+    );
+    assert.match(stdout, /  跨版本：合并 1（mixed mixed v1→v2）\n/);
+    assert.match(stdout, /  未记录版本：合并 2；旧 Run 未记录版本，干预记录完整性未知\n/);
+    // Existing overall results are unchanged.
+    assert.match(stdout, /确认合并任务：14；/);
+    assert.match(
+      stdout,
+      /无干预合并率（保守下界）：0\/14 \(0%\)；确认无干预：0；确认有干预：3；未知：11/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI lists an adopted practice as ineffective when its interruption category recurs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-report-practices-'));
+  try {
+    const db = database(root);
+    project(db);
+    const sections = { repository: '', engineering: '', delivery: '' };
+    const version = (id: number, extra: Record<string, unknown> = {}) =>
+      db.prepare('INSERT INTO documents VALUES (?,?,?)').run(
+        'teamInstructions',
+        `p:${id}`,
+        JSON.stringify({
+          projectId: 'p',
+          version: id,
+          sections,
+          source: 'user',
+          createdAt,
+          ...extra,
+        }),
+      );
+    const suggestion = (taskId: string, category: string, status: string, evidence = true) => {
+      put(db, 'suggestion', {
+        id: `retrospective:${taskId}`,
+        projectId: 'p',
+        taskId,
+        baseVersion: 1,
+        category,
+        interruptionIds: [`message:m-${taskId}`],
+        reason: '复盘结论',
+        status,
+        createdAt,
+      });
+      if (evidence)
+        put(db, 'message', {
+          id: `m-${taskId}`,
+          projectId: 'p',
+          role: 'user',
+          intent: 'feedback',
+          content: `Task ${taskId}`,
+          createdAt: '2026-01-01T00:00:05Z',
+        });
+    };
+    const adopted = (id: number, taskId: string, category: string) =>
+      version(id, {
+        source: 'team',
+        taskId,
+        suggestionId: `retrospective:${taskId}`,
+        interruptionIds: [`message:m-${taskId}`],
+        interruptionCategories: [category],
+      });
+    const mergeTask = (id: string, pinned: number) => {
+      task(db, id);
+      merged(db, id);
+      run(db, `${id}-run`, id, 10, { teamInstructionsVersion: pinned });
+    };
+    version(1);
+    mergeTask('origin', 1);
+    suggestion('origin', 'port_conflict', 'adopted');
+    adopted(2, 'origin', 'port_conflict');
+    for (const id of ['v2-a', 'v2-b', 'v2-c']) mergeTask(id, 2);
+    // The same category recurs after v2 took effect.
+    suggestion('v2-c', 'port_conflict', 'no_change');
+    // A different category, and a failed retrospective whose category is a placeholder.
+    suggestion('v2-a', 'unstable_check', 'ignored');
+    suggestion('v2-b', 'no_rule', 'failed');
+    // A post-merge retrospective Run without merged_at ordering does not move the Task.
+    run(db, 'v2-c-retro', 'v2-c', 10, {
+      role: 'pm',
+      purpose: 'retrospective',
+      teamInstructionsVersion: 3,
+      startedAt: '2026-01-01T00:00:05.000Z',
+    });
+    suggestion('src3', 'missing_evidence', 'reverted');
+    adopted(3, 'src3', 'missing_evidence');
+    mergeTask('v3-a', 3);
+    // Restoring v2 withdraws v3; a later missing-evidence recurrence is not v3's failure.
+    version(4, { restoredFromVersion: 2 });
+    mergeTask('v4-a', 4);
+    suggestion('v4-a', 'missing_evidence', 'pending');
+    // Restoring the adopted version reinstates its practice; it is not withdrawn forever.
+    version(5, { restoredFromVersion: 3 });
+    mergeTask('v5-a', 5);
+    suggestion('v5-a', 'missing_evidence', 'no_change');
+    // A model's category alone is not evidence of an attributable interruption.
+    mergeTask('unproven', 5);
+    suggestion('unproven', 'missing_evidence', 'no_change', false);
+    // "No rule" explains no proposed change, not which kind of interruption occurred.
+    mergeTask('unclassified', 5);
+    suggestion('unclassified', 'no_rule', 'no_change');
+    db.close();
+    const { stdout } = await report(root);
+    assert.match(stdout, /团队采用的做法（生效后同类打扰是否再出现）：\n/);
+    assert.match(
+      stdout,
+      /  v2 端口冲突（来自 Task origin origin）：未见效；生效后合并 8，同类再出现 1（v2-c v2-c）；复盘未分类 2；干预覆盖未知 2\n/,
+    );
+    assert.match(
+      stdout,
+      /  v3 缺少证据（来自 Task src3）：未见效；生效后合并 4，同类再出现 1（v5-a v5-a）；复盘未分类 1；干预覆盖未知 2\n/,
+    );
+    assert.match(stdout, /  v2：合并 3；样本不足 5/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

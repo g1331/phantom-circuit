@@ -62,8 +62,8 @@ export async function devFixture(prefix: string) {
       store.updateTask(t.id, { issue: 1, issueBody: 'body' });
       return { number: 1 };
     }
-    override async api<T = any>(): Promise<T> {
-      return { state: 'open', body: 'body' } as T;
+    override async api<T = any>(endpoint: string): Promise<T> {
+      return (endpoint.includes('/pulls?') ? [] : { state: 'open', body: 'body' }) as T;
     }
     override async syncStatus() {}
   }

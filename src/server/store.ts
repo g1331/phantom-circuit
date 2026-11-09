@@ -818,7 +818,7 @@ export class Store {
   bindRunThread(run: Run, threadId: string) {
     const bound = { ...this.get('run', run.id)!, threadId };
     this.put('run', run.id, bound);
-    if (run.ownerMessageId || run.purpose === 'retrospective') return;
+    if (run.ownerMessageId || run.purpose) return;
     if (
       run.role === 'dev' &&
       run.taskId &&
@@ -2686,8 +2686,14 @@ export class Store {
       }
     const recovered: RecoveryItem[] = this.list('recovery').map((item) => structuredClone(item));
     for (const r of interruptedRuns) {
-      if (r.purpose === 'retrospective') {
-        this.finishRun(r.id, 'failed', '复盘已中断，不重复模型调用');
+      if (r.purpose) {
+        this.finishRun(
+          r.id,
+          'failed',
+          r.purpose === 'retrospective'
+            ? '复盘已中断，不重复模型调用'
+            : '仓库约定学习已中断，可在项目页重新读取',
+        );
         continue;
       }
       const existing = this.list('recovery').find((item) => item.oldRunId === r.id);

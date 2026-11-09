@@ -16,6 +16,17 @@ async function gitmojiRepository(source: string) {
   const git = (args: string[]) => command('git', args, source);
   await mkdir(join(source, '.github', 'workflows'), { recursive: true });
   await writeFile(join(source, '.github', 'pull_request_template.md'), template);
+  await writeFile(join(source, 'AGENTS.md'), 'Always verify the browser flow before delivery.\n');
+  await writeFile(
+    join(source, 'CONTRIBUTING.md'),
+    'Describe migration risks in every pull request.\n',
+  );
+  await writeFile(
+    join(source, 'package.json'),
+    JSON.stringify({
+      scripts: { 'test:browser': 'playwright test', test: 'node --test' },
+    }),
+  );
   await writeFile(
     join(source, '.github', 'workflows', 'ci.yml'),
     [
@@ -45,15 +56,22 @@ async function gitmojiRepository(source: string) {
 function deliveringModel(reply: (n: number) => string, worktree: () => string) {
   const instructions: string[] = [];
   const prompts: string[] = [];
+  let learning = false;
   class Model extends Codex {
     override async start() {}
     override async stop() {}
     override async thread(o: Parameters<Codex['thread']>[0]) {
       instructions.push(o.instructions!);
+      learning = o.instructions!.includes('Repository convention learning');
       return 'dev';
     }
     override async turn(_thread: string, prompt: string) {
       prompts.push(prompt);
+      if (learning)
+        return JSON.stringify({
+          repository: '- 学习补充：PR 说明迁移风险，并验证浏览器流程。',
+          summary: '已读说明和近期 PR。',
+        });
       await writeFile(join(worktree(), 'change.txt'), `done ${prompts.length}\n`);
       return reply(prompts.length);
     }
@@ -61,9 +79,31 @@ function deliveringModel(reply: (n: number) => string, worktree: () => string) {
   return { Model, instructions, prompts };
 }
 
+class LearningModel extends Codex {
+  override async start() {}
+  override async stop() {}
+  override async thread() {
+    return 'learning';
+  }
+  override async turn() {
+    return JSON.stringify({ repository: '', summary: '已读仓库约定。' });
+  }
+}
+
 test('a gitmoji repository with a PR template shapes the Task commit and pull request', async () => {
   const { root, store, project, repo, task, github } = await devFixture('phantom-conventions-');
   github.publishPR = async () => ({}) as never;
+  github.api = async <T>(endpoint: string) => {
+    assert.match(endpoint, /\/pulls\?/);
+    return [
+      {
+        number: 7,
+        title: '✨ Ship greeting',
+        body: '## Migration risk\nNone',
+        html_url: 'https://example.invalid/pull/7',
+      },
+    ] as T;
+  };
   await gitmojiRepository(repo.path);
   const devMessage = '✨ Add change file\n\nWrites the change the Task asked for.';
   const devBody = '## What changed\nAdded change.txt.\n\n## How it was tested\nnode -e 0';
@@ -83,6 +123,11 @@ test('a gitmoji repository with a PR template shapes the Task commit and pull re
     assert.match(current.sections.repository, /gitmoji/);
     assert.match(current.sections.repository, /\.github\/pull_request_template\.md/);
     assert.match(current.sections.repository, /npm test/);
+    assert.match(current.sections.repository, /npm run test:browser/);
+    assert.match(model.prompts[0], /Always verify the browser flow/);
+    assert.match(model.prompts[0], /Describe migration risks/);
+    assert.match(model.prompts[0], /## What changed/);
+    assert.match(model.prompts[0], /## Migration risk/);
     assert.match(learned.summary, /gitmoji/);
     const told = store.list('message').filter((m) => m.role === 'assistant');
     assert.equal(told.at(-1)?.content, learned.summary);
@@ -97,9 +142,9 @@ test('a gitmoji repository with a PR template shapes the Task commit and pull re
       'Dev finished host validation',
     );
     assert.equal(store.task(task.id).stage, 'reviewing');
-    assert.match(model.instructions[0], /gitmoji/);
-    assert.match(model.prompts[0], /commitMessage/);
-    assert.match(model.prompts[0], /pullRequestBody/);
+    assert.match(model.instructions.at(-1)!, /gitmoji/);
+    assert.match(model.prompts.at(-1)!, /commitMessage/);
+    assert.match(model.prompts.at(-1)!, /pullRequestBody/);
     const committed = (
       await command('git', ['log', '-1', '--format=%B'], store.task(task.id).worktree!)
     ).stdout.trim();
@@ -156,7 +201,13 @@ test('a repository without conventions keeps the default commit and pull request
 
 test('learning again replaces only that repository block and keeps the user text', async () => {
   const { root, store, project, repo, github } = await devFixture('phantom-relearn-');
-  const engine = new Engine(store, github, new Workspaces(join(root, 'ws'), store), root);
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(join(root, 'ws'), store),
+    root,
+    () => new LearningModel(),
+  );
   try {
     await gitmojiRepository(repo.path);
     await engine.learnConventions(repo.id);
@@ -198,7 +249,7 @@ test('the Project page can ask the team to read the repositories again', async (
   const { Previews } = await import('../src/server/preview.ts');
   const { root, store, project, repo, github } = await devFixture('phantom-relearn-http-');
   const ws = new Workspaces(join(root, 'ws'), store);
-  const engine = new Engine(store, github, ws, root);
+  const engine = new Engine(store, github, ws, root, () => new LearningModel());
   const app = createApp(store, engine, new Previews(store, ws));
   try {
     const session = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
@@ -227,6 +278,58 @@ test('the Project page can ask the team to read the repositories again', async (
     assert.match(current.sections.repository, /gitmoji/);
   } finally {
     await app.close();
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('package-only repositories learn test and namespaced verification commands without executing them', async () => {
+  const { root, store, project, repo, github } = await devFixture('phantom-package-conventions-');
+  const git = (args: string[]) => command('git', args, repo.path);
+  const prompts: string[] = [];
+  class Model extends LearningModel {
+    override async turn(_thread?: string, prompt?: string) {
+      prompts.push(prompt!);
+      return super.turn();
+    }
+  }
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(join(root, 'ws'), store),
+    root,
+    () => new Model(),
+  );
+  store.put('project', project.id, { ...store.project(project.id), pmThreadId: 'liaison-session' });
+  try {
+    await writeFile(
+      join(repo.path, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          test: 'vitest run',
+          'test:browser': 'playwright test',
+          'check:types': 'tsc --noEmit',
+          start: 'node server.js',
+        },
+      }),
+    );
+    await git(['add', '.']);
+    await git(['commit', '-m', 'Package scripts']);
+    await git(['push', 'origin', 'main']);
+    await engine.learnConventions(repo.id);
+    const current = store.currentTeamInstructions(project.id);
+    assert.equal(current.source, 'team');
+    assert.match(current.sections.repository, /npm test/);
+    assert.match(current.sections.repository, /npm run test:browser/);
+    assert.match(current.sections.repository, /npm run check:types/);
+    assert.doesNotMatch(current.sections.repository, /npm run start/);
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /vitest run/);
+    assert.equal((await git(['status', '--porcelain'])).stdout.trim(), '');
+    assert.equal(store.list('run').filter((run) => run.purpose === 'conventions').length, 1);
+    assert.equal(store.project(project.id).pmThreadId, 'liaison-session');
+  } finally {
     await engine.stop();
     store.close();
     await rm(root, { recursive: true, force: true });

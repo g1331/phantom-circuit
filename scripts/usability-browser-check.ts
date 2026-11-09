@@ -226,7 +226,9 @@ export async function checkUsability() {
     );
   });
   try {
-    await mkdir(resolve('test-results'), { recursive: true });
+    await mkdir(resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'), {
+      recursive: true,
+    });
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'Conversation fixture', exact: true }).click();
@@ -309,7 +311,7 @@ export async function checkUsability() {
           );
           await page.locator('.sidebar').screenshot({
             path: resolve(
-              'test-results',
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
               `sidebar-${width}-${locale}-${collapsed ? 'collapsed' : 'expanded'}.png`,
             ),
           });
@@ -376,7 +378,10 @@ export async function checkUsability() {
           );
           await menu.locator('button').last().hover();
           await page.screenshot({
-            path: resolve('test-results', `preference-menu-${preference}-${width}-${theme}.png`),
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `preference-menu-${preference}-${width}-${theme}.png`,
+            ),
           });
           await page.mouse.click(3, 3);
           await menu.waitFor({ state: 'hidden' });
@@ -483,12 +488,18 @@ export async function checkUsability() {
     );
     await page.screenshot({
       animations: 'disabled',
-      path: resolve('test-results', 'conversation-navigation-light.png'),
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'conversation-navigation-light.png',
+      ),
     });
     await choosePreference(page, 'theme', 'dark');
     await page.screenshot({
       animations: 'disabled',
-      path: resolve('test-results', 'conversation-navigation-dark.png'),
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'conversation-navigation-dark.png',
+      ),
     });
     const readingInput = store.addMessage(
       conversationProject.id,
@@ -575,7 +586,10 @@ export async function checkUsability() {
     );
     await page.screenshot({
       animations: 'disabled',
-      path: resolve('test-results', 'conversation-navigation-mobile.png'),
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'conversation-navigation-mobile.png',
+      ),
     });
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.getByRole('button', { name: 'UI fixture', exact: true }).click();
@@ -727,7 +741,12 @@ export async function checkUsability() {
       1,
       'detail conditions remain during unrelated state changes',
     );
-    await page.screenshot({ path: resolve('test-results', 'usability-detail-refresh.png') });
+    await page.screenshot({
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'usability-detail-refresh.png',
+      ),
+    });
     release();
     hold = undefined;
     await openPage(page, 'project');
@@ -818,7 +837,9 @@ export async function checkUsability() {
     await workPage.getByRole('heading', { name: /^Needs you/ }).waitFor();
     await page.reload();
     await workPage.getByRole('heading', { name: 'Work', exact: true }).waitFor();
-    await mkdir(resolve('test-results'), { recursive: true });
+    await mkdir(resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'), {
+      recursive: true,
+    });
     const views = [
       { page: 'home', name: 'Conversation' },
       { page: 'work', name: 'Work' },
@@ -885,7 +906,7 @@ export async function checkUsability() {
           }
           await page.screenshot({
             path: resolve(
-              'test-results',
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
               `usability-${viewport.width}x${viewport.height}-${theme}-${view.name}.png`,
             ),
           });
@@ -933,7 +954,10 @@ export async function checkUsability() {
         element.scrollTop = 0;
       });
       await page.screenshot({
-        path: resolve('test-results', `audit-${name}-${width}-${theme}.png`),
+        path: resolve(
+          process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+          `audit-${name}-${width}-${theme}.png`,
+        ),
       });
       await modal.getByRole('button', { name: 'Close dialog', exact: true }).click();
       await modal.waitFor({ state: 'detached' });
@@ -953,7 +977,10 @@ export async function checkUsability() {
           `${width}px project page overflow`,
         );
         await page.screenshot({
-          path: resolve('test-results', `audit-project-page-${width}-${theme}.png`),
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `audit-project-page-${width}-${theme}.png`,
+          ),
         });
         await projectPage
           .getByRole('button', { name: 'Configure fixture-repo', exact: true })

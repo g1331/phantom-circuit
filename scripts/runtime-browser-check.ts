@@ -284,7 +284,9 @@ export async function checkRuntimeUI() {
     await route.fulfill({ json: result });
   });
   try {
-    await mkdir(resolve('test-results'), { recursive: true });
+    await mkdir(resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'), {
+      recursive: true,
+    });
     await page.goto('http://127.0.0.1:4330');
     await page
       .getByText('The service is temporarily unavailable; try again later', { exact: true })
@@ -299,7 +301,12 @@ export async function checkRuntimeUI() {
     await clarification.waitFor();
     await page.setViewportSize({ width: 390, height: 500 });
     await clarification.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: resolve('test-results', 'runtime-actions-en-390.png') });
+    await page.screenshot({
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'runtime-actions-en-390.png',
+      ),
+    });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
@@ -530,7 +537,12 @@ export async function checkRuntimeUI() {
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
-    await page.screenshot({ path: resolve('test-results', 'runtime-delivery-mobile.png') });
+    await page.screenshot({
+      path: resolve(
+        process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+        'runtime-delivery-mobile.png',
+      ),
+    });
     await choosePreference(page, 'language', 'zh-CN');
     await page.getByRole('button', { name: '引导当前 PM', exact: true }).waitFor();
     await page
@@ -572,7 +584,10 @@ export async function checkRuntimeUI() {
             })
             .click();
           await page.screenshot({
-            path: resolve('test-results', `runtime-settings-${locale}-${width}-${theme}.png`),
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `runtime-settings-${locale}-${width}-${theme}.png`,
+            ),
           });
           assert.equal(
             await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -596,7 +611,10 @@ export async function checkRuntimeUI() {
             .locator('.usage-panel')
             .evaluate((element) => element.scrollIntoView({ block: 'start' }));
           await page.screenshot({
-            path: resolve('test-results', `runtime-usage-${locale}-${width}-${theme}.png`),
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `runtime-usage-${locale}-${width}-${theme}.png`,
+            ),
           });
           if (width === 390) {
             await runRecord
@@ -608,7 +626,10 @@ export async function checkRuntimeUI() {
               })
               .scrollIntoViewIfNeeded();
             await page.screenshot({
-              path: resolve('test-results', `runtime-run-cost-${locale}-${theme}.png`),
+              path: resolve(
+                process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+                `runtime-run-cost-${locale}-${theme}.png`,
+              ),
             });
           }
           assert.equal(

@@ -67,7 +67,7 @@ export async function checkRetrospective(
   await page.getByRole('link', { name: '查看团队说明修改建议' }).waitFor();
   assert.match(await page.locator('.brief-needs:visible h3').innerText(), /1/);
   assert.equal(await page.getByRole('link', { name: '查看团队说明修改建议' }).count(), 1);
-  for (const width of [1440, 1366, 390])
+  for (const width of [1440, 1366, 1280, 390])
     for (const theme of ['dark', 'light']) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       await choosePreference(page, 'theme', theme);
@@ -87,7 +87,7 @@ export async function checkRetrospective(
   await fold.locator('summary').filter({ hasText: '预览端口冲突后改进' }).click();
   await fold.getByText(interruption.content, { exact: true }).waitFor();
   assert.equal(store.currentTeamInstructions(projectId).version, base.version);
-  for (const width of [1440, 1366, 390])
+  for (const width of [1440, 1366, 1280, 390])
     for (const theme of ['dark', 'light']) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       await choosePreference(page, 'theme', theme);
@@ -132,6 +132,7 @@ export async function checkRetrospective(
   await page.goto(`${origin}/#/p/${projectId}/brief`);
   assert.equal(await page.getByRole('link', { name: '查看团队说明修改建议' }).count(), 0);
   console.log(
-    'Retrospective browser checks passed: one brief item, evidence, before/after, adopt, ignore, auto-adopt; 1440/1366/390 dark/light screenshots.',
+    'Retrospective browser checks passed: one brief item, evidence, before/after, ' +
+      'adopt, ignore, auto-adopt; 1440/1366/1280/390 dark/light screenshots.',
   );
 }

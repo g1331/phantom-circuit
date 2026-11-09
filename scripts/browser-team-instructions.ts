@@ -1,7 +1,8 @@
 import { checkRetrospective } from './browser-retrospective.ts';
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { chromium } from 'playwright';
@@ -22,21 +23,9 @@ export async function checkTeamInstructions() {
     engineering: '先验证失败，再修复问题。\n使用真实临时 Git 仓库检查完整生命周期。',
     delivery: '附上验证结果与用户可见的变化。',
   };
-  store.saveTeamInstructions(project.id, sections, { source: 'team', baseVersion: 0 });
-  const run = store.run('dev', project.id, 'backend');
-  store.finishRun(run.id, 'completed');
-  store.saveTeamInstructions(
-    project.id,
-    { ...sections, delivery: '附上验证结果、提交哈希和界面截图。' },
-    { source: 'user', baseVersion: 1 },
-  );
-  const ws = new Workspaces(resolve('.phantom/browser-team-instructions'), store);
-  const engine = new Engine(
-    store,
-    new GitHub(store),
-    ws,
-    resolve('.phantom/browser-team-instructions'),
-  );
+  const root = await mkdtemp(join(tmpdir(), 'phantom-browser-team-'));
+  const ws = new Workspaces(join(root, 'workspaces'), store);
+  const engine = new Engine(store, new GitHub(store), ws, root);
   const port = await new Promise<number>((done, fail) => {
     const probe = createServer().once('error', fail);
     probe.listen(0, '127.0.0.1', () => {
@@ -51,7 +40,7 @@ export async function checkTeamInstructions() {
     headless: true,
     channel: process.platform === 'win32' ? 'msedge' : undefined,
   });
-  const artifacts = resolve('test-results');
+  const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
   try {
     const context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
@@ -71,6 +60,30 @@ export async function checkTeamInstructions() {
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto(`${origin}/#/p/${project.id}/project`);
     const panel = page.getByRole('region', { name: '团队说明', exact: true });
+    await panel.locator('summary').filter({ hasText: '版本历史' }).click();
+    await panel.getByText('尚无已保存版本。', { exact: true }).waitFor();
+    await panel.locator('summary').filter({ hasText: '比较版本' }).click();
+    await panel.getByText('保存两个版本后可比较差异。', { exact: true }).waitFor();
+    for (const width of [1280, 390]) {
+      for (const theme of ['dark', 'light']) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+        await choosePreference(page, 'theme', theme);
+        await panel.scrollIntoViewIfNeeded();
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({
+          path: resolve(artifacts, `team-instructions-${width}-${theme}-empty.png`),
+        });
+      }
+    }
+    store.saveTeamInstructions(project.id, sections, { source: 'team', baseVersion: 0 });
+    const run = store.run('dev', project.id, 'backend');
+    store.finishRun(run.id, 'completed');
+    store.saveTeamInstructions(
+      project.id,
+      { ...sections, delivery: '附上验证结果、提交哈希和界面截图。' },
+      { source: 'user', baseVersion: 1 },
+    );
+    await page.reload();
     await panel.getByRole('button', { name: '编辑说明' }).click();
     await panel.getByLabel('工程做法', { exact: true }).fill('通过界面保存的新工程做法。');
     await panel.getByRole('button', { name: '保存新版本' }).click();
@@ -141,13 +154,15 @@ export async function checkTeamInstructions() {
     });
     assert.deepEqual(errors, []);
     console.log(
-      'Team instructions browser checks passed: edit, length limit, history, restore, comparisons, pinned Run text; 1440/1366/1280/390 dark and light screenshots.',
+      'Team instructions browser checks passed: edit, length limit, history, restore, ' +
+        'comparisons, pinned Run text; 1440/1366/1280/390 dark and light screenshots.',
     );
   } finally {
     await browser.close();
     await app.close();
     await engine.stop();
     store.close();
+    await rm(root, { recursive: true, force: true });
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)

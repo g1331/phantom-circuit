@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { projectAttribution, taskInterruptions } from './interruption-attribution.ts';
+import {
+  interruptionKinds,
+  projectAttribution,
+  taskInterruptions,
+} from './interruption-attribution.ts';
 import type { Store } from './store.ts';
 import type { Task } from '../shared/types.ts';
 
@@ -46,19 +50,10 @@ export function retrospectiveEvidence(store: Store, task: Task) {
   const merge = context.merged.find((item) => item.task.id === task.id);
   if (!merge) return [];
   const evidence = taskInterruptions(context, merge.task, merge.at);
-  const kinds: Record<string, string> = {
-    消息: 'message',
-    事故: 'incident',
-    暂停: 'event',
-    恢复: 'event',
-    取消: 'event',
-    澄清: 'clarification',
-    用户暂停记录: 'recovery',
-  };
   const result: { id: string; kind: string; detail: string }[] = [];
   for (const [category, ids] of evidence)
     for (const id of ids) {
-      const kind = kinds[category];
+      const kind = interruptionKinds[category];
       const record =
         kind === 'event'
           ? store.projectEvents(task.projectId).find((e) => String(e.id) === id)

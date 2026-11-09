@@ -316,7 +316,7 @@ export interface InstructionSuggestion {
 }
 
 export interface Run {
-  purpose?: 'retrospective';
+  purpose?: 'retrospective' | 'conventions';
   /** 0 means empty instructions; absent means a legacy Run with no recorded version. */
   teamInstructionsVersion?: number;
   id: string;

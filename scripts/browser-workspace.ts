@@ -79,7 +79,7 @@ export async function checkWorkspace() {
     headless: true,
     channel: process.platform === 'win32' ? 'msedge' : undefined,
   });
-  const artifacts = resolve('test-results');
+  const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
   try {
     const context = await browser.newContext({

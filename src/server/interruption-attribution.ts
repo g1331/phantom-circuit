@@ -44,6 +44,7 @@ export const schemas = {
     startedAt: z.string().optional(),
     // Absent on Runs created before team instructions were versioned (ADR 0016).
     teamInstructionsVersion: counter.int().optional(),
+    purpose: z.string().optional(),
   }),
   operation: z.object({ id, kind: id, status: id, result: z.unknown().optional() }),
   incident: scoped.extend({
@@ -197,6 +198,17 @@ export type ReportData = {
   >[];
 };
 export type ReportEvent = z.infer<typeof eventSchema> & { id: number };
+/** Stable source prefixes shared by retrospective provenance and recurrence reports. */
+export const interruptionKinds: Record<string, string> = {
+  消息: 'message',
+  事故: 'incident',
+  暂停: 'event',
+  恢复: 'event',
+  取消: 'event',
+  澄清: 'clarification',
+  用户暂停记录: 'recovery',
+};
+
 export function projectAttribution(
   data: ReportData,
   events: ReportEvent[],
@@ -286,6 +298,7 @@ export function projectAttribution(
   const messageEvidence = new Map<string, Set<string>>();
   let unassignedMessages = 0;
   let messageTimeGaps = 0;
+  const uncertainTasks = new Set<string>();
   for (const message of messages.values()) {
     if (message.role !== 'user' || !['discuss', 'feedback'].includes(message.intent ?? ''))
       continue;
@@ -357,6 +370,7 @@ export function projectAttribution(
       const end = merged.find((item) => item.task.id === owner)?.at;
       if (date === undefined || start === undefined || end === undefined) {
         gap = true;
+        uncertainTasks.add(owner);
         continue;
       }
       if (date < start || date > end) continue;
@@ -391,6 +405,30 @@ export function projectAttribution(
     }
     return taskId;
   };
+  for (const event of controls) {
+    const taskId = controlTask(event);
+    const task = taskId ? byId.get(taskId) : undefined;
+    if (!task) continue;
+    const start = time(task.createdAt);
+    const end = merged.find((item) => item.task.id === task.id)?.at;
+    const at = time(event.at);
+    if (
+      at !== undefined &&
+      ((start !== undefined && at < start) || (end !== undefined && at > end))
+    )
+      continue;
+    if (
+      at === undefined ||
+      start === undefined ||
+      end === undefined ||
+      controlSource(event) === 'unknown'
+    )
+      uncertainTasks.add(task.id);
+  }
+  for (const incident of incidents) {
+    const taskId = linkedTask(incident);
+    if (taskId && waitingWindows.get(incident.id) === 'unknown') uncertainTasks.add(taskId);
+  }
 
   return {
     tasks,
@@ -413,6 +451,7 @@ export function projectAttribution(
     messageEvidence,
     unassignedMessages,
     messageTimeGaps,
+    uncertainTasks,
     controls,
     controlTask,
   };
