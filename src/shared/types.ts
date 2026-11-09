@@ -64,6 +64,7 @@ export interface Settings {
   secondaryReviewProfiles?: Partial<Record<AgentKind, Profile>>;
 }
 export interface Project {
+  autoAdoptInstructions?: boolean;
   profiles: Settings['profiles'];
   ompProfiles?: Settings['ompProfiles'];
   agentSelection?: AgentSelection;
@@ -155,6 +156,7 @@ export interface OwnerMessage {
   failureReason?: 'history_unavailable' | 'owner_changed' | 'answer_interrupted';
 }
 export interface Task {
+  retrospectiveChecked?: boolean;
   id: string;
   projectId: string;
   repoId: string;
@@ -284,9 +286,35 @@ export interface TeamInstructionsVersion {
   /** Reserved provenance for an adopted suggestion and its originating interruptions. */
   suggestionId?: string;
   interruptionIds?: string[];
+  interruptionCategories?: string[];
+}
+
+export type InterruptionCategory =
+  | 'port_conflict'
+  | 'missing_evidence'
+  | 'unstable_check'
+  | 'base_resync'
+  | 'engineering'
+  | 'product'
+  | 'authorization'
+  | 'spending'
+  | 'no_rule';
+export interface InstructionSuggestion {
+  id: string;
+  projectId: string;
+  taskId: string;
+  baseVersion: number;
+  category: InterruptionCategory;
+  interruptionIds: string[];
+  reason: string;
+  sections?: TeamInstructionSections;
+  status: 'pending' | 'adopted' | 'ignored' | 'reverted' | 'no_change' | 'failed' | 'running';
+  createdAt: string;
+  adoptedVersion?: number;
 }
 
 export interface Run {
+  purpose?: 'retrospective';
   /** 0 means empty instructions; absent means a legacy Run with no recorded version. */
   teamInstructionsVersion?: number;
   id: string;
@@ -567,6 +595,7 @@ export interface Operation {
 }
 export interface Snapshot {
   teamInstructions?: TeamInstructionsVersion[];
+  suggestions?: InstructionSuggestion[];
   activities: PMActivity[];
   providers: Provider[];
   projects: Project[];

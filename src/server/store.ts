@@ -25,6 +25,7 @@ import { aggregateCosts, costForUsage, normalizeUsage, type UsageMode } from './
 import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
+  InstructionSuggestion,
   TeamInstructionSections,
   TeamInstructionsVersion,
   AccountAllowance,
@@ -152,6 +153,7 @@ type Entities = {
   settings: Settings;
   document: DesignDocument;
   teamInstructions: TeamInstructionsVersion;
+  suggestion: InstructionSuggestion;
 };
 
 const pmRunTitles: Partial<Record<Run['status'], string>> = {
@@ -358,6 +360,7 @@ export class Store {
       restoredFromVersion?: number;
       suggestionId?: string;
       interruptionIds?: string[];
+      interruptionCategories?: string[];
     },
   ) {
     return this.transaction(() => {
@@ -374,6 +377,7 @@ export class Store {
         restoredFromVersion: provenance.restoredFromVersion,
         suggestionId: provenance.suggestionId,
         interruptionIds: provenance.interruptionIds,
+        interruptionCategories: provenance.interruptionCategories,
         projectId,
         version: current.version + 1,
         sections: structuredClone(sections),
@@ -387,11 +391,106 @@ export class Store {
   restoreTeamInstructions(projectId: string, version: number, baseVersion: number) {
     const previous = this.teamInstructionsHistory(projectId).find((v) => v.version === version);
     if (!previous) throw new Fault('团队说明版本不存在', 404);
-    return this.saveTeamInstructions(projectId, previous.sections, {
-      source: 'user',
-      baseVersion,
-      restoredFromVersion: version,
+    return this.transaction(() => {
+      const restored = this.saveTeamInstructions(projectId, previous.sections, {
+        source: 'user',
+        baseVersion,
+        restoredFromVersion: version,
+      });
+      for (const suggestion of this.list('suggestion')) {
+        if (
+          suggestion.projectId === projectId &&
+          suggestion.status === 'adopted' &&
+          suggestion.adoptedVersion! > version
+        )
+          this.put('suggestion', suggestion.id, { ...suggestion, status: 'reverted' });
+      }
+      return restored;
     });
+  }
+  recordRetrospective(
+    taskId: string,
+    input: Pick<
+      InstructionSuggestion,
+      'baseVersion' | 'category' | 'interruptionIds' | 'reason' | 'sections'
+    >,
+    status?: InstructionSuggestion['status'],
+  ) {
+    const task = this.task(taskId);
+    const id = `retrospective:${taskId}`;
+    const prior = this.get('suggestion', id);
+    if (prior && prior.status !== 'running') return prior;
+    if (input.sections && teamInstructionsLength(input.sections) > TEAM_INSTRUCTIONS_LIMIT)
+      throw new Fault(`团队说明总长度不能超过 ${TEAM_INSTRUCTIONS_LIMIT} 字符；原版本未变`, 400);
+    const change = (sections: TeamInstructionSections | undefined, baseVersion: number) => {
+      if (!sections) return undefined;
+      const base = this.teamInstructionsHistory(task.projectId).find(
+        (v) => v.version === baseVersion,
+      )?.sections ?? { repository: '', engineering: '', delivery: '' };
+      return JSON.stringify(
+        Object.entries(sections).filter(
+          ([key, text]) => base[key as keyof TeamInstructionSections] !== text,
+        ),
+      );
+    };
+    const proposedChange = change(input.sections, input.baseVersion);
+    const duplicate =
+      proposedChange &&
+      this.list('suggestion').some(
+        (s) =>
+          s.projectId === task.projectId &&
+          s.id !== id &&
+          s.category === input.category &&
+          change(s.sections, s.baseVersion) === proposedChange,
+      );
+    const suggestion: InstructionSuggestion = {
+      ...input,
+      id,
+      taskId,
+      projectId: task.projectId,
+      createdAt: prior?.createdAt ?? now(),
+      status: status ?? (duplicate || !input.sections ? 'no_change' : 'pending'),
+      reason: duplicate ? '此前已记录同类修改，保留原决定。' : input.reason,
+    };
+    this.put('suggestion', id, suggestion);
+    this.changes.emit('change');
+    if (suggestion.status === 'pending' && this.project(task.projectId).autoAdoptInstructions)
+      return this.decideSuggestion(task.projectId, id, 'adopt');
+    return suggestion;
+  }
+  decideSuggestion(projectId: string, id: string, action: 'adopt' | 'ignore') {
+    return this.transaction(() => {
+      this.project(projectId);
+      const suggestion = this.get('suggestion', id);
+      if (!suggestion || suggestion.projectId !== projectId) throw new Fault('建议不存在', 404);
+      if (suggestion.status !== 'pending') throw new Fault('建议已处理', 409);
+      let adoptedVersion: number | undefined;
+      if (action === 'adopt') {
+        if (!suggestion.sections) throw new Fault('建议没有修改内容', 400);
+        adoptedVersion = this.saveTeamInstructions(projectId, suggestion.sections, {
+          source: 'team',
+          baseVersion: suggestion.baseVersion,
+          taskId: suggestion.taskId,
+          suggestionId: id,
+          interruptionIds: suggestion.interruptionIds,
+          interruptionCategories: [suggestion.category],
+        }).version;
+      }
+      const next: InstructionSuggestion = {
+        ...suggestion,
+        status: action === 'adopt' ? 'adopted' : 'ignored',
+        adoptedVersion,
+      };
+      this.put('suggestion', id, next);
+      this.changes.emit('change');
+      return next;
+    });
+  }
+  setAutoAdoptInstructions(projectId: string, enabled: boolean) {
+    const project = { ...this.project(projectId), autoAdoptInstructions: enabled };
+    this.put('project', projectId, project);
+    this.changes.emit('change');
+    return project;
   }
   close() {
     this.db.close();
@@ -423,6 +522,7 @@ export class Store {
       .run(kind, key, JSON.stringify(value));
   }
   transaction<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = fn();
@@ -718,7 +818,7 @@ export class Store {
   bindRunThread(run: Run, threadId: string) {
     const bound = { ...this.get('run', run.id)!, threadId };
     this.put('run', run.id, bound);
-    if (run.ownerMessageId) return;
+    if (run.ownerMessageId || run.purpose === 'retrospective') return;
     if (
       run.role === 'dev' &&
       run.taskId &&
@@ -782,6 +882,17 @@ export class Store {
    * stay answerable for as long as the task exists: it is one of the host records a legacy
    * in-progress merge is verified against when its source branch has moved on.
    */
+  projectEvents(projectId: string): Event[] {
+    this.project(projectId);
+    return (
+      this.db.prepare('SELECT id,body FROM events ORDER BY id').all() as {
+        id: number;
+        body: string;
+      }[]
+    )
+      .map((row) => ({ ...JSON.parse(row.body), id: row.id }) as Event)
+      .filter((event) => event.projectId === projectId);
+  }
   taskEvents(taskId: string): Event[] {
     const pattern = `%"taskId":"${taskId.replace(/[\\%_]/g, '\\$&')}"%`;
     return (
@@ -1209,6 +1320,7 @@ export class Store {
   snapshot(): Snapshot {
     return {
       teamInstructions: this.list('teamInstructions'),
+      suggestions: this.list('suggestion'),
       activities: this.list('activity'),
       providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
@@ -2536,6 +2648,14 @@ export class Store {
   }
 
   recover(): RecoveryItem[] {
+    for (const suggestion of this.list('suggestion')) {
+      if (suggestion.status === 'running')
+        this.put('suggestion', suggestion.id, {
+          ...suggestion,
+          status: 'failed',
+          reason: '服务重启中断复盘；保留记录，不重复模型调用。',
+        });
+    }
     const interruptedRuns = this.list('run').filter((run) =>
       ['running', 'waiting', 'interrupted'].includes(run.status),
     );
@@ -2566,6 +2686,10 @@ export class Store {
       }
     const recovered: RecoveryItem[] = this.list('recovery').map((item) => structuredClone(item));
     for (const r of interruptedRuns) {
+      if (r.purpose === 'retrospective') {
+        this.finishRun(r.id, 'failed', '复盘已中断，不重复模型调用');
+        continue;
+      }
       const existing = this.list('recovery').find((item) => item.oldRunId === r.id);
       if (existing) {
         if (!recovered.some((item) => item.id === existing.id))

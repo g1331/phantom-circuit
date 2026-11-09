@@ -1,3 +1,4 @@
+import { checkRetrospective } from './browser-retrospective.ts';
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -127,6 +128,7 @@ export async function checkTeamInstructions() {
         await panel.getByRole('button', { name: '取消', exact: true }).click();
       }
     }
+    await checkRetrospective(page, store, project.id, origin, artifacts);
     // The version and its historical text are available in the Run itself.
     await page.goto(`${origin}/#/p/${project.id}/project/runs`);
     await page.locator('.run-row > details > summary, .run-log .fold > summary').first().click();

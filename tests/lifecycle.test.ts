@@ -16,7 +16,13 @@ for (const route of ['backend', 'frontend', 'fullstack', 'complex'] as const)
   test(`real worktrees complete ${route} through pinned Provider routing, review, rework and merge`, () =>
     completeLifecycle(route));
 
-async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | 'complex') {
+test('merged work with a user port interruption produces an adoptable instruction suggestion', () =>
+  completeLifecycle('backend', true));
+
+async function completeLifecycle(
+  route: 'backend' | 'frontend' | 'fullstack' | 'complex',
+  retrospective = false,
+) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-lifecycle-'));
   const source = join(root, 'source');
   const remote = join(root, 'remote.git');
@@ -82,6 +88,8 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
   let merged = false;
   let rejected = false;
   let devTurns = 0;
+  let interruptionId = '';
+  let retrospectiveTurns = 0;
   const axes: string[] = [];
   class FakeGitHub extends GitHub {
     override async setupProject() {}
@@ -113,8 +121,26 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
     override async merge(t: Task) {
       assert.equal(mergeReady(t), true);
       assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
+      if (retrospective) {
+        const message = store.addMessage(
+          p.id,
+          'user',
+          `For ${t.id}, port 3000 is occupied. Choose a free port.`,
+          'discuss',
+        );
+        store.updateMessage(message.id, { status: 'completed' });
+        interruptionId = `message:${message.id}`;
+      }
       merged = true;
-      return this.pull(t);
+      const remote = await this.pull(t);
+      if (retrospective)
+        store.put('operation', `merge:${t.id}:${t.head}`, {
+          id: `merge:${t.id}:${t.head}`,
+          kind: 'merge-pr',
+          status: 'done',
+          result: { ...remote, merged_at: new Date(Date.now() + 1000).toISOString() },
+        });
+      return remote;
     }
     override async syncStatus() {}
     override async api<T = any>(endpoint: string, method = 'GET', data?: any): Promise<T> {
@@ -225,6 +251,20 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
           tests: evidence.tests,
         });
       }
+      if (retrospective && prompt.startsWith('Review one merged Task')) {
+        retrospectiveTurns++;
+        assert.equal(merged, true);
+        assert.match(prompt, /port 3000/);
+        return JSON.stringify({
+          category: 'port_conflict',
+          interruptionIds: [interruptionId],
+          reason: 'Handle port selection internally.',
+          change: {
+            section: 'engineering',
+            text: 'Choose and verify a free preview port before asking the user.',
+          },
+        });
+      }
       assert.fail('the lifecycle must not call PM for merge acceptance');
     }
   }
@@ -252,7 +292,23 @@ async function completeLifecycle(route: 'backend' | 'frontend' | 'fullstack' | '
     assert.equal(result.issueBody, issue.body);
     assert.equal(devTurns, route === 'complex' ? 2 : 1);
     assert.ok(['dev', 'review'].every((role) => observed.includes(role)));
-    assert.equal(observed.includes('pm'), false, 'merge acceptance must not call PM');
+    if (retrospective) {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline && !store.list('suggestion').some((s) => s.status === 'pending'))
+        await new Promise((r) => setTimeout(r, 25));
+      const suggestion = store.list('suggestion')[0];
+      assert.equal(suggestion?.status, 'pending', JSON.stringify(suggestion));
+      assert.deepEqual(suggestion.interruptionIds, [interruptionId]);
+      assert.equal(retrospectiveTurns, 1);
+      assert.equal(store.currentTeamInstructions(p.id).version, 0);
+      store.decideSuggestion(p.id, suggestion.id, 'adopt');
+      assert.equal(store.currentTeamInstructions(p.id).taskId, task.id);
+    }
+    assert.equal(
+      observed.includes('pm'),
+      retrospective,
+      'PM acts only after merge for a retrospective',
+    );
     for (const run of store.list('run')) {
       const expected =
         run.role === 'review' && run.secondaryReview ? secondaryReview : assigned[run.profile];

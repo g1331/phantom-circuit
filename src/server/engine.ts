@@ -1,3 +1,8 @@
+import {
+  retrospectiveEvidence,
+  retrospectiveResult,
+  retrospectivePrompt,
+} from './retrospective.ts';
 import { Providers } from './providers.ts';
 import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
@@ -470,15 +475,18 @@ export class Engine {
       if (run.ownerMessageId && run.agentKind === 'omp') {
         // The native fork must be the independent process's first session, with owner tools only.
       } else if (run.agentKind === 'omp' && !(c instanceof Codex)) {
-        const cwd = run.taskId
-          ? this.store.task(run.taskId).worktree
-          : join(this.dataDir, 'projects', run.projectId);
+        const cwd =
+          run.purpose === 'retrospective'
+            ? this.store.repo(run.repoId!).path
+            : run.taskId
+              ? this.store.task(run.taskId).worktree
+              : join(this.dataDir, 'projects', run.projectId);
         if (!run.taskId) await mkdir(cwd!, { recursive: true });
         await c.start({
           cwd,
           profile: this.agentProfile(run),
           dataDir: this.dataDir,
-          allowedTools: ROLE_ALLOWED_TOOLS[run.role],
+          allowedTools: run.purpose === 'retrospective' ? [] : ROLE_ALLOWED_TOOLS[run.role],
         } as any);
       } else {
         const connection = await new Providers(this.store).connection(
@@ -1554,6 +1562,14 @@ export class Engine {
       }
       for (const task of this.store.list('task')) {
         if (historicalCompletionReason(task)) continue;
+        if (
+          task.stage === 'done' &&
+          !task.retrospectiveChecked &&
+          !this.store.get('suggestion', `retrospective:${task.id}`)
+        ) {
+          void this.track(this.retrospective(task));
+        }
+
         if (task.reviewClarificationId) {
           const key = `clarification:${task.id}`;
           if (!this.mergeBusy.has(key)) {
@@ -2929,6 +2945,105 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     await this.github.merge(task);
     await this.completed(task);
   }
+  private async retrospective(task: Task) {
+    if (task.retrospectiveChecked || this.store.get('suggestion', `retrospective:${task.id}`))
+      return;
+    const evidence = retrospectiveEvidence(this.store, task);
+    // Recording an internal check must not make an old delivery look newly updated.
+    this.store.put('task', task.id, { ...this.store.task(task.id), retrospectiveChecked: true });
+    if (!evidence.length) return;
+    const base = this.store.currentTeamInstructions(task.projectId);
+    const empty = {
+      baseVersion: base.version,
+      category: 'no_rule' as const,
+      interruptionIds: evidence.map((e) => e.id),
+      reason: '复盘尚未完成。',
+    };
+    // Persist the attempt before queueing or calling the model. A restart never repeats a paid call.
+    this.store.recordRetrospective(task.id, empty, 'running');
+    if (evidence.every((e) => e.kind === 'clarification')) {
+      this.store.recordRetrospective(task.id, {
+        ...empty,
+        category: 'product',
+        reason: '只有产品澄清，无工程修改建议。',
+      });
+      return;
+    }
+    try {
+      await this.pmQueue(task.projectId, async () => {
+        const base = this.store.currentTeamInstructions(task.projectId);
+        const prompt = retrospectivePrompt(this.store, task, base, evidence);
+        const run = {
+          ...this.store.run('pm', task.projectId, 'pm', task),
+          purpose: 'retrospective' as const,
+        };
+        this.store.put('run', run.id, run);
+        const profile = this.agentProfile(run);
+        const result = await this.withAgent(run, async (agent, signal) => {
+          const thread = await agent.thread({
+            cwd: this.store.repo(task.repoId).path,
+            profile,
+            instructions:
+              'You are the PM conducting a bounded post-merge retrospective. Return a single JSON result. No tools, no repository actions, no questions to the user.',
+            writable: false,
+            tools: [],
+            ephemeral: true,
+          });
+          this.saveThread(run, thread);
+          // Do not use structuredTurn: that helper retries malformed JSON. This budget is one call.
+          const reply = await agent.turn(
+            thread,
+            prompt,
+            profile,
+            AbortSignal.any([signal, AbortSignal.timeout(120000)]),
+            jsonSchema(retrospectiveResult),
+            this.onTurn(run),
+          );
+          const parsed =
+            reply.length <= 24000 ? parseStructuredReply(retrospectiveResult, reply) : undefined;
+          if (!parsed) throw new Fault('复盘未返回有效结论');
+          return parsed;
+        });
+        if (result.interruptionIds.some((id) => !evidence.some((e) => e.id === id)))
+          throw new Fault('复盘引用了未归属的打扰');
+        const engineering = [
+          'port_conflict',
+          'missing_evidence',
+          'unstable_check',
+          'base_resync',
+          'engineering',
+        ].includes(result.category);
+        const sections =
+          engineering && result.change
+            ? { ...base.sections, [result.change.section]: result.change.text }
+            : undefined;
+        if (sections && JSON.stringify(sections) === JSON.stringify(base.sections))
+          throw new Fault('复盘没有提出实际修改');
+        const suggestion = this.store.recordRetrospective(task.id, {
+          baseVersion: base.version,
+          category: result.category,
+          interruptionIds: result.interruptionIds,
+          reason: result.reason,
+          sections,
+        });
+        if (suggestion.status === 'adopted')
+          this.store.addMessage(
+            task.projectId,
+            'assistant',
+            `已根据「${task.title}」的工程打扰更新团队说明为 v${suggestion.adoptedVersion}。`,
+          );
+      });
+    } catch (error) {
+      this.store.recordRetrospective(
+        task.id,
+        {
+          ...empty,
+          reason: `复盘未完成，保留记录，不自动重试：${redact(String(error)).slice(0, 1000)}`,
+        },
+        'failed',
+      );
+    }
+  }
   private async completed(task: Task) {
     task = this.store.task(task.id);
     if (task.stage !== 'merging' || task.control !== 'active') return;
@@ -2961,6 +3076,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       blockedDescriptor: undefined,
       completionDeliveryPending: true,
     });
+    void this.track(this.retrospective(this.store.task(task.id)));
     await this.deliverCompletion(this.store.task(task.id));
     await this.cleanupCompleted(this.store.task(task.id));
   }
@@ -3083,6 +3199,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           }
           if (await this.syncCompletedIssue(task)) {
             this.store.updateTask(task.id, { blocked: undefined, blockedDescriptor: undefined });
+            void this.track(this.retrospective(this.store.task(task.id)));
             await this.deliverCompletion(this.store.task(task.id));
             this.store.updateTask(task.id, { completionSyncedAt: new Date().toISOString() });
           }

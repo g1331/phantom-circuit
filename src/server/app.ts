@@ -430,6 +430,21 @@ export function createApp(
       .parse(req.body);
     return store.restoreTeamInstructions(id, body.version, body.baseVersion);
   });
+  app.post('/api/projects/:id/team-instructions/auto-adopt', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(req.body);
+    return store.setAutoAdoptInstructions(id, enabled);
+  });
+  app.post('/api/projects/:id/team-instructions/suggestions/:suggestionId', async (req) => {
+    const { id, suggestionId } = z
+      .object({ id: z.string(), suggestionId: z.string() })
+      .parse(req.params);
+    const { action } = z
+      .object({ action: z.enum(['adopt', 'ignore']) })
+      .strict()
+      .parse(req.body);
+    return store.decideSuggestion(id, suggestionId, action);
+  });
   app.patch('/api/projects/:id/profiles', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return providers.saveAssignments(req.body, id);

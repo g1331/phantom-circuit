@@ -1,3 +1,4 @@
+import { InstructionSuggestions } from './instruction-suggestions.tsx';
 import { useState } from 'react';
 import type {
   Snapshot,
@@ -147,6 +148,7 @@ export function TeamInstructions({
           <ErrorText error={error} />
         </div>
       )}
+      <InstructionSuggestions state={state} projectId={projectId} refresh={refresh} />
       <Fold title={t('teamInstructions.history')} meta={versions.length}>
         {!versions.length && <p>{t('teamInstructions.noHistory')}</p>}
         <ol className="record-list">

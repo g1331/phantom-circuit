@@ -63,7 +63,10 @@ export function Brief({
     open.length > 0 && open.every((w) => w.attention === 'paused') && !view.members.length;
   const doing = (taskId: string) => view.members.find((m) => m.taskId === taskId);
   const href = (taskId: string) => routeHref({ page: 'task', projectId: project.id, taskId });
-  const empty = !view.waiting.length && !moving.length && !queued && !delivered.length;
+  const hasSuggestions =
+    state.suggestions?.some((s) => s.projectId === project.id && s.status === 'pending') ?? false;
+  const empty =
+    !hasSuggestions && !view.waiting.length && !moving.length && !queued && !delivered.length;
   return (
     <section className="brief" aria-label={t('brief.title')}>
       <header className="brief-header">
@@ -82,12 +85,19 @@ export function Brief({
 
       {empty && <p className="brief-empty">{t('brief.empty')}</p>}
 
-      {view.waiting.length > 0 && (
+      {(view.waiting.length > 0 || hasSuggestions) && (
         <section className="brief-group brief-needs">
           <h3>
-            {t('brief.needsYou')} <span>{view.waiting.length}</span>
+            {t('brief.needsYou')} <span>{view.waiting.length + (hasSuggestions ? 1 : 0)}</span>
           </h3>
           <ul>
+            {hasSuggestions && (
+              <li className="brief-request">
+                <a href={routeHref({ page: 'project', projectId: project.id })}>
+                  {t('suggestions.waiting')}
+                </a>
+              </li>
+            )}
             {view.waiting.map((request) => (
               <li key={request.id} className={`brief-request kind-${request.kind}`}>
                 <span className="brief-kind">{t(`team.request.${request.kind}`)}</span>
@@ -128,7 +138,9 @@ export function Brief({
                         </span>
                       )}
                       {work.rounds > 0 && (
-                        <span className={`brief-rework ${work.rounds >= maxReworks ? 'at-limit' : ''}`}>
+                        <span
+                          className={`brief-rework ${work.rounds >= maxReworks ? 'at-limit' : ''}`}
+                        >
                           {t('work.rework', { count: work.rounds, max: maxReworks })}
                         </span>
                       )}
@@ -178,7 +190,9 @@ export function Brief({
                         </button>
                       )
                     )}
-                    <button onClick={() => onFeedback(t('brief.feedbackDraft', { title: work.title }))}>
+                    <button
+                      onClick={() => onFeedback(t('brief.feedbackDraft', { title: work.title }))}
+                    >
                       <MessageSquarePlus size={12} /> {t('brief.feedback')}
                     </button>
                   </span>
