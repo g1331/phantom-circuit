@@ -2624,6 +2624,8 @@ export class Store {
         ...(options.incidentEvidence ? { incidentEvidence: options.incidentEvidence } : {}),
         ...(item.revision ? { revision: item.revision } : {}),
       });
+      if (options.incidentId)
+        this.rebindIncidentAssessment(options.incidentId, item.oldRunId, run.id);
       const next: RecoveryItem = {
         ...item,
         status: 'resumed',
@@ -2715,6 +2717,15 @@ export class Store {
         continue;
       }
       const task = r.taskId ? this.get('task', r.taskId) : undefined;
+      if (r.incidentPhase === 'validation_recovery' && r.incidentId) {
+        const incident = this.get('incident', r.incidentId);
+        if (incident && ['waiting_user', 'resolved'].includes(incident.status)) {
+          // A recorded disposition owns the next step even if its asking turn never returned.
+          if (r.status !== 'interrupted')
+            this.finishRun(r.id, 'interrupted', 'Incident 处置已记录，保留其等待或恢复决定');
+          continue;
+        }
+      }
       const draft = this.list('message').find(
         (message) =>
           message.role === 'assistant' &&

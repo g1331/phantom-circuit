@@ -88,6 +88,8 @@ export const ROLE_ALLOWED_TOOLS: Record<Role, string[]> = {
 
 /** A host-initiated stop for a Run that made no progress; reported as a failure, not a pause. */
 export class WatchdogTrip extends Fault {}
+
+const FAILURE_LIMIT = 3;
 const tripOf = (signal: AbortSignal) =>
   signal.aborted && signal.reason instanceof WatchdogTrip ? signal.reason : undefined;
 
@@ -481,6 +483,7 @@ export class Engine {
       this.store.recover();
       // Reconcile durable steer outcomes before recovery can enqueue any new PM turn.
       await this.reconcileSteers();
+      this.recoverValidationFailures();
       // A recovery item is a barrier: worktree/remote reconciliation and successor creation must
       // finish before the scheduler is allowed to claim a different Task.
       const recoveryJobs = this.store
@@ -955,19 +958,81 @@ export class Engine {
     const validationDuty =
       oldRun.role === 'oncall' || (oldRun.role === 'dev' && oldRun.incidentPhase === 'validation');
     if (validationDuty && item.incidentId && task) {
+      if (
+        task.pausedByUser ||
+        task.reviewClarificationId ||
+        this.store.clarificationGate(task.sourceMessageId)
+      )
+        return current;
+      const incident = this.store.get('incident', item.incidentId);
+      if (
+        !incident ||
+        ['resolved', 'waiting_user'].includes(incident.status) ||
+        (incident.assessmentRunId && incident.assessmentRunId !== oldRun.id)
+      ) {
+        this.store.finishRecovery(item.id, 'cancelled');
+        return this.store.get('recovery', item.id);
+      }
+      // An explicit request under manual policy also stays queued until capacity is released.
+      if (current.status !== 'pending')
+        this.store.put('recovery', item.id, {
+          ...current,
+          status: 'pending',
+          updatedAt: new Date().toISOString(),
+        });
+      const reasons = this.store
+        .explainScheduling(task.projectId)
+        .tasks.find((candidate) => candidate.taskId === task.id)!.reasons;
+      if (reasons.some((reason) => reason.code === 'activeRun')) return current;
+      const attempts = this.store
+        .list('run')
+        .filter(
+          (run) =>
+            run.incidentId === item.incidentId &&
+            (run.role === 'oncall' || (run.role === 'dev' && run.incidentPhase === 'validation')),
+        ).length;
+      if (attempts >= FAILURE_LIMIT) {
+        const handoff = this.handoffValidation(
+          oldRun,
+          item.incidentId,
+          '验证失败排查连续三次中断，已达到恢复上限',
+        );
+        // The assessment is claimed synchronously before cancelling this recovery request.
+        this.store.finishRecovery(item.id, 'cancelled');
+        void this.track(handoff);
+        return this.store.get('recovery', item.id);
+      }
+      if (
+        reasons.some((reason) =>
+          ['globalCapacity', 'projectCapacity', 'repositoryCapacity'].includes(reason.code),
+        )
+      ) {
+        const message = '验证失败排查等待团队容量，已排队继续处理';
+        if (task.blocked !== message) this.block(task.id, message);
+        return this.store.get('recovery', item.id);
+      }
       const run = this.store.ensureRecoverySuccessor(item.id, {
         role: 'dev',
         profile: task.profile,
         task,
         incidentId: item.incidentId,
-        incidentPhase: oldRun.incidentPhase,
+        incidentPhase: 'validation',
         incidentEvidence: oldRun.incidentEvidence,
       });
-      this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
-      await this.oncall(run, item.incidentId);
+      void this.track(this.oncall(run, item.incidentId));
       return this.store.get('recovery', item.id);
     }
     if (oldRun.role === 'pm' || item.role === 'pm') {
+      const validationRecovery = oldRun.incidentPhase === 'validation_recovery';
+      const marker = `recovery:${item.id}`;
+      if (validationRecovery && (task?.pausedByUser || this.mergeBusy.has(marker))) return current;
+      if (validationRecovery && item.incidentId) {
+        const incident = this.store.get('incident', item.incidentId);
+        if (incident && ['waiting_user', 'resolved'].includes(incident.status)) {
+          this.store.finishRecovery(item.id, 'cancelled');
+          return this.store.get('recovery', item.id);
+        }
+      }
       const source =
         !item.incidentId && item.sourceMessageId
           ? this.store.get('message', item.sourceMessageId)
@@ -982,11 +1047,13 @@ export class Engine {
         if (source?.role === 'user' && this.store.get('message', source.id)?.status !== 'completed')
           this.store.updateMessage(source.id, { status, draftStatus: status });
       };
-      await this.pmQueue(item.projectId, async () => {
+      if (validationRecovery) this.mergeBusy.add(marker);
+      const pending = this.pmQueue(item.projectId, async () => {
         // A queued recovery has not started work. Leave it pending when shutdown drains the queue.
         if (this.stopping) return;
         const current = this.store.get('recovery', item.id);
         if (!current || current.status === 'cancelled' || current.successorRunId) return;
+        if (validationRecovery && task && this.store.task(task.id).pausedByUser) return;
         const run = this.store.ensureRecoverySuccessor(item.id, {
           role: 'pm',
           profile: oldRun.profile,
@@ -997,8 +1064,6 @@ export class Engine {
           incidentEvidence: oldRun.incidentEvidence,
           recoveryPrompt: content,
         });
-        if (item.incidentId)
-          this.store.rebindIncidentAssessment(item.incidentId, oldRun.id, run.id);
         try {
           await this.pmTurn(
             item.projectId,
@@ -1015,6 +1080,8 @@ export class Engine {
         }
         settle('completed');
       });
+      if (validationRecovery) void this.track(pending.finally(() => this.mergeBusy.delete(marker)));
+      else await pending;
       return this.store.get('recovery', item.id);
     }
     if (!task) return this.store.get('recovery', item.id);
@@ -1193,6 +1260,11 @@ export class Engine {
     });
     if (next.taskId) {
       const task = this.store.task(next.taskId);
+      if (
+        incident.phase === 'validation' &&
+        (task.pausedByUser || ['done', 'cancelled'].includes(task.stage))
+      )
+        return next;
       if (action === 'resolved') {
         const gate = this.store.clarificationGate(task.sourceMessageId);
         if (gate)
@@ -1686,6 +1758,16 @@ export class Engine {
       let claim: Run | undefined;
       if (this.stopping) return;
       this.answerOwners();
+      this.recoverValidationFailures();
+      for (const item of this.store.list('recovery')) {
+        if (item.status !== 'pending' || item.successorRunId || !item.incidentId) continue;
+        const oldRun = this.store.get('run', item.oldRunId);
+        if (
+          oldRun?.role === 'oncall' ||
+          ['validation', 'validation_recovery'].includes(oldRun?.incidentPhase ?? '')
+        )
+          await this.recoverItem(item, { source: 'host', reason: 'validation_recovery' });
+      }
       while ((claim = this.store.claimNext())) {
         const run = claim;
         void this.track(
@@ -1814,19 +1896,22 @@ export class Engine {
     );
     this.store.event('blocked', reason, { projectId: t.projectId, taskId });
   }
-  private async incidentForRun(run: Run, error: unknown, phase: string) {
+  private async incidentForRun(run: Run, error: unknown, phase: string, incidentId?: string) {
     if (run.role === 'pm') return;
     const detail = redact(String(error));
-    const incident = this.store.createIncident({
-      projectId: run.projectId,
-      ...(run.taskId ? { taskId: run.taskId } : {}),
-      runId: run.id,
-      phase,
-      message: detail,
-      descriptor: diagnosticDescriptor(`incident_${phase}`, detail),
-      evidence: JSON.stringify({ runId: run.id, role: run.role, model: run.modelIdentity }),
-    });
-    if (incident.assessmentRunId) return incident;
+    const incident = incidentId
+      ? this.store.get('incident', incidentId)!
+      : this.store.createIncident({
+          projectId: run.projectId,
+          ...(run.taskId ? { taskId: run.taskId } : {}),
+          runId: run.id,
+          phase,
+          message: detail,
+          descriptor: diagnosticDescriptor(`incident_${phase}`, detail),
+          evidence: JSON.stringify({ runId: run.id, role: run.role, model: run.modelIdentity }),
+        });
+    if (incident.assessmentRunId && (!incidentId || incident.assessmentRunId !== run.id))
+      return incident;
     // A model the provider no longer lists is a settings problem: the liaison cannot change
     // settings and a retry fails the same way, so the user hears it directly.
     if (error instanceof Fault && error.descriptor?.code === 'model_unavailable') {
@@ -1843,18 +1928,23 @@ export class Engine {
     }
     let assessment: Run;
     try {
-      assessment = this.store.run(
-        'pm',
-        run.projectId,
-        'pm',
-        run.taskId ? this.store.task(run.taskId) : undefined,
-        {
-          incidentId: incident.id,
-          incidentPhase: phase,
-          incidentEvidence: detail,
-          suppressSource: true,
-        },
-      );
+      assessment = this.store.transaction(() => {
+        const assessment = this.store.run(
+          'pm',
+          run.projectId,
+          'pm',
+          run.taskId ? this.store.task(run.taskId) : undefined,
+          {
+            incidentId: incident.id,
+            incidentPhase: phase,
+            incidentEvidence: detail,
+            suppressSource: true,
+          },
+        );
+        if (incidentId) this.store.rebindIncidentAssessment(incident.id, run.id, assessment.id);
+        else this.store.claimIncidentAssessment(incident.id, assessment.id);
+        return assessment;
+      });
     } catch (assessmentError) {
       this.store.updateIncident(incident.id, {
         status: 'waiting_user',
@@ -1863,15 +1953,16 @@ export class Engine {
       if (run.taskId) this.block(run.taskId, `Incident ${incident.id} 等待用户处理`);
       return incident;
     }
-    const claimed = this.store.claimIncidentAssessment(incident.id, assessment.id);
+    const claimed = this.store.get('incident', incident.id)!;
     if (claimed.assessmentRunId !== assessment.id) return claimed;
     const task = run.taskId ? this.store.get('task', run.taskId) : undefined;
     if (this.stopping) {
       this.store.finishRun(
         assessment.id,
-        'paused',
+        incidentId ? 'interrupted' : 'paused',
         'Engine 正在停止，Incident 评估留待下次启动恢复',
       );
+      if (incidentId) return claimed;
       this.store.updateIncident(incident.id, {
         status: 'waiting_user',
         message: 'Engine 正在停止，Incident 评估留待下次启动恢复',
@@ -1881,8 +1972,18 @@ export class Engine {
     }
     try {
       await this.track(
-        this.pmQueue(run.projectId, () =>
-          this.pmTurn(
+        this.pmQueue(run.projectId, async () => {
+          const current = task ? this.store.task(task.id) : undefined;
+          if (
+            incidentId &&
+            (this.stopping ||
+              current?.pausedByUser ||
+              (current && ['done', 'cancelled'].includes(current.stage)))
+          ) {
+            this.store.finishRun(assessment.id, this.stopping ? 'interrupted' : 'paused');
+            return;
+          }
+          return this.pmTurn(
             run.projectId,
             `Unexpected ${run.role} Run failure. Assess Incident ${incident.id}. Preserve evidence and use resolve_incident with one bounded action.\n${detail}`,
             undefined,
@@ -1890,10 +1991,18 @@ export class Engine {
             '宿主事件：Incident 评估',
             incident.id,
             assessment,
-          ),
-        ),
+          );
+        }),
       );
     } catch (assessmentError) {
+      if (
+        incidentId &&
+        (this.stopping ||
+          (task &&
+            (this.store.task(task.id).pausedByUser ||
+              ['done', 'cancelled'].includes(this.store.task(task.id).stage))))
+      )
+        return this.store.get('incident', incident.id);
       // PM assessment failure is terminal for this assessment and must not recursively create
       // another Incident. Leave the incident actionable for the user.
       this.store.updateIncident(incident.id, {
@@ -2197,14 +2306,11 @@ export class Engine {
         if (!settled) throw new Fault('开发未给出验证失败的处置', 409);
       });
     } catch (error) {
-      // Resuming the Task revalidates the same head, and a new failure opens a fresh Incident.
-      const message = this.stopping
-        ? '宿主停止时验证失败尚未处理完；恢复任务会重新验证'
-        : `验证失败处理中断：${redact(String(error))}`;
-      this.store.updateIncident(incidentId, { status: 'waiting_user', message });
-      this.block(task.id, message, context);
+      await this.handoffValidation(run, incidentId, `验证失败处理中断：${redact(String(error))}`);
       return;
     }
+    const current = this.store.task(task.id);
+    if (current.pausedByUser || ['done', 'cancelled'].includes(current.stage)) return;
     const outcome = settled!;
     this.store.event('oncall', `${outcome.action}：${outcome.diagnosis}`, {
       projectId: task.projectId,
@@ -2239,6 +2345,43 @@ ${detail}`,
         task.projectId,
         'assistant',
         `「${task.title}」需要你确认：${outcome.question}`,
+      );
+    }
+  }
+  private async handoffValidation(run: Run, incidentId: string, reason: string) {
+    const task = this.store.task(run.taskId!);
+    // Shutdown retains an interrupted Run for phase recovery. User controls remain authoritative.
+    if (this.stopping || task.pausedByUser || ['done', 'cancelled'].includes(task.stage)) return;
+    const incident = this.store.get('incident', incidentId);
+    if (
+      incident?.assessmentRunId !== run.id ||
+      ['resolved', 'waiting_user'].includes(incident.status)
+    )
+      return;
+    const message = `${reason}\n下一步：PM 接管原失败的排查。\n${run.incidentEvidence ?? incident.message}`;
+    if (['running', 'waiting'].includes(this.store.get('run', run.id)!.status))
+      this.store.finishRun(run.id, 'failed', reason);
+    this.store.updateIncident(incidentId, { status: 'assessing', message });
+    this.block(task.id, message, { source: 'host', reason: 'validation_recovery', runId: run.id });
+    await this.incidentForRun(run, message, 'validation_recovery', incidentId);
+  }
+  private recoverValidationFailures() {
+    for (const incident of this.store.list('incident')) {
+      if (incident.phase !== 'validation' || incident.status !== 'assessing') continue;
+      const run = incident.assessmentRunId
+        ? this.store.get('run', incident.assessmentRunId)
+        : undefined;
+      if (
+        !run ||
+        this.active.has(run.id) ||
+        !(run.role === 'oncall' || (run.role === 'dev' && run.incidentPhase === 'validation')) ||
+        !['failed', 'paused', 'completed'].includes(run.status)
+      )
+        continue;
+      // A crash can land after finishRun but before the assessment claim. Reconcile that durable
+      // checkpoint too; ordinary interrupted Runs continue through their existing recovery item.
+      void this.track(
+        this.handoffValidation(run, incident.id, run.error ?? '开发未给出验证失败的处置'),
       );
     }
   }
@@ -2414,7 +2557,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     phase: 'implement' | 'finalize' = 'implement',
   ) {
     const retries = task.retries + (spend ? 1 : 0);
-    const exhausted = spend && retries >= 3;
+    const exhausted = spend && retries >= FAILURE_LIMIT;
     this.store.updateTaskControl(
       task.id,
       {
@@ -3433,7 +3576,16 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     const changed: string[] = [];
     for (const task of tasks) {
       if (action === 'pause') {
-        if (task.control !== 'active') continue;
+        const validationDuty =
+          this.store
+            .activeRuns()
+            .some((run) => run.taskId === task.id && (run.role === 'oncall' || !!run.incidentId)) ||
+          this.store
+            .list('recovery')
+            .some(
+              (item) => item.taskId === task.id && item.status === 'pending' && !!item.incidentId,
+            );
+        if (task.pausedByUser || (task.control !== 'active' && !validationDuty)) continue;
         this.control(task.id, 'pause', { source: 'user', reason: 'team_pause' });
         changed.push(task.id);
         continue;
