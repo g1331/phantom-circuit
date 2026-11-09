@@ -192,6 +192,7 @@ export interface Task {
   deliveryText?: { commitMessage: string; pullRequestBody: string };
   issue?: number;
   issueUrl?: string;
+  issueState?: 'open' | 'completed' | 'not_planned' | 'closed';
   issueNodeId?: string;
   issueDatabaseId?: number;
   projectItemId?: string;
@@ -201,6 +202,7 @@ export interface Task {
   completionSyncedAt?: string;
   pr?: number;
   prUrl?: string;
+  prState?: 'open' | 'closed' | 'draft' | 'merged';
   head?: string;
   base?: string;
   integratedBase?: string;

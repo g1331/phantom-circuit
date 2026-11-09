@@ -3,6 +3,13 @@ import type { Resource } from './core.ts';
 import { runtimeZh } from './runtime.ts';
 import { pagesZh } from './pages.ts';
 export const zhCN = {
+  'reference.open': '开放',
+  'reference.closed': '已关闭',
+  'reference.draft': '草稿',
+  'reference.merged': '已合并',
+  'reference.completed': '已完成关闭',
+  'reference.not_planned': '未计划关闭',
+  'reference.unknown': '状态未知',
   'panel.loading': '正在加载面板…',
   'panel.failed': '面板加载失败。',
   'panel.retry': '重试加载',

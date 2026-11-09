@@ -329,7 +329,10 @@
   color: var(--faint);
 }
 .brief-step {
-  color: var(--text);
+  color: var(--progress);
+}
+.brief-step.step-planned {
+  color: var(--muted);
 }
 .brief-rework,
 .work-rework {
@@ -355,7 +358,7 @@
   gap: 6px;
 }
 .brief-delivered h3 {
-  color: var(--success);
+  color: var(--delivery);
 }
 .brief-page .brief {
   max-width: 560px;
@@ -420,10 +423,10 @@
   color: var(--warning);
 }
 .group-moving .work-icon {
-  color: var(--focus);
+  color: var(--progress);
 }
 .group-delivered .work-icon {
-  color: var(--success);
+  color: var(--delivery);
 }
 .work-main {
   display: grid;
@@ -494,6 +497,24 @@
   font-size: 20px;
   font-weight: 600;
   line-height: 1.4;
+}
+.task-progress:is(
+    [data-progress='building'],
+    [data-progress='checking'],
+    [data-progress='reviewing'],
+    [data-progress='second_review'],
+    [data-progress='merging'],
+    [data-progress='diagnosing'],
+    [data-progress='teamHandling']
+  )
+  h2 {
+  color: var(--progress);
+}
+.task-progress[data-progress='needsYou'] h2 {
+  color: var(--warning);
+}
+.task-progress[data-progress='delivered'] h2 {
+  color: var(--delivery);
 }
 .task-next-step,
 .task-blocker {
@@ -648,13 +669,16 @@
 }
 .task-status-group {
   font-weight: 600;
-  color: var(--text);
+  color: var(--muted);
+}
+.task-status.group-moving .task-status-group {
+  color: var(--progress);
 }
 .task-status.group-needs_you .task-status-group {
   color: var(--warning);
 }
 .task-status.group-delivered .task-status-group {
-  color: var(--success);
+  color: var(--delivery);
 }
 .receipt {
   margin: 4px 0 22px;
@@ -711,6 +735,40 @@
 .receipt-line.tone-fail .receipt-mark {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
+.receipt-line.tone-merged .receipt-mark {
+  color: var(--delivery);
+  border-color: color-mix(in srgb, var(--delivery) 55%, var(--line));
+}
+.receipt-line.tone-attention .receipt-mark,
+.receipt-review.attention .receipt-note strong {
+  color: var(--warning);
+}
+
+.engineering-reference,
+.reference-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: inherit;
+}
+.engineering-reference {
+  color: var(--muted);
+  vertical-align: middle;
+}
+.reference-state {
+  color: var(--muted);
+}
+.reference-open {
+  color: var(--success);
+}
+.reference-merged,
+.reference-completed {
+  color: var(--delivery);
+}
+.reference-pr.reference-closed {
+  color: var(--danger);
 }
 .receipt-body {
   min-width: 0;

@@ -330,10 +330,17 @@
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
-.run-outcome.running,
+.run-outcome.running {
+  color: var(--progress);
+  background: color-mix(in srgb, var(--progress) 12%, transparent);
+}
 .run-outcome.waiting {
-  color: var(--focus);
-  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.run-outcome.completed {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 .run-num {
   text-align: right;

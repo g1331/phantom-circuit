@@ -380,10 +380,14 @@
   color: var(--danger);
   font-size: 11px;
 }
-.process-status,
-.pm-process[data-status='running'] > summary,
-.pm-process[data-status='waiting'] > summary {
-  color: var(--accent);
+.pm-process[data-status='running'] > summary .process-status {
+  color: var(--progress);
+}
+.pm-process[data-status='waiting'] > summary .process-status {
+  color: var(--warning);
+}
+.pm-process[data-status='completed'] > summary .process-status {
+  color: var(--success);
 }
 .pm-process[data-status='failed'] .process-status,
 .pm-process[data-has-failure='true'] .process-failure {
@@ -463,14 +467,19 @@
 .pm-activity[open] > summary .activity-chevron {
   transform: rotate(90deg);
 }
-.pm-activity[data-status='running'] .activity-icon,
-.pm-activity[data-status='waiting'] .activity-icon {
+.pm-activity[data-status='running'] .activity-icon {
   animation: pulse 1.8s infinite;
-  color: var(--accent);
+  color: var(--progress);
 }
-.pm-activity[data-status='running'] .activity-state,
+.pm-activity[data-status='running'] .activity-state {
+  color: var(--progress);
+}
+.pm-activity[data-status='waiting'] .activity-icon,
 .pm-activity[data-status='waiting'] .activity-state {
-  color: var(--accent);
+  color: var(--warning);
+}
+.pm-activity[data-status='completed'] .activity-icon {
+  color: var(--success);
 }
 .pm-activity[data-status='failed'] .activity-icon,
 .pm-activity[data-status='failed'] .activity-state,

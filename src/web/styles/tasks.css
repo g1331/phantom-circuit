@@ -249,7 +249,7 @@
   background: var(--focus);
 }
 .stage-dot.done {
-  background: var(--success);
+  background: var(--delivery);
 }
 .stage-dot.clarifying {
   background: var(--warning);
@@ -278,13 +278,13 @@
   border-left-color: var(--focus);
 }
 .task-card.tone-done {
-  border-left-color: var(--success);
+  border-left-color: var(--delivery);
 }
 .task-card.tone-paused {
-  border-left-color: var(--warning);
+  border-left-color: var(--faint);
 }
 .task-card.tone-blocked {
-  border-left-color: var(--danger);
+  border-left-color: var(--warning);
 }
 .task-card strong {
   font-size: 13px;

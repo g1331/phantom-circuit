@@ -111,7 +111,7 @@ function TaskOverview({
     hasOwner(detail) || state.ownerMessages?.some((line) => line.taskId === detail.id);
   return (
     <div className="task-detail task-workspace">
-      <section className="task-progress" aria-label={t('task.progress')}>
+      <section className="task-progress" data-progress={status} aria-label={t('task.progress')}>
         <p className="task-section-label">{t('task.progress')}</p>
         <h2>{t(`task.progress.${status}`)}</h2>
         <p className="muted task-next-step">{t(`task.next.${next}`)}</p>
