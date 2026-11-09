@@ -599,7 +599,14 @@ export async function checkRuntimeUI() {
             path: resolve('test-results', `runtime-usage-${locale}-${width}-${theme}.png`),
           });
           if (width === 390) {
-            await runRecord.locator('details').scrollIntoViewIfNeeded();
+            await runRecord
+              .locator('details')
+              .filter({
+                has: page.getByText(locale === 'en' ? 'Pinned price snapshot' : '固定价格快照', {
+                  exact: true,
+                }),
+              })
+              .scrollIntoViewIfNeeded();
             await page.screenshot({
               path: resolve('test-results', `runtime-run-cost-${locale}-${theme}.png`),
             });

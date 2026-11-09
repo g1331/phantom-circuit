@@ -267,7 +267,28 @@ export interface Evidence {
   /** Host-measured wall-clock of the whole command; older evidence lacks it. */
   durationMs?: number;
 }
+/** Project working text. Host permissions and tools always remain authoritative. */
+export interface TeamInstructionSections {
+  repository: string;
+  engineering: string;
+  delivery: string;
+}
+export interface TeamInstructionsVersion {
+  projectId: string;
+  version: number;
+  sections: TeamInstructionSections;
+  source: 'user' | 'team';
+  taskId?: string;
+  createdAt: string;
+  restoredFromVersion?: number;
+  /** Reserved provenance for an adopted suggestion and its originating interruptions. */
+  suggestionId?: string;
+  interruptionIds?: string[];
+}
+
 export interface Run {
+  /** 0 means empty instructions; absent means a legacy Run with no recorded version. */
+  teamInstructionsVersion?: number;
   id: string;
   projectId: string;
   repoId?: string;
@@ -545,6 +566,7 @@ export interface Operation {
   reconciliation?: Reconciliation;
 }
 export interface Snapshot {
+  teamInstructions?: TeamInstructionsVersion[];
   activities: PMActivity[];
   providers: Provider[];
   projects: Project[];

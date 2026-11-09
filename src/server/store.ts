@@ -1,3 +1,4 @@
+import { TEAM_INSTRUCTIONS_LIMIT, teamInstructionsLength } from '../shared/team-instructions.ts';
 import {
   comparePriority,
   priorityValues,
@@ -24,6 +25,8 @@ import { aggregateCosts, costForUsage, normalizeUsage, type UsageMode } from './
 import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
+  TeamInstructionSections,
+  TeamInstructionsVersion,
   AccountAllowance,
   AgentKind,
   AgentSelection,
@@ -148,6 +151,7 @@ type Entities = {
   allowance: AccountAllowance;
   settings: Settings;
   document: DesignDocument;
+  teamInstructions: TeamInstructionsVersion;
 };
 
 const pmRunTitles: Partial<Record<Run['status'], string>> = {
@@ -312,6 +316,81 @@ export class Store {
         )
           this.put('message', message.id, next);
       }
+    });
+  }
+  teamInstructionsHistory(projectId: string) {
+    this.project(projectId);
+    return this.list('teamInstructions')
+      .filter((v) => v.projectId === projectId)
+      .sort((a, b) => a.version - b.version);
+  }
+  currentTeamInstructions(projectId: string): TeamInstructionsVersion {
+    return (
+      this.teamInstructionsHistory(projectId).at(-1) ?? {
+        projectId,
+        version: 0,
+        sections: { repository: '', engineering: '', delivery: '' },
+        source: 'user',
+        createdAt: '',
+      }
+    );
+  }
+  runTeamInstructions(run: Run): TeamInstructionsVersion {
+    if (run.teamInstructionsVersion === undefined || run.teamInstructionsVersion === 0)
+      return {
+        projectId: run.projectId,
+        version: 0,
+        sections: { repository: '', engineering: '', delivery: '' },
+        source: 'user',
+        createdAt: '',
+      };
+    const version = this.get('teamInstructions', `${run.projectId}:${run.teamInstructionsVersion}`);
+    if (!version) throw new Fault('运行使用的团队说明版本不存在', 409);
+    return version;
+  }
+  saveTeamInstructions(
+    projectId: string,
+    sections: TeamInstructionSections,
+    provenance: {
+      source: 'user' | 'team';
+      baseVersion: number;
+      taskId?: string;
+      restoredFromVersion?: number;
+      suggestionId?: string;
+      interruptionIds?: string[];
+    },
+  ) {
+    return this.transaction(() => {
+      const current = this.currentTeamInstructions(projectId);
+      if (teamInstructionsLength(sections) > TEAM_INSTRUCTIONS_LIMIT)
+        throw new Fault(`团队说明总长度不能超过 ${TEAM_INSTRUCTIONS_LIMIT} 字符；原版本未变`, 400);
+      if (current.version !== provenance.baseVersion)
+        throw new Fault('团队说明已更新，请重新载入后再保存', 409);
+      if (provenance.taskId && this.task(provenance.taskId).projectId !== projectId)
+        throw new Fault('来源任务不属于此项目', 400);
+      const version: TeamInstructionsVersion = {
+        source: provenance.source,
+        taskId: provenance.taskId,
+        restoredFromVersion: provenance.restoredFromVersion,
+        suggestionId: provenance.suggestionId,
+        interruptionIds: provenance.interruptionIds,
+        projectId,
+        version: current.version + 1,
+        sections: structuredClone(sections),
+        createdAt: now(),
+      };
+      this.put('teamInstructions', `${projectId}:${version.version}`, version);
+      this.changes.emit('change');
+      return version;
+    });
+  }
+  restoreTeamInstructions(projectId: string, version: number, baseVersion: number) {
+    const previous = this.teamInstructionsHistory(projectId).find((v) => v.version === version);
+    if (!previous) throw new Fault('团队说明版本不存在', 404);
+    return this.saveTeamInstructions(projectId, previous.sections, {
+      source: 'user',
+      baseVersion,
+      restoredFromVersion: version,
     });
   }
   close() {
@@ -1129,6 +1208,7 @@ export class Store {
   }
   snapshot(): Snapshot {
     return {
+      teamInstructions: this.list('teamInstructions'),
       activities: this.list('activity'),
       providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
@@ -1823,6 +1903,7 @@ export class Store {
     const source = this.ownerSource(task.id);
     const fixed = source.run;
     const run: Run = {
+      teamInstructionsVersion: this.currentTeamInstructions(task.projectId).version,
       id: id(),
       projectId: task.projectId,
       taskId: task.id,
@@ -1921,6 +2002,7 @@ export class Store {
         })
       : undefined;
     const r: Run = {
+      teamInstructionsVersion: this.currentTeamInstructions(projectId).version,
       id: id(),
       projectId,
       role,

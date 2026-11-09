@@ -75,3 +75,6 @@ _Avoid_: Retry, new Task
 
 **Installed release**: A fixed version of the team software that runs independently of a development checkout.
 _Avoid_: Workspace, Project, development server
+
+**Team instructions**: A Project’s versioned working agreements for repository conventions, engineering practices and delivery requirements. Each Run uses the version saved when it starts.
+_Avoid_: Permissions, role configuration, memory bank

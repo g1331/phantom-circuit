@@ -22,6 +22,7 @@ import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversatio
 import { LocaleProvider, useLocale } from './locale/provider.tsx';
 import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
+import { TeamInstructions } from './team-instructions.tsx';
 import { RunList } from './run-list.tsx';
 import { ClaimOrder } from './task-priority.tsx';
 import { DomainDocuments, ProjectContext, ProjectHeader } from './project-context.tsx';
@@ -656,29 +657,39 @@ function App() {
                   ]}
                 />
                 {projectView === 'overview' && (
-                  <ProjectContext
-                    project={project}
-                    state={state}
-                    repos={repos}
-                    tasks={tasks}
-                    active={active}
-                    busy={busy}
-                    act={act}
-                    projectAgent={projectAgent}
-                    pmProfile={pmProfile}
-                    onOpenModal={setModal}
-                    onConfigureRepo={setRepoConfig}
-                    claims={
-                      <ClaimOrder
-                        schedule={currentSchedule}
-                        projects={state.projects}
-                        locale={locale}
-                        refresh={() => setScheduleRefresh((n) => n + 1)}
-                        error={scheduleError?.projectId === project.id ? scheduleError.message : ''}
-                        refreshing={scheduleLoading}
-                      />
-                    }
-                  />
+                  <>
+                    <ProjectContext
+                      project={project}
+                      state={state}
+                      repos={repos}
+                      tasks={tasks}
+                      active={active}
+                      busy={busy}
+                      act={act}
+                      projectAgent={projectAgent}
+                      pmProfile={pmProfile}
+                      onOpenModal={setModal}
+                      onConfigureRepo={setRepoConfig}
+                      claims={
+                        <ClaimOrder
+                          schedule={currentSchedule}
+                          projects={state.projects}
+                          locale={locale}
+                          refresh={() => setScheduleRefresh((n) => n + 1)}
+                          error={
+                            scheduleError?.projectId === project.id ? scheduleError.message : ''
+                          }
+                          refreshing={scheduleLoading}
+                        />
+                      }
+                    />
+                    <TeamInstructions
+                      key={project.id}
+                      state={state}
+                      projectId={project.id}
+                      refresh={reload}
+                    />
+                  </>
                 )}
                 {projectView === 'docs' && <DomainDocuments state={state} project={project} />}
                 {projectView === 'runs' && <RunList state={state} runs={runs} tasks={tasks} />}

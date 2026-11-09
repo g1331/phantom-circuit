@@ -95,7 +95,14 @@ export function command(
       stderr = (stderr + errDecoder.end()).slice(-100_000);
       if (error) reject(error);
       else if (throwOnError && code !== 0)
-        reject(new Fault(redact(`${binary} (${code}): ${stderr || stdout}`).slice(-8000), 502));
+        reject(
+          new Fault(
+            redact(`${binary} (${code}): ${stderr}${stderr && stdout ? '\n' : ''}${stdout}`).slice(
+              -8000,
+            ),
+            502,
+          ),
+        );
       else resolve({ stdout, stderr, code, truncated: received > OUTPUT_LIMIT });
     }
     child.stdout.on('data', (d) => {

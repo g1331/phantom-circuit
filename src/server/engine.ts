@@ -14,7 +14,7 @@ import { PMActivities } from './pm-activity.ts';
 import { GitHub, IssueBodyConflict, isTransientGitHubError, type PullState } from './github.ts';
 import { Workspaces } from './workspaces.ts';
 import { parseStructuredReply, turnEvidence } from './structured.ts';
-import { instructions, domainContext, taskPrompt } from './prompts.ts';
+import { instructions, domainContext, taskPrompt, teamInstructionsPrompt } from './prompts.ts';
 import {
   priorityUpdateInput,
   commandSchema,
@@ -1384,7 +1384,7 @@ export class Engine {
         const thread = await c.thread({
           cwd,
           profile,
-          instructions: await instructions('pm'),
+          instructions: await instructions('pm', { team: this.store.runTeamInstructions(run) }),
           threadId: run.resumeThreadId,
           writable: false,
           tools,
@@ -1831,7 +1831,7 @@ export class Engine {
           cwd: task.worktree ?? this.store.repo(task.repoId).path,
           profile,
           threadId: run.resumeThreadId,
-          instructions: `${await instructions('pm')}\nThis turn only evaluates external feedback. Return the requested JSON; no tool mutations.`,
+          instructions: `${await instructions('pm', { team: this.store.runTeamInstructions(run) })}\nThis turn only evaluates external feedback. Return the requested JSON; no tool mutations.`,
           writable: false,
           tools: [recallTool],
           toolHandler: async (name: string, args: unknown) => {
@@ -1953,7 +1953,7 @@ export class Engine {
           profile,
           threadId: run.resumeThreadId,
           // The duty travels in the turn: a resumed thread keeps the instructions it started with.
-          instructions: await instructions('dev'),
+          instructions: await instructions('dev', { team: this.store.runTeamInstructions(run) }),
           writable: true,
           tools: [
             {
@@ -2168,7 +2168,7 @@ ${detail}`,
           sourceThreadId: source.threadId,
           cwd: task.worktree!,
           profile,
-          instructions: duty,
+          instructions: `${duty}${teamInstructionsPrompt(this.store.runTeamInstructions(run))}`,
           dataDir: this.dataDir,
         });
         this.saveThread(run, thread);
@@ -2483,7 +2483,10 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         const thread = await c.thread({
           cwd: task.worktree!,
           profile,
-          instructions: await instructions('dev', { conflict: !!conflict }),
+          instructions: await instructions('dev', {
+            conflict: !!conflict,
+            team: this.store.runTeamInstructions(run),
+          }),
           threadId: conflict ? undefined : run.resumeThreadId,
           writable: true,
           tools: [
@@ -2764,7 +2767,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       const thread = await c.thread({
         cwd: path,
         profile,
-        instructions: await instructions('review'),
+        instructions: await instructions('review', { team: this.store.runTeamInstructions(run) }),
         writable: false,
         tools: [
           {

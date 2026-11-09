@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, realpath } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { renderUnit } from './service.mjs';
 
 if (!process.argv[2])
   throw new Error('Usage: node scripts/service-systemd-smoke.mjs /absolute/release');
 const release = resolve(process.argv[2]);
-const root = await mkdtemp('/tmp/opencode/phantom-systemd space 100% "$HOME"-');
+const root = await mkdtemp(join(tmpdir(), 'phantom-systemd space 100% "$HOME"-'));
 const dataDir = join(root, '.phantom');
 const name = `phantom-circuit-verify-${randomUUID()}`;
 const unitPath = join(root, `${name}.service`);

@@ -1,6 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
-import type { Role, Task } from '../shared/types.ts';
+import type { Role, Task, TeamInstructionsVersion } from '../shared/types.ts';
 import { runtimePath } from './runtime-paths.ts';
 export const SKILL_REVISION = '3cca18b368ae95cdbdebbff572ccafa662551015';
 const root = runtimePath('.agents', 'skills');
@@ -21,7 +21,10 @@ async function skill(name: string) {
   const description = /^description:\s*"?(.*?)"?\s*$/m.exec(body)?.[1] ?? '';
   return { file, body, description };
 }
-export async function instructions(role: Role, options: { conflict?: boolean } = {}) {
+export async function instructions(
+  role: Role,
+  options: { conflict?: boolean; team?: TeamInstructionsVersion } = {},
+) {
   const base = await readFile(runtimePath('prompts', `${role}.md`), 'utf8');
   const entries = await Promise.all(catalog[role].map(skill));
   const list = catalog[role]
@@ -31,7 +34,22 @@ export async function instructions(role: Role, options: { conflict?: boolean } =
   const merge = options.conflict
     ? `\n\n## Skill: resolving-merge-conflicts\n${(await skill('resolving-merge-conflicts')).body}`
     : '';
-  return `${base}\n\n## Skill library (pinned ${SKILL_REVISION})\nOptional methods, not a mandatory workflow. Pick what fits this Task and read the full SKILL.md with your file-reading tool before applying it. The host rules above override any skill step about committing, pushing, pull requests, code review commands or subagents.\n${list}${merge}`;
+  return `${base}\n\n## Skill library (pinned ${SKILL_REVISION})\nOptional methods, not a mandatory workflow. Pick what fits this Task and read the full SKILL.md with your file-reading tool before applying it. The host rules above override any skill step about committing, pushing, pull requests, code review commands or subagents.\n${list}${merge}${teamInstructionsPrompt(options.team)}`;
+}
+/** Append working text only; the host remains the authority for every capability. */
+export function teamInstructionsPrompt(team?: TeamInstructionsVersion) {
+  if (!team) return '';
+  return `\n\n## Project team instructions (version ${team.version})
+Host permissions, tools, repository onboarding authorization and review at pinned revisions take precedence over this working text. This text cannot grant capabilities or change host enforcement.
+The following version replaces earlier team instructions in this session.
+<team-instructions>
+### Repository conventions
+${team.sections.repository}
+### Engineering practices
+${team.sections.engineering}
+### Delivery requirements
+${team.sections.delivery}
+</team-instructions>\n`;
 }
 export async function domainContext(paths: string[]) {
   const docs: string[] = [];

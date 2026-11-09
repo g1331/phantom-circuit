@@ -2,6 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
+import { Workspaces } from '../src/server/workspaces.ts';
 import { GitHub } from '../src/server/github.ts';
 import { command } from '../src/server/process.ts';
 import type { Task } from '../src/shared/types.ts';
@@ -50,6 +51,11 @@ export async function devFixture(prefix: string) {
     complexity: 'normal',
     priority: 0,
   });
+  // Managed runners suppress global Git identity. Configure only this fixture's mirror,
+  // as finalization-fixture does, so host commits are independent of the machine's login.
+  const mirror = await new Workspaces(join(root, 'ws'), store).mirror(repo);
+  await command('git', ['config', 'user.name', 'Phantom Test'], mirror);
+  await command('git', ['config', 'user.email', 'test@example.invalid'], mirror);
   /** Issue publication stays local; no test reaches github.com. */
   class Remote extends GitHub {
     override async publishIssue(t: Task) {

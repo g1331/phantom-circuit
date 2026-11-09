@@ -404,6 +404,32 @@ export function createApp(
       .parse(req.body);
     return store.createProject(b.name, b.description);
   });
+  const teamSections = z
+    .object({ repository: z.string(), engineering: z.string(), delivery: z.string() })
+    .strict();
+  app.get('/api/projects/:id/team-instructions', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return store.teamInstructionsHistory(id);
+  });
+  app.post('/api/projects/:id/team-instructions', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const body = z
+      .object({ sections: teamSections, baseVersion: z.number().int().nonnegative() })
+      .strict()
+      .parse(req.body);
+    return store.saveTeamInstructions(id, body.sections, {
+      source: 'user',
+      baseVersion: body.baseVersion,
+    });
+  });
+  app.post('/api/projects/:id/team-instructions/restore', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const body = z
+      .object({ version: z.number().int().positive(), baseVersion: z.number().int().nonnegative() })
+      .strict()
+      .parse(req.body);
+    return store.restoreTeamInstructions(id, body.version, body.baseVersion);
+  });
   app.patch('/api/projects/:id/profiles', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return providers.saveAssignments(req.body, id);

@@ -3,6 +3,7 @@ import { chromium, type Page } from 'playwright';
 import { checkComposer, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { checkOwnerConversation } from './browser-owner.ts';
+import { checkTeamInstructions } from './browser-team-instructions.ts';
 import { checkWorkspace } from './browser-workspace.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1236,6 +1237,7 @@ try {
   await checkReviewClarification();
   await checkMaintenance();
   await checkWorkspace();
+  await checkTeamInstructions();
   await checkReconnect();
   assert.deepEqual(errors, []);
   console.log(

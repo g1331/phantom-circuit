@@ -36,7 +36,7 @@ The redesign is led by the operator rather than by Phantom itself, because it ch
 
 1. team autonomy and a rebuilt interface (conversation, team view, direct owner conversations, intervention);
 2. the service form: separation from the checkout, background and system service, Linux support;
-3. learning and following repository conventions;
+3. learning and following repository conventions; the working-agreement memory portion is superseded by ADR 0016 (versioned project team instructions);
 4. MCP host tools and the Claude Code harness;
 5. the desktop application and remote access to several teams.
 

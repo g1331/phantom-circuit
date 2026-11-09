@@ -1,3 +1,4 @@
+import { TeamInstructionText } from './team-instructions.tsx';
 import { useEffect, useState, type ReactNode } from 'react';
 import type {
   CostEstimate,
@@ -230,6 +231,31 @@ export function RunRow({ state, run, cost }: { state: Snapshot; run: Run; cost?:
         {/* The line shows the error's start; the whole text is here. */}
         {run.error && <pre className="log-block">{host(run.error, run.errorDescriptor)}</pre>}
         <RunFacts run={run} cost={cost} />
+        <Fold
+          title={t('teamInstructions.run')}
+          meta={
+            run.teamInstructionsVersion === undefined
+              ? undefined
+              : `v${run.teamInstructionsVersion}`
+          }
+        >
+          {run.teamInstructionsVersion === undefined ? (
+            <p>{t('teamInstructions.legacy')}</p>
+          ) : run.teamInstructionsVersion === 0 ? (
+            <p>{t('teamInstructions.zero')}</p>
+          ) : (
+            (() => {
+              const version = state.teamInstructions?.find(
+                (v) => v.projectId === run.projectId && v.version === run.teamInstructionsVersion,
+              );
+              return version ? (
+                <TeamInstructionText sections={version.sections} />
+              ) : (
+                <p>{t('usage.unknown')}</p>
+              );
+            })()
+          )}
+        </Fold>
       </Fold>
     </li>
   );

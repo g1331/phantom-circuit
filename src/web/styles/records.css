@@ -862,3 +862,62 @@
   margin-bottom: 12px;
   max-height: 240px;
 }
+
+.team-instructions {
+  min-width: 0;
+}
+.team-instruction-text section {
+  margin-bottom: 18px;
+}
+.team-instructions h4 {
+  margin: 12px 0 8px;
+}
+.team-instructions textarea {
+  display: block;
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+}
+.team-instructions form > label {
+  display: block;
+  margin: 16px 0;
+}
+.team-instruction-actions,
+.team-instruction-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.team-instruction-selects label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.team-instruction-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.team-instruction-comparison pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border-radius: 6px;
+}
+.team-instruction-comparison .removed {
+  background: color-mix(in srgb, #db5663 12%, transparent);
+  border-left: 2px solid #db5663;
+}
+.team-instruction-comparison .added {
+  background: color-mix(in srgb, #3b9d78 12%, transparent);
+  border-left: 2px solid #3b9d78;
+}
+@media (max-width: 640px) {
+  .team-instruction-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .team-instructions .fold-meta {
+    gap: 4px;
+    font-size: 11px;
+  }
+}
