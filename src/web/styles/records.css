@@ -869,6 +869,9 @@
 .team-instruction-text section {
   margin-bottom: 18px;
 }
+.team-instruction-text section > h4 {
+  font-weight: 600;
+}
 .team-instructions h4 {
   margin: 12px 0 8px;
 }
@@ -920,4 +923,16 @@
     gap: 4px;
     font-size: 11px;
   }
+}
+.team-instruction-learned {
+  margin-top: 12px;
+  color: var(--muted);
+}
+.team-instruction-learned p {
+  margin: 4px 0;
+}
+.team-instruction-text .markdown-rendered :is(h1, h2, h3, h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  font-weight: 500;
 }

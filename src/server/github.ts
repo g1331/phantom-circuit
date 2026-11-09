@@ -9,7 +9,7 @@ import type {
   Task,
   ReviewResult,
 } from '../shared/types.ts';
-import { engineeringTitle, expectedTaskBranch, pullRequestBody } from './task-naming.ts';
+import { expectedTaskBranch, pullRequestBody, pullRequestTitle } from './task-naming.ts';
 
 /** The identity fields reconciliation needs; GitHub returns them on every PR resource. */
 interface PullRef {
@@ -761,7 +761,7 @@ export class GitHub {
       () => this.findTaskPR(task),
       () =>
         this.api(`repos/${repo.github}/pulls`, 'POST', {
-          title: engineeringTitle(task),
+          title: pullRequestTitle(task),
           head: task.branch,
           base: repo.defaultBranch,
           body: pullRequestBody(task),

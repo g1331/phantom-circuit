@@ -9,6 +9,8 @@ type EngineeringFields = {
   changeType?: string;
   scope?: string;
   summaryEn?: string;
+  /** Text the Dev wrote to the repository's conventions; it replaces the defaults below. */
+  deliveryText?: Task['deliveryText'];
 };
 export type EngineeringTask = Pick<Task, 'id' | 'title' | 'issue' | 'spec' | 'tests'> &
   EngineeringFields;
@@ -64,8 +66,19 @@ export function engineeringTitle(task: Pick<Task, 'id' | 'title' | 'issue'> & En
   return metadata ? `${metadata.changeType}(${metadata.scope}): ${metadata.summaryEn}` : task.title;
 }
 
-/** The host commit message. Legacy tasks keep their established message format. */
+/** The pull request title: the subject of a convention-written commit, else the default. */
+export function pullRequestTitle(task: Pick<Task, 'id' | 'title' | 'issue'> & EngineeringFields) {
+  return task.deliveryText
+    ? task.deliveryText.commitMessage.split('\n')[0]
+    : engineeringTitle(task);
+}
+
+/**
+ * The host commit message: the repository's own convention when the Dev wrote one, otherwise the
+ * default format. Legacy tasks keep their established message format.
+ */
 export function commitMessage(task: Pick<Task, 'id' | 'title' | 'issue'> & EngineeringFields) {
+  if (task.deliveryText) return task.deliveryText.commitMessage;
   const subject = engineeringTitle(task);
   if (!engineeringMetadata(task))
     return `Implement task ${task.id}: ${subject.replace(/[\r\n]/g, ' ')}`;
@@ -81,6 +94,12 @@ export function pullRequestBody(
   task: Pick<Task, 'id' | 'title' | 'issue' | 'spec' | 'tests'> & EngineeringFields,
 ) {
   const marker = `<!-- phantom-task:${task.id} -->`;
+  if (task.deliveryText) {
+    const body = task.deliveryText.pullRequestBody;
+    // The marker finds this PR again after a restart; the Issue link is the host's to keep.
+    const link = task.issue && !new RegExp(`#${task.issue}\\b`).test(body);
+    return `${marker}\n${body}${link ? `\n\nCloses #${task.issue}` : ''}`;
+  }
   if (!engineeringMetadata(task)) {
     const evidence = task.tests.map((t) => `- ${t.command}: exit ${t.exitCode}`).join('\n');
     return `${marker}\n${task.spec}\n\n## Validation\n${evidence}\n\nCloses #${task.issue}`;
@@ -121,4 +140,3 @@ export function expectedTaskBranch(task: Pick<Task, 'id' | 'branch'> & Engineeri
 // Explicit aliases keep the public helper vocabulary easy to discover at call sites.
 export const branchForTask = taskBranch;
 export const commitTitle = engineeringTitle;
-export const pullRequestTitle = engineeringTitle;

@@ -21,6 +21,12 @@ import { Workspaces } from './workspaces.ts';
 import { parseStructuredReply, turnEvidence } from './structured.ts';
 import { instructions, domainContext, taskPrompt, teamInstructionsPrompt } from './prompts.ts';
 import {
+  conventionsBlock,
+  conventionsSummary,
+  readConventions,
+  replaceRepositoryBlock,
+} from './repo-conventions.ts';
+import {
   priorityUpdateInput,
   commandSchema,
   taskInput,
@@ -110,6 +116,22 @@ class ClarificationPause extends Error {
   }
 }
 
+const deliveryTextInput = z.object({
+  commitMessage: z
+    .string()
+    .trim()
+    .min(1)
+    .max(10_000)
+    .regex(/^[^\0]*$/),
+  pullRequestBody: z
+    .string()
+    .trim()
+    .min(1)
+    .max(60_000)
+    .regex(/^[^\0]*$/),
+});
+const deliveryTextRequest = `
+Write this delivery's commit message and pull request body the way the repository conventions in the team instructions ask (commit style, pull request template). End your report with exactly one JSON block: {"commitMessage": "subject line, blank line, optional body", "pullRequestBody": "the filled template"}. The host commits with commitMessage, titles the pull request with its subject line, and links the Issue itself.`;
 const configureInput = z
   .object({ repoId: z.string(), commands: commandSchema, requiredChecks: z.array(z.string()) })
   .strict();
@@ -317,6 +339,37 @@ export class Engine {
     this.injectedFactory = createAgent;
     this.stallMs = options.stallMs ?? 20 * 60_000;
     this.loopRepeats = options.loopRepeats ?? 5;
+  }
+  /**
+   * Read the repository's conventions from its trunk and record them as the team's repository
+   * conventions. Nothing found leaves the instructions untouched, so defaults keep applying.
+   */
+  async learnConventions(repoId: string) {
+    return this.track(
+      (async () => {
+        const repo = this.store.repo(repoId);
+        const mirror = await this.workspaces.mirror(repo);
+        const conventions = await readConventions(
+          (args) => this.workspaces.git(mirror, args),
+          `refs/remotes/origin/${repo.defaultBranch}`,
+        );
+        const current = this.store.currentTeamInstructions(repo.projectId);
+        const repository = replaceRepositoryBlock(
+          current.sections.repository,
+          repo.github,
+          conventionsBlock(repo.github, conventions),
+        );
+        if (repository !== current.sections.repository)
+          this.store.saveTeamInstructions(
+            repo.projectId,
+            { ...current.sections, repository },
+            { source: 'team', baseVersion: current.version },
+          );
+        const summary = conventionsSummary(repo.github, conventions);
+        this.store.addMessage(repo.projectId, 'assistant', summary);
+        return { summary };
+      })(),
+    );
   }
   private track<T>(job: Promise<T>): Promise<T> {
     this.jobs.add(job);
@@ -2523,9 +2576,10 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.dev } as any) : {}),
         } as any);
         this.saveThread(run, thread);
+        const conventions = !!this.store.runTeamInstructions(run).sections.repository.trim();
         const reply = await c.turn(
           thread,
-          `${taskPrompt(task)}\n${conflict ?? fix ?? ''}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, targeted checks and local self-review. Leave changes in this worktree. Do not stage, commit or push; the host owns finalization and formal validation.`,
+          `${taskPrompt(task)}\n${conflict ?? fix ?? ''}\nConfigured commands: ${JSON.stringify(repo.commands)}\n${await domainContext([task.worktree!, ...(await this.primaryPaths(task))])}\nFinish implementation, targeted checks and local self-review. Leave changes in this worktree. Do not stage, commit or push; the host owns finalization and formal validation.${conventions ? deliveryTextRequest : ''}`,
           profile,
           signal,
           undefined,
@@ -2536,6 +2590,9 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           taskId: task.id,
           runId: run.id,
         });
+        // Without a reply block the previous text, or the host's default format, still applies.
+        const deliveryText = conventions && parseStructuredReply(deliveryTextInput, reply);
+        if (deliveryText) this.store.updateTask(task.id, { deliveryText });
       },
       abort,
     );

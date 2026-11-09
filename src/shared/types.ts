@@ -188,6 +188,8 @@ export interface Task {
   devThreadProfileVersion?: number;
   devThreadProfile?: Profile;
   devPhase?: 'implement' | 'finalize';
+  /** The Dev's commit message and PR body, written to the repository conventions of its Run. */
+  deliveryText?: { commitMessage: string; pullRequestBody: string };
   issue?: number;
   issueUrl?: string;
   issueNodeId?: string;

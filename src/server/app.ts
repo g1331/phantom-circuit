@@ -422,6 +422,15 @@ export function createApp(
       baseVersion: body.baseVersion,
     });
   });
+  app.post('/api/projects/:id/team-instructions/learn', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    store.project(id);
+    const repos = store.list('repo').filter((r) => r.projectId === id);
+    if (!repos.length) throw new Fault('项目还没有接入仓库', 400);
+    const summaries: string[] = [];
+    for (const repo of repos) summaries.push((await engine.learnConventions(repo.id)).summary);
+    return { summaries };
+  });
   app.post('/api/projects/:id/team-instructions/restore', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const body = z
@@ -521,7 +530,23 @@ export function createApp(
       engine.github.inspect(b.github),
       engine.workspaces.inspect(b.path, b.github),
     ]);
-    return store.createRepo({ ...b, path, name: remote.name, defaultBranch: remote.defaultBranch });
+    const repo = store.createRepo({
+      ...b,
+      path,
+      name: remote.name,
+      defaultBranch: remote.defaultBranch,
+    });
+    // Reading conventions fetches the trunk; onboarding does not wait for it.
+    void engine
+      .learnConventions(repo.id)
+      .catch((e) =>
+        store.addMessage(
+          repo.projectId,
+          'system',
+          `读取仓库约定失败：${String(e)}。可在项目页重新读取。`,
+        ),
+      );
+    return repo;
   });
   app.patch('/api/repos/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);

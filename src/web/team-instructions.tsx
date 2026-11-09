@@ -53,6 +53,9 @@ export function TeamInstructions({
   const version = current?.version ?? 0;
   const [draft, setDraft] = useState<{ sections: TeamInstructionSections; baseVersion: number }>();
   const [busy, setBusy] = useState(false);
+  const [learning, setLearning] = useState(false);
+  const [learned, setLearned] = useState<string[]>();
+  const hasRepos = state.repos.some((r) => r.projectId === projectId);
   const [error, setError] = useState<Error | string>();
   const [from, setFrom] = useState<number>();
   const [to, setTo] = useState<number>();
@@ -73,6 +76,23 @@ export function TeamInstructions({
       setError(e instanceof Error ? e : String(e));
     } finally {
       setBusy(false);
+    }
+  }
+  async function learn() {
+    setLearning(true);
+    setError(undefined);
+    setLearned(undefined);
+    try {
+      const result = await api<{ summaries: string[] }>(
+        `/projects/${projectId}/team-instructions/learn`,
+        {},
+      );
+      setLearned(result.summaries);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e : String(e));
+    } finally {
+      setLearning(false);
     }
   }
   return (
@@ -128,18 +148,36 @@ export function TeamInstructions({
         ) : (
           <>
             <TeamInstructionText sections={current?.sections ?? empty} />
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() =>
-                setDraft({
-                  sections: structuredClone(current?.sections ?? empty),
-                  baseVersion: version,
-                })
-              }
-            >
-              {t('teamInstructions.edit')}
-            </button>
+            <div className="team-instruction-actions">
+              <button
+                className="secondary-button"
+                disabled={busy || learning}
+                onClick={() =>
+                  setDraft({
+                    sections: structuredClone(current?.sections ?? empty),
+                    baseVersion: version,
+                  })
+                }
+              >
+                {t('teamInstructions.edit')}
+              </button>
+              {hasRepos && (
+                <button
+                  className="secondary-button"
+                  disabled={busy || learning}
+                  onClick={() => void learn()}
+                >
+                  {t(learning ? 'teamInstructions.learning' : 'teamInstructions.learn')}
+                </button>
+              )}
+            </div>
+            {learned && (
+              <div role="status" className="team-instruction-learned">
+                {learned.map((summary) => (
+                  <p key={summary}>{summary}</p>
+                ))}
+              </div>
+            )}
           </>
         )}
       </Fold>
