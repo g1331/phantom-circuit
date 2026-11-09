@@ -1,10 +1,113 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Codex, isolationArgs } from '../src/server/codex.ts';
+import { delimiter, join } from 'node:path';
+import { Codex } from '../src/server/codex.ts';
+import { Engine } from '../src/server/engine.ts';
+import { Workspaces } from '../src/server/workspaces.ts';
+import { devFixture } from './dev-fixture.ts';
+
+test('PM startup failures expose bounded, redacted trailing stderr in the public Run error', async () => {
+  const { root, store, project, github } = await devFixture('phantom-pm-startup-failure-');
+  const engine = new Engine(
+    store,
+    github,
+    new Workspaces(root, store),
+    root,
+    () =>
+      new Codex((_binary, _args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '-e',
+            `
+            process.stdin.once('data', () => {
+              process.stderr.write('x'.repeat(10000) + '\\n');
+              process.stderr.write('\\x1b[31mError: invalid transport\\x1b[0m\\n');
+              process.stderr.write('Authorization: Bearer fixture-private-token\\n');
+              process.stderr.write('in mcp_servers.amap-maps', () => process.exit(1));
+            });
+          `,
+          ],
+          options,
+        ),
+      ),
+  );
+  try {
+    const message = store.addMessage(project.id, 'user', 'Discuss the next step', 'discuss');
+    await assert.rejects(engine.chat(message), /Codex 进程退出 \(1\)/);
+    const run = store.snapshot().runs.find((run) => run.sourceMessageId === message.id)!;
+    assert.equal(run.status, 'failed');
+    assert.match(run.error!, /Error: invalid transport/);
+    assert.match(run.error!, /in mcp_servers\.amap-maps/);
+    assert.doesNotMatch(run.error!, /fixture-private-token|\x1b/);
+    assert.ok(run.error!.length < 6500);
+    assert.equal(store.get('message', message.id)?.status, 'failed');
+  } finally {
+    await engine.stop();
+    store.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test('Codex starts without inherited MCP connections when plugins disappear under isolation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-codex-discovery-'));
+  const entry = join(root, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  const marker = join(root, 'external-mcp-started');
+  const path = process.env.PATH;
+  const codex = new Codex();
+  await mkdir(join(root, 'node_modules', '@openai', 'codex', 'bin'), { recursive: true });
+  const script = `
+    const fs = require('node:fs');
+    const args = process.argv.slice(2);
+    const config = new Map();
+    for (let i = 0; i < args.length; i++)
+      if (args[i] === '-c') {
+        const [key, ...value] = args[++i].split('=');
+        config.set(key, value.join('='));
+      }
+    const plugins = config.get('features.plugins') !== 'false';
+    if (args.includes('--version')) {
+      console.log('codex-cli fixture');
+    } else if (args.includes('list')) {
+      console.log(JSON.stringify([
+        { name: 'fixture-external' },
+        ...(plugins ? [{ name: 'fixture-plugin' }] : [])
+      ]));
+    } else if (!plugins && config.has('mcp_servers.fixture-plugin.enabled')) {
+      console.error('Error: invalid transport in mcp_servers.fixture-plugin');
+      process.exitCode = 1;
+    } else {
+      if (config.get('mcp_servers.fixture-external.enabled') !== 'false' ||
+          (plugins && config.get('mcp_servers.fixture-plugin.enabled') !== 'false'))
+        fs.writeFileSync(${JSON.stringify(marker)}, 'external MCP started');
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+        const message = JSON.parse(line);
+        if (message.id !== undefined)
+          console.log(JSON.stringify({ id: message.id, result: {} }));
+      });
+    }
+  `;
+  try {
+    await writeFile(entry, script);
+    if (process.platform === 'win32') {
+      await writeFile(join(root, 'codex.cmd'), '@echo off\r\n');
+    } else {
+      await writeFile(join(root, 'codex'), `#!${process.execPath}\n${script}`);
+      await chmod(join(root, 'codex'), 0o755);
+    }
+    process.env.PATH = `${root}${delimiter}${path ?? ''}`;
+    await codex.start();
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await codex.stop();
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
 
 test('Codex owner fork uses native read-only branching, rejects inherited host tools and verifies the effective identity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-codex-owner-'));
@@ -571,11 +674,4 @@ test('Codex uses turn/steer preconditions, queues followUps FIFO, and normalizes
     await codex.request('fixture/exit').catch(() => {});
     await codex.stop();
   }
-});
-
-test('every user-configured MCP server is disabled for agents, and an unrepresentable name refuses launch', () => {
-  const args = isolationArgs(['github', 'dida365', 'wireshark-mcp']);
-  for (const name of ['github', 'dida365', 'wireshark-mcp'])
-    assert.ok(args.includes(`mcp_servers.${name}.enabled=false`));
-  assert.throws(() => isolationArgs(['bad.name']), /MCP/);
 });

@@ -46,6 +46,10 @@ Saving role settings performs local schema, Provider-reference and recent model-
 
 Use **Check Codex role configurations** in the Codex model section for an explicit read-only connection and effective-configuration check. Identical Provider/model/effort combinations are checked once; the UI shows the current role, limits each check to 15 seconds and stops waiting after 30 seconds overall. Checking does not save settings, execute a model turn or block other settings writes. Actual Runs still verify their resolved Provider, model and reasoning effort before execution.
 
+If a Codex process exits, its Run error retains the exit code and up to 6,000 characters of trailing, redacted stderr, including configuration errors reported before initialization. ANSI styling is removed. Existing historical Run errors are not rewritten.
+
+Codex MCP discovery uses the same feature and memory isolation settings as app-server startup, then disables every remaining configured MCP server. Plugin-provided servers removed by isolation are not reintroduced as incomplete configuration entries. This uses the existing Codex login without changing global settings or copying credentials.
+
 - Closing a work switch stops new claims; existing tasks finish development, review, revision and merge. Pause interrupts a task separately; cancel retains its branch, worktree and PR.
 - Global/project/repository Dev limits apply together. Defaults: 4 / 4 / 2. Independent Review has a separate global two-session limit; PM activity is separate.
 - New Projects inherit the software's default Agent (OMP). A Project can select OMP or Codex, and each role can inherit its global model or pin a local assignment. OMP models are initialized once from its `default`, `slow` and `advisor` roles. Existing Projects retain explicit Codex assignments. Runs fix their resolved configuration; changing settings does not rewrite history or silently substitute models.

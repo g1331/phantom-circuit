@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { command, terminate } from './process.ts';
@@ -67,15 +68,16 @@ const isolatedFeatures = [
   'in_app_browser',
   'computer_use',
 ];
-export function isolationArgs(mcpServers: string[]) {
+const featureIsolationArgs = [
+  ...isolatedFeatures.map((feature) => `features.${feature}=false`),
+  'memories.use_memories=false',
+  'memories.generate_memories=false',
+].flatMap((override) => ['-c', override]);
+
+function mcpIsolationArgs(mcpServers: string[]) {
   const unsafe = mcpServers.find((name) => !/^[A-Za-z0-9_-]+$/.test(name));
   if (unsafe) throw new Fault(`无法隔离 Codex MCP 服务器：${unsafe}`, 409);
-  return [
-    ...isolatedFeatures.map((feature) => `features.${feature}=false`),
-    'memories.use_memories=false',
-    'memories.generate_memories=false',
-    ...mcpServers.map((name) => `mcp_servers.${name}.enabled=false`),
-  ].flatMap((override) => ['-c', override]);
+  return mcpServers.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -350,7 +352,7 @@ export class Codex extends EventEmitter implements AgentBackend {
     if (this.launch === spawn) {
       const listed = await command(
         binary,
-        [...prefix, 'mcp', 'list', '--json'],
+        [...prefix, ...featureIsolationArgs, 'mcp', 'list', '--json'],
         undefined,
         undefined,
         15000,
@@ -362,7 +364,7 @@ export class Codex extends EventEmitter implements AgentBackend {
         throw new Fault('无法读取 Codex MCP 配置，已拒绝启动以免用户级服务器进入项目', 503);
       mcpServers = parsed.map((s) => s.name as string);
     }
-    args.push(...isolationArgs(mcpServers));
+    args.push(...featureIsolationArgs, ...mcpIsolationArgs(mcpServers));
     if (this.launch === spawn) {
       const versionArgs = binary === process.execPath ? [args[0], '--version'] : ['--version'];
       this.version = (
@@ -414,10 +416,16 @@ export class Codex extends EventEmitter implements AgentBackend {
       }
     });
     // Buffer complete lines so a key split across stderr chunks cannot escape redaction.
-    createInterface({ input: this.child.stderr }).on('line', (line) =>
-      this.emit('diagnostic', scrub(line).slice(-3000)),
-    );
-    child.on('close', () => {
+    let stderr = '';
+    createInterface({ input: child.stderr }).on('line', (line) => {
+      const diagnostic = scrub(stripVTControlCharacters(line)).slice(-3000);
+      stderr = `${stderr}${diagnostic}\n`.slice(-6000);
+      this.emit('diagnostic', diagnostic);
+    });
+    child.on('close', (code) => {
+      // close follows stream EOF, including a final stderr line without a newline.
+      if (this.child === child && !this.stopping && !this.fatal)
+        this.fail(new Error(`Codex 进程退出 (${code})${stderr ? `\n${stderr.trimEnd()}` : ''}`));
       deltas.finish();
       completed.finish();
       deltas.dispose();
@@ -426,9 +434,6 @@ export class Codex extends EventEmitter implements AgentBackend {
     });
     child.on('error', (e) => {
       if (this.child === child && !this.stopping) this.fail(e);
-    });
-    child.on('exit', (code) => {
-      if (this.child === child && !this.stopping) this.fail(new Error(`Codex 进程退出 (${code})`));
     });
     child.stdin.on('error', (e) => {
       if (this.child === child && !this.stopping) this.fail(e);
