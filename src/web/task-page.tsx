@@ -1,13 +1,5 @@
 import { useMemo } from 'react';
-import {
-  ArrowLeft,
-  ExternalLink,
-  GitPullRequest,
-  Pause,
-  Play,
-  Undo2,
-  UserRoundPlus,
-} from 'lucide-react';
+import { ArrowLeft, Pause, Play, Undo2, UserRoundPlus } from 'lucide-react';
 import type { Message, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
 import { incidentAttention } from '../shared/task-history.ts';
@@ -18,6 +10,7 @@ import { TaskExperience } from './task-experience.tsx';
 import type { TaskView } from './task-detail.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
+import { EngineeringReference } from './engineering-reference.tsx';
 
 export const profileKeys = {
   backend: 'profile.backend',
@@ -202,16 +195,8 @@ export function TaskPage({
             </>
           )}
           {(task.issueUrl || task.prUrl) && <span className="task-links-gap" aria-hidden="true" />}
-          {task.issueUrl && (
-            <a className="quiet-link" href={task.issueUrl} target="_blank" rel="noreferrer">
-              Issue #{task.issue ?? ''} <ExternalLink size={12} />
-            </a>
-          )}
-          {task.prUrl && (
-            <a className="quiet-link" href={task.prUrl} target="_blank" rel="noreferrer">
-              <GitPullRequest size={13} /> PR #{task.pr ?? ''} <ExternalLink size={12} />
-            </a>
-          )}
+          {task.issueUrl && <EngineeringReference task={task} kind="issue" external />}
+          {task.prUrl && <EngineeringReference task={task} kind="pr" external />}
         </div>
         <p className="muted task-technical-profile">{t(profileKeys[task.profile])}</p>
       </Fold>

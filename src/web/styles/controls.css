@@ -226,14 +226,16 @@
   border-radius: 4px;
   padding: 2px 5px;
 }
-.runtime-badge.warning,
+.runtime-badge.warning {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
 .runtime-badge.delivery-failed {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
 }
-.runtime-badge.delivery-running,
-.runtime-badge.delivery-queued {
-  color: var(--focus);
+.runtime-badge.delivery-running {
+  color: var(--progress);
 }
 .request-error-detail {
   display: block;

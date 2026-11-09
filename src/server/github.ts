@@ -28,6 +28,7 @@ export interface PullState {
   number: number;
   html_url: string;
   state: string;
+  draft?: boolean;
   /** Single-PR endpoint only. */
   merged?: boolean;
   /** Listing endpoints only; set exactly when the PR has been merged. */
@@ -43,6 +44,21 @@ export interface PullState {
 /** Merge state that is correct for both the listing and the single-PR resource shapes. */
 export function isMerged(pr: Pick<PullState, 'merged' | 'merged_at'>): boolean {
   return pr.merged === true || pr.merged_at != null;
+}
+
+function pullDisplayState(pr: PullState): Task['prState'] {
+  if (isMerged(pr)) return 'merged';
+  if (pr.state === 'closed') return 'closed';
+  if (pr.state === 'open') return pr.draft ? 'draft' : 'open';
+  return undefined;
+}
+
+function issueDisplayState(issue: { state?: string; state_reason?: string }): Task['issueState'] {
+  if (issue.state === 'open') return 'open';
+  if (issue.state !== 'closed') return undefined;
+  if (issue.state_reason === 'completed' || issue.state_reason === 'not_planned')
+    return issue.state_reason;
+  return 'closed';
 }
 export interface GhResult {
   stdout: string;
@@ -492,6 +508,7 @@ export class GitHub {
       issueNodeId: issue.node_id,
       issueDatabaseId: issue.id,
       issueBody: issue.body,
+      issueState: issueDisplayState(issue),
     });
     for (const key of task.dependencies) {
       const dep = this.store.task(key);
@@ -768,7 +785,11 @@ export class GitHub {
         }),
       this.taskRevision(task),
     );
-    this.store.updateTask(task.id, { pr: result.number, prUrl: result.html_url });
+    this.store.updateTask(task.id, {
+      pr: result.number,
+      prUrl: result.html_url,
+      prState: pullDisplayState(result),
+    });
     return result;
   }
   async reviseIssue(task: Task) {
@@ -785,7 +806,10 @@ export class GitHub {
       },
       () => this.api(endpoint, 'PATCH', { body }),
     );
-    this.store.updateTask(task.id, { issueBody: result.body });
+    this.store.updateTask(task.id, {
+      issueBody: result.body,
+      issueState: issueDisplayState(result),
+    });
     return result;
   }
   private issueBody(task: Task, completed: boolean) {
@@ -831,11 +855,28 @@ export class GitHub {
         return issue;
       },
     );
-    this.store.updateTask(task.id, { issueBody: result.body });
+    this.store.updateTask(task.id, {
+      issueBody: result.body,
+      issueState: issueDisplayState(result),
+    });
     return result;
   }
+  async issue(task: Task) {
+    const issue = await this.api(
+      `repos/${this.store.repo(task.repoId).github}/issues/${task.issue}`,
+    );
+    const issueState = issueDisplayState(issue);
+    if (this.store.task(task.id).issueState !== issueState)
+      this.store.updateTask(task.id, { issueState });
+    return issue;
+  }
   async pull(task: Task): Promise<PullState> {
-    return this.api(`repos/${this.store.repo(task.repoId).github}/pulls/${task.pr}`);
+    const pr: PullState = await this.api(
+      `repos/${this.store.repo(task.repoId).github}/pulls/${task.pr}`,
+    );
+    const prState = pullDisplayState(pr);
+    if (this.store.task(task.id).prState !== prState) this.store.updateTask(task.id, { prState });
+    return pr;
   }
   async reviewComment(task: Task, review: ReviewResult) {
     const repo = this.store.repo(task.repoId);

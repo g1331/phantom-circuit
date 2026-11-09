@@ -3492,14 +3492,13 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         }
         if (!task.issue) await this.github.publishIssue(task);
         const t = this.store.task(task.id);
-        const repo = this.store.repo(t.repoId);
         const pr = t.pr ? await this.github.pull(t) : undefined;
         if (pr?.merged) {
           await this.completed(t);
           continue;
         }
         if (t.issue && t.stage !== 'done') {
-          const issue = await this.github.api(`repos/${repo.github}/issues/${t.issue}`);
+          const issue = await this.github.issue(t);
           if (t.issueBody && issue.body !== t.issueBody) {
             if (t.control === 'paused' && t.blocked === 'GitHub 需求发生变化，PM 正在核对')
               continue;
