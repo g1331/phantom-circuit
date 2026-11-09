@@ -243,11 +243,12 @@ export async function checkMaintenance() {
     assert.equal(await dialog.locator('.inline-warning').count(), 0);
     assert.equal(await dialog.getByRole('button', { name: /Resume|Pause/ }).count(), 0);
     await dialog.locator('.task-controls > summary').click();
+    const historicalPR = dialog
+      .locator('.task-interventions')
+      .getByRole('link', { name: 'Status unknown PR #7', exact: true });
+    await historicalPR.getByRole('img', { name: 'Status unknown', exact: true }).waitFor();
     assert.equal(
-      await dialog
-        .locator('.task-interventions')
-        .getByRole('link', { name: 'PR #7', exact: true })
-        .getAttribute('href'),
+      await historicalPR.getAttribute('href'),
       'https://github.com/example/history/pull/7',
     );
     await openSection(page, 'task.tab.spec');
