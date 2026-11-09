@@ -12,16 +12,16 @@ import { devFixture, hang, until } from './dev-fixture.ts';
 
 type Handler = NonNullable<Parameters<Codex['thread']>[0]['toolHandler']>;
 
-async function scenario() {
+async function scenario(failures = 1) {
   const f = await devFixture('phantom-validation-recovery-');
   let store = f.store;
   const marker = join(f.root, 'checked');
   await writeFile(
     join(f.root, 'check.cjs'),
     `const fs = require('fs'); const marker = ${JSON.stringify(marker)};
-if (!fs.existsSync(marker)) {
-  fs.writeFileSync(marker, ''); console.error('original failed check'); process.exit(1);
-}`,
+const runs = fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0;
+fs.writeFileSync(marker, String(runs + 1));
+if (runs < ${failures}) { console.error('original failed check'); process.exit(1); }`,
   );
   store.patchRepo(f.repo.id, {
     commands: {
@@ -400,6 +400,90 @@ test('a recorded team question survives interruption of its asking turn', async 
     await s.engine().tick();
     assert.equal(s.coordinated.length, 1);
     assert.equal(s.store().task(s.taskId).blocked, question);
+  } finally {
+    await s.close();
+  }
+});
+
+test('repeated diagnostic failures keep an owner and respect the attempt limit', async () => {
+  const s = await scenario();
+  s.store().patchRepo(s.repoId, {
+    commands: {
+      ...s.store().repo(s.repoId).commands,
+      test: 'node -e "console.error(\'persistent failure\');process.exit(1)"',
+    },
+  });
+  s.diagnose(async () => {
+    throw new Error('diagnostic backend exited');
+  });
+  s.coordinate(async (tool) => {
+    const incident = s
+      .store()
+      .list('incident')
+      .find((item) => item.status === 'assessing')!;
+    await tool('resolve_incident', {
+      incidentId: incident.id,
+      action: incident.phase === 'retries' ? 'paused' : 'resolved',
+      guidance: 'The team is coordinating the persistent validation failure.',
+    });
+    return 'Coordinated';
+  });
+  try {
+    await s.start();
+    await s.pump(
+      () =>
+        s
+          .store()
+          .list('incident')
+          .some((item) => item.phase === 'retries') ||
+        (s.diagnoses.length >= 2 &&
+          s.store().task(s.taskId).control === 'paused' &&
+          s.store().activeRuns().length === 0),
+    );
+    const escalation = s
+      .store()
+      .list('incident')
+      .find((item) => item.phase === 'retries');
+    assert.ok(escalation, 'repeated failures must escalate instead of losing the assessor');
+    await until(() => s.store().activeRuns().length === 0, 'bounded team coordination');
+    assert.equal(s.diagnoses.length, 3);
+    assert.equal(s.coordinated.length, 4);
+    for (let i = 0; i < 3; i++) await s.engine().tick();
+    assert.equal(s.diagnoses.length, 3);
+    assert.equal(s.coordinated.length, 4);
+    assert.equal(s.implementationTurns(), 1);
+    assert.equal(s.store().task(s.taskId).retries, 0);
+    assert.match(s.store().task(s.taskId).tests[1].output, /persistent failure/);
+    assert.equal(s.store().get('run', escalation.assessmentRunId!)?.role, 'pm');
+  } finally {
+    await s.close();
+  }
+});
+
+test('a valid fix starts fresh diagnosis on the next failing revision', async () => {
+  const s = await scenario(2);
+  try {
+    await s.start();
+    await s.restart();
+    await s.pump(() => s.diagnoses.length === 2);
+    s.diagnose(async (tool) => {
+      const worktree = s.store().task(s.taskId).worktree!;
+      await writeFile(join(worktree, 'a.txt'), `fix ${s.diagnoses.length}\n`);
+      await tool('settle', { action: 'fixed', diagnosis: 'Fix the failing revision.' });
+      return 'Fixed';
+    });
+    await s.restart();
+    await s.pump(s.reviewed);
+    assert.equal(s.diagnoses.length, 4);
+    assert.equal(s.coordinated.length, 0);
+    assert.equal(s.store().task(s.taskId).retries, 2);
+    assert.ok(
+      s
+        .store()
+        .task(s.taskId)
+        .tests.every((result) => result.exitCode === 0),
+    );
+    assert.equal(s.implementationTurns(), 1);
   } finally {
     await s.close();
   }

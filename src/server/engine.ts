@@ -984,13 +984,7 @@ export class Engine {
         .explainScheduling(task.projectId)
         .tasks.find((candidate) => candidate.taskId === task.id)!.reasons;
       if (reasons.some((reason) => reason.code === 'activeRun')) return current;
-      const attempts = this.store
-        .list('run')
-        .filter(
-          (run) =>
-            run.incidentId === item.incidentId &&
-            (run.role === 'oncall' || (run.role === 'dev' && run.incidentPhase === 'validation')),
-        ).length;
+      const attempts = this.validationAttempts(item.incidentId, item.revision).length;
       if (attempts >= FAILURE_LIMIT) {
         const handoff = this.handoffValidation(
           oldRun,
@@ -1261,7 +1255,10 @@ export class Engine {
     if (next.taskId) {
       const task = this.store.task(next.taskId);
       if (
-        incident.phase === 'validation' &&
+        (incident.phase === 'validation' ||
+          (incident.assessmentRunId &&
+            this.store.get('run', incident.assessmentRunId)?.incidentPhase ===
+              'validation_recovery')) &&
         (task.pausedByUser || ['done', 'cancelled'].includes(task.stage))
       )
         return next;
@@ -2174,13 +2171,38 @@ export class Engine {
       descriptor: diagnosticDescriptor('incident_validation', detail),
       evidence: JSON.stringify({ taskId: task.id, head: task.head, base: task.base }),
     });
+    const attempts = this.validationAttempts(incident.id, { head: task.head, base: task.base });
+    if (attempts.length >= FAILURE_LIMIT) {
+      const message = `同版本验证失败排查已达三次上限，PM 正在协调。\n${detail}`;
+      const escalation = this.store.createIncident({
+        projectId: task.projectId,
+        taskId: task.id,
+        phase: 'retries',
+        message,
+        descriptor: diagnosticDescriptor('incident_retries', message),
+        evidence: JSON.stringify({ taskId: task.id, head: task.head, base: task.base }),
+      });
+      this.block(task.id, message);
+      void this.track(
+        this.incidentForRun(attempts.at(-1)!, message, 'validation_recovery', escalation.id),
+      );
+      return true;
+    }
     let run: Run;
     try {
-      run = this.store.run('dev', task.projectId, task.profile, task, {
-        incidentId: incident.id,
-        incidentPhase: 'validation',
-        incidentEvidence: detail,
-        suppressSource: true,
+      run = this.store.transaction(() => {
+        const run = this.store.run('dev', task.projectId, task.profile, task, {
+          incidentId: incident.id,
+          incidentPhase: 'validation',
+          incidentEvidence: detail,
+          suppressSource: true,
+        });
+        // A resumed Task can fail validation again; atomically bind its new diagnostic owner.
+        if (incident.assessmentRunId)
+          this.store.rebindIncidentAssessment(incident.id, incident.assessmentRunId, run.id);
+        else this.store.claimIncidentAssessment(incident.id, run.id);
+        this.store.updateIncident(incident.id, { status: 'assessing', message: detail });
+        return run;
       });
     } catch (error) {
       this.store.updateIncident(incident.id, {
@@ -2189,7 +2211,6 @@ export class Engine {
       });
       return false;
     }
-    this.store.claimIncidentAssessment(incident.id, run.id);
     this.block(task.id, '正式验证未通过，开发正在排查', {
       source: 'host',
       reason: 'oncall',
@@ -2198,6 +2219,17 @@ export class Engine {
     });
     void this.track(this.oncall(run, incident.id));
     return true;
+  }
+  private validationAttempts(incidentId: string, revision: Run['revision']) {
+    return this.store
+      .list('run')
+      .filter(
+        (run) =>
+          run.incidentId === incidentId &&
+          (run.role === 'oncall' || (run.role === 'dev' && run.incidentPhase === 'validation')) &&
+          run.revision?.head === revision?.head &&
+          run.revision?.base === revision?.base,
+      );
   }
   private async oncall(run: Run, incidentId: string) {
     const task = this.store.task(run.taskId!);
