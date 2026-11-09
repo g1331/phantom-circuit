@@ -861,6 +861,15 @@ export class GitHub {
     });
     return result;
   }
+  async issue(task: Task) {
+    const issue = await this.api(
+      `repos/${this.store.repo(task.repoId).github}/issues/${task.issue}`,
+    );
+    const issueState = issueDisplayState(issue);
+    if (this.store.task(task.id).issueState !== issueState)
+      this.store.updateTask(task.id, { issueState });
+    return issue;
+  }
   async pull(task: Task): Promise<PullState> {
     const pr: PullState = await this.api(
       `repos/${this.store.repo(task.repoId).github}/pulls/${task.pr}`,
