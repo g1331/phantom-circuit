@@ -109,7 +109,7 @@ export const runtimeEn = {
   'delivery.queue': 'Queue after current work',
   'delivery.steer': 'Steer the active PM work',
   'delivery.sendQueue': 'Queue message',
-  'delivery.sendSteer': 'Steer current PM',
+  'delivery.sendSteer': 'Adjust now',
   'delivery.steerFallback':
     'If steering is unavailable, the message will queue; unconfirmed delivery remains pending review.',
   'delivery.queued': 'Queued',
@@ -261,7 +261,7 @@ export const runtimeZh: { [K in keyof typeof runtimeEn]: string } = {
   'delivery.steer': '调整当前 PM 工作方向',
   'delivery.queued': '已排队',
   'delivery.sendQueue': '排队发送',
-  'delivery.sendSteer': '引导当前 PM',
+  'delivery.sendSteer': '立即调整',
   'delivery.steerFallback': '当前 Run 不可引导时将排队；未确认的投递仍待核对。',
   'delivery.running': '处理中',
   'delivery.completed': '已完成',

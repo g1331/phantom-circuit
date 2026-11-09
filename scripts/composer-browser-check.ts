@@ -2,6 +2,57 @@ import assert from 'node:assert/strict';
 import type { Page } from 'playwright';
 import type { Store } from '../src/server/store.ts';
 import { openPage } from './browser-pages.ts';
+import { choosePreference } from './browser-preferences.ts';
+import { resolve } from 'node:path';
+
+export async function checkComposerLayout(page: Page, artifacts: string, state: string) {
+  const viewport = page.viewportSize()!;
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const language of ['zh-CN', 'en']) {
+      await choosePreference(page, 'language', language);
+      for (const theme of ['light', 'dark']) {
+        await choosePreference(page, 'theme', theme);
+        const layout = await page.locator('.composer').evaluate((composer) => {
+          const box = composer.getBoundingClientRect();
+          const controls = Array.from(
+            composer.querySelectorAll<HTMLElement>('.composer-footer button, .image-picker label'),
+          ).filter((control) => control.getClientRects().length);
+          return {
+            overflow: document.documentElement.scrollWidth > innerWidth,
+            controls: controls.map((control) => {
+              const rect = control.getBoundingClientRect();
+              return {
+                text: control.textContent,
+                fits: rect.left >= box.left && rect.right <= box.right,
+                height: rect.height,
+                clipped: control.scrollWidth > control.clientWidth,
+              };
+            }),
+          };
+        });
+        assert.equal(layout.overflow, false, JSON.stringify(layout));
+        for (const control of layout.controls) {
+          assert.equal(control.fits, true, JSON.stringify(control));
+          if (width === 390) assert.ok(control.height >= 44, JSON.stringify(control));
+        }
+        for (const button of await page.locator('.send-controls button').all()) {
+          assert.equal(
+            await button.evaluate((element) => element.scrollWidth > element.clientWidth),
+            false,
+            'send action labels remain fully visible',
+          );
+        }
+        await page.screenshot({
+          path: resolve(artifacts, `composer-${state}-${width}-${language}-${theme}.png`),
+        });
+      }
+    }
+  }
+  await choosePreference(page, 'language', 'zh-CN');
+  await choosePreference(page, 'theme', 'dark');
+  await page.setViewportSize(viewport);
+}
 
 export async function checkTyping(page: Page) {
   const input = page.locator('.composer textarea');
