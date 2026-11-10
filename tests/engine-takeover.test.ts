@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Store } from '../src/server/store.ts';
+import { setImmediate } from 'node:timers/promises';
+import { Fault, Store } from '../src/server/store.ts';
 import { Engine, ROLE_ALLOWED_TOOLS, mergeReady } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
@@ -160,6 +161,145 @@ test('steer operations remain uncertain without proof and only an accepted opera
     assert.equal(store.get('run', run.id)?.sourceIntent, 'discuss');
   } finally {
     store.close();
+  }
+});
+
+test('steer during PM preparation keeps one Run and changes authority only after ack', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'phantom-pm-preparing-steer-'));
+  const store = new Store(':memory:');
+  function gate() {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+  const preparing = gate();
+  const preparation = gate();
+  const turnStarted = gate();
+  const steerReceived = gate();
+  const acknowledgement = gate();
+  const completion = gate();
+  const steerCalls: Parameters<Codex['steer']>[] = [];
+  let threadCreated = false;
+  let turnOpen = false;
+  let turns = 0;
+  class PreparingCodex extends Codex {
+    override async start() {}
+    override async stop() {}
+    override async thread() {
+      threadCreated = true;
+      return 'preparing-thread';
+    }
+    override async turn(...args: Parameters<Codex['turn']>) {
+      turns++;
+      turnOpen = true;
+      args[5]?.('original-turn');
+      turnStarted.release();
+      await completion.promise;
+      turnOpen = false;
+      return 'The updated goal is included in this reply';
+    }
+    override async steer(...args: Parameters<Codex['steer']>) {
+      steerCalls.push(args);
+      if (!turnOpen) throw new Fault('Codex 会话没有可 steer 的运行中回合', 409);
+      steerReceived.release();
+      await acknowledgement.promise;
+    }
+  }
+  class PreparingWorkspaces extends Workspaces {
+    override async view() {
+      assert.equal(threadCreated, true);
+      preparing.release();
+      await preparation.promise;
+      return root;
+    }
+  }
+  const project = store.createProject('Preparing PM steer', '');
+  store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
+  store.createRepo({
+    projectId: project.id,
+    name: 'Context',
+    path: root,
+    github: 'fixture/context',
+    defaultBranch: 'main',
+    authorized: false,
+  });
+  const source = store.addMessage(project.id, 'user', 'ping', 'discuss');
+  const engine = new Engine(
+    store,
+    new GitHub(store),
+    new PreparingWorkspaces(join(root, 'workspaces'), store),
+    root,
+    () => new PreparingCodex(),
+  );
+  const pending: Promise<string>[] = [];
+  try {
+    const ping = engine.chat(source);
+    pending.push(ping);
+    await preparing.promise;
+    const [run] = store.list('run');
+    assert.ok(run);
+    assert.equal(run.threadId, 'preparing-thread');
+    assert.equal(run.turnId, undefined);
+    assert.equal(turns, 0);
+    const steer = store.addMessage(
+      project.id,
+      'user',
+      'Implement the updated goal in this reply',
+      'implement',
+      undefined,
+      { deliveryMode: 'steer' },
+    );
+    const redirect = engine.chat(steer);
+    pending.push(redirect);
+    await setImmediate();
+    assert.equal(
+      store.get('message', steer.id)?.deliveryMode,
+      'steer',
+      'preparing PM must retain steer delivery instead of queueing a new turn',
+    );
+    assert.equal(steerCalls.length, 0, 'native steer must wait until the turn is open');
+    assert.equal(store.list('run').length, 1);
+    assert.equal(store.get('run', run.id)?.sourceMessageId, source.id);
+    assert.equal(store.get('run', run.id)?.sourceIntent, 'discuss');
+
+    preparation.release();
+    await turnStarted.promise;
+    await steerReceived.promise;
+    assert.equal(steerCalls.length, 1);
+    assert.equal(steerCalls[0][0], 'preparing-thread');
+    assert.equal(steerCalls[0][1], steer.content);
+    assert.equal(steerCalls[0][2]?.clientUserMessageId, steer.id);
+    assert.equal(store.get('run', run.id)?.sourceMessageId, source.id);
+    assert.equal(store.get('run', run.id)?.sourceIntent, 'discuss');
+
+    acknowledgement.release();
+    await redirect;
+    assert.equal(store.get('run', run.id)?.sourceMessageId, steer.id);
+    assert.equal(store.get('run', run.id)?.sourceIntent, 'implement');
+    assert.equal(store.get('message', steer.id)?.status, 'completed');
+    completion.release();
+    await ping;
+    assert.equal(store.get('run', run.id)?.status, 'completed');
+    assert.equal(store.list('run').length, 1);
+    assert.equal(turns, 1);
+    assert.equal(steerCalls.length, 1);
+    assert.equal(store.get('message', steer.id)?.deliveryMode, 'steer');
+  } finally {
+    preparing.release();
+    preparation.release();
+    turnStarted.release();
+    steerReceived.release();
+    acknowledgement.release();
+    completion.release();
+    try {
+      await Promise.allSettled(pending);
+      await engine.stop();
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 
