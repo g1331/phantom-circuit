@@ -13,13 +13,20 @@ const releaseSchema = z.object({
   commit: z.string().nullable(),
   dirty: z.boolean().nullable(),
 });
-export interface DeliveryRuntime {
-  source: string;
-  revision?: string;
-  update?: string;
-}
+export type DeliveryRuntime =
+  | { kind: 'checkout' | 'unknown'; source: string; revision?: never; update?: never }
+  | { kind: 'release'; source: string; revision?: string; update?: string };
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
+async function canonicalPath(path: string) {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return resolve(path);
+    throw error;
+  }
+}
 
 async function installedUpdate(root: string, source: string) {
   const releases = dirname(root);
@@ -78,47 +85,31 @@ export async function captureDeliveryRuntime(root = runtimePath()): Promise<Deli
     try {
       value = JSON.parse(text);
     } catch {
-      return { source: canonical };
+      return { kind: 'unknown', source: canonical };
     }
     const parsed = releaseSchema.safeParse(value);
-    if (!parsed.success) return { source: canonical };
+    if (!parsed.success) return { kind: 'unknown', source: canonical };
     const release = parsed.data;
     return {
-      source: resolve(release.source),
+      kind: 'release',
+      source: await canonicalPath(release.source),
       ...(release.dirty === false && release.commit && /^[a-f0-9]{40}$/i.test(release.commit)
         ? { revision: release.commit }
         : {}),
       update: await installedUpdate(canonical, release.source),
     };
   }
-  const head = await command('git', ['rev-parse', 'HEAD'], canonical, undefined, 10000, false);
-  const status = await command(
-    'git',
-    ['status', '--porcelain', '--untracked-files=normal'],
-    canonical,
-    undefined,
-    10000,
-    false,
-  );
-  return {
-    source: canonical,
-    ...(head.code === 0 && status.code === 0 && !status.stdout.trim()
-      ? { revision: head.stdout.trim() }
-      : {}),
-  };
+  return { kind: 'checkout', source: canonical };
 }
 
 export type DeliveryVersion = 'other' | 'current' | 'pending' | 'unknown';
 
-export async function deliveryVersion(task: Task, repo: Repo, runtime: DeliveryRuntime) {
-  let source: string;
-  try {
-    source = await realpath(repo.path);
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      source = resolve(repo.path);
-    else throw error;
-  }
+export async function deliveryVersion(
+  task: Task,
+  repo: Repo,
+  runtime: DeliveryRuntime,
+): Promise<DeliveryVersion> {
+  const source = await canonicalPath(repo.path);
   const runtimeSource = resolve(runtime.source);
   const matches =
     process.platform === 'win32'
@@ -127,7 +118,7 @@ export async function deliveryVersion(task: Task, repo: Repo, runtime: DeliveryR
   if (!matches) return 'other';
   const delivery = task.deliveryRevision;
   const revision = delivery && delivery.head === task.head ? delivery.commit : task.head;
-  if (!runtime.revision || !revision) return 'unknown';
+  if (runtime.kind !== 'release' || !runtime.revision || !revision) return 'unknown';
   const included = await command(
     'git',
     ['merge-base', '--is-ancestor', revision, runtime.revision],
@@ -138,7 +129,7 @@ export async function deliveryVersion(task: Task, repo: Repo, runtime: DeliveryR
   );
   if (included.code === 0) return 'current';
   if (included.code !== 1) return 'unknown';
-  // A confirmed squash commit identifies the delivered revision; a bare feature head may be rebased.
+  // A bare feature head may have been rebased; a confirmed squash commit identifies the delivery.
   return delivery && delivery.head === task.head ? 'pending' : 'unknown';
 }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
@@ -12,7 +12,7 @@ import {
 } from '../src/server/delivery-runtime.ts';
 import { renderHostMessage } from '../src/shared/host-messages.ts';
 
-test('delivery notices distinguish the captured running revision, pending code, and unknown evidence', async () => {
+test('delivery notices preserve startup identity and evidence-based version states', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-delivery-runtime-'));
   const source = join(root, 'source');
   const store = new Store(':memory:');
@@ -22,9 +22,23 @@ test('delivery notices distinguish the captured running revision, pending code, 
     await git(['config', 'user.name', 'Phantom Test']);
     await git(['config', 'user.email', 'test@example.invalid']);
     await writeFile(join(source, 'result.txt'), 'Original\n');
+    await writeFile(join(source, '.gitignore'), 'dist/\n');
+    await mkdir(join(source, 'dist'));
+    await writeFile(join(source, 'dist', 'index.html'), 'Old UI\n');
     await git(['add', '.']);
     await git(['commit', '-m', 'Initial runtime']);
-    const running = await captureDeliveryRuntime(source);
+    const initialCommit = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+    const release = join(root, 'release');
+    await mkdir(release);
+    await writeFile(
+      join(release, 'release.json'),
+      JSON.stringify({
+        source,
+        commit: initialCommit,
+        dirty: false,
+      }),
+    );
+    const running = await captureDeliveryRuntime(release);
     await writeFile(join(source, 'result.txt'), 'Delivered\n');
     await git(['commit', '-am', 'Deliver result']);
     const commit = (await git(['rev-parse', 'HEAD'])).stdout.trim();
@@ -63,7 +77,19 @@ test('delivery notices distinguish the captured running revision, pending code, 
     assert.match(pending.content, /当前应用尚未包含/);
     assert.doesNotMatch(pending.content, /npm|体验环境|预览/);
     assert.match(renderHostMessage(pending.descriptor, 'en'), /does not yet include/);
-    const updated = await captureDeliveryRuntime(source);
+    const checkout = await captureDeliveryRuntime(source);
+    assert.equal((await git(['status', '--porcelain'])).stdout.trim(), '');
+    assert.equal(await readFile(join(source, 'dist', 'index.html'), 'utf8'), 'Old UI\n');
+    assert.equal(
+      await deliveryVersion(task, repo, checkout),
+      'unknown',
+      'clean source HEAD cannot establish the version of the ignored browser build',
+    );
+    await writeFile(
+      join(release, 'release.json'),
+      JSON.stringify({ source, commit, dirty: false }),
+    );
+    const updated = await captureDeliveryRuntime(release);
     assert.equal(await deliveryVersion(task, repo, updated), 'current');
     assert.match((await completionNotice(task, repo, updated)).content, /当前应用已包含/);
     await writeFile(join(source, 'result.txt'), 'Uncommitted\n');
@@ -85,14 +111,18 @@ test('delivery notices distinguish the captured running revision, pending code, 
       ),
       'unknown',
     );
-    const release = join(root, 'release');
-    await mkdir(release);
+    const linkedSource = join(root, 'linked-source');
+    await symlink(source, linkedSource, process.platform === 'win32' ? 'junction' : 'dir');
     await writeFile(
       join(release, 'release.json'),
-      JSON.stringify({ source, commit, dirty: false }),
+      JSON.stringify({ source: linkedSource, commit, dirty: false }),
     );
     const installed = await captureDeliveryRuntime(release);
     assert.equal(await deliveryVersion(task, repo, installed), 'current');
+    assert.equal(
+      await deliveryVersion(task, { ...repo, path: linkedSource }, installed),
+      'current',
+    );
     await writeFile(join(release, 'release.json'), JSON.stringify({ source, commit, dirty: true }));
     assert.equal(
       await deliveryVersion(task, repo, await captureDeliveryRuntime(release)),

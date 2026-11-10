@@ -350,7 +350,7 @@ export class Engine {
     this.loopRepeats = options.loopRepeats ?? 5;
     this.deliveryRuntime = captureDeliveryRuntime().catch((error: unknown) => {
       this.store.event('runtime', `运行版本证据不可用：${redact(String(error))}`);
-      return { source: runtimePath() };
+      return { kind: 'unknown', source: runtimePath() };
     });
   }
   /**

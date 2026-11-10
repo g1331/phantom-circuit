@@ -15,8 +15,9 @@ Service interruptions are not user pauses. Recovery must continue a successor th
 Windows keeps its existing foreground and development launchers. Linux service support does not introduce public network listening, a desktop installer, automatic updates, or database rollback.
 
 Delivery notices capture runtime identity once when the Engine starts. An installed runtime
-uses its release manifest's source path and clean commit; a checkout uses its clean startup
-revision. A later checkout change leaves that identity unchanged. The remote-confirmed merge
+uses its release manifest's canonical source path and clean commit. A checkout keeps update
+inclusion unknown because its Git HEAD does not identify the ignored browser build. A later
+source change leaves a captured release identity unchanged. The remote-confirmed merge
 commit is bound to the reviewed task head so squash deliveries can be compared with the
 running revision. Missing, dirty or unavailable evidence keeps update inclusion unknown.
 Other repository deliveries carry no application-update notice. The notice and its evidence

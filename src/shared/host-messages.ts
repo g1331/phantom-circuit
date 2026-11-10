@@ -117,11 +117,17 @@ const templates: Record<HostLocale, Partial<Record<HostMessageCode, string>>> = 
     delivery_self_current:
       'Delivered “{title}”. The running application includes this update.\n{reference}{preview}',
     delivery_self_pending:
-      'Code for “{title}” is complete. The running application does not yet include this update.\n{reference}{preview}{update}',
+      'Code for “{title}” is complete. ' +
+      'The running application does not yet include this update.\n' +
+      '{reference}{preview}{update}',
     delivery_self_pending_service:
-      'Code for “{title}” is complete. The running application does not yet include this update.\n{reference}\n\nAfter updating {source} to this delivery revision, update through the existing service entry point:\n{update}',
+      'Code for “{title}” is complete. ' +
+      'The running application does not yet include this update.\n' +
+      '{reference}\n\nAfter updating {source} to this delivery revision, ' +
+      'update through the existing service entry point:\n{update}',
     delivery_self_unknown:
-      'Code for “{title}” is complete. Whether the running application includes this update is unconfirmed.\n{reference}{preview}',
+      'Code for “{title}” is complete. ' +
+      'Whether the running application includes this update is unconfirmed.\n{reference}{preview}',
   },
 };
 
