@@ -115,7 +115,7 @@ for (const created of [true, false]) {
   });
 }
 
-test('user pause during authorized publication preserves the single-use authorization', async (t) => {
+test('user pause preserves single-use publication authorization', async (t) => {
   t.mock.timers.enable({ apis: ['setInterval'] });
   const f = await issueFixture();
   try {
