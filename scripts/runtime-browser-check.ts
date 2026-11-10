@@ -289,6 +289,14 @@ export async function checkRuntimeUI() {
     });
     await page.goto('http://127.0.0.1:4330');
     await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Technical records' })
+      .click();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
+    await page
       .getByText('The service is temporarily unavailable; try again later', { exact: true })
       .waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
@@ -324,6 +332,10 @@ export async function checkRuntimeUI() {
     await clarification.getByRole('button', { name: 'Submit available answers' }).click();
     await clarification.getByText('Answered', { exact: true }).waitFor();
     assert.equal(snapshot.clarifications![0].answers?.[1].value, 'Keep 用户内容');
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
     const recovery = page.getByRole('region', { name: 'Interrupted work' });
     await recovery.getByRole('button', { name: 'Resume', exact: true }).first().click();
     await recovery.locator('.action-record').nth(1).waitFor({ state: 'hidden' });
@@ -337,6 +349,10 @@ export async function checkRuntimeUI() {
     });
     snapshot.clarifications![0].status = 'open';
     await page.reload();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
     await recovery.getByRole('button', { name: 'Resume all recoverable work' }).click();
     await recovery.waitFor({ state: 'hidden' });
     assert.equal(
@@ -345,6 +361,10 @@ export async function checkRuntimeUI() {
     );
     await clarification.getByRole('button', { name: 'Cancel', exact: true }).click();
     await clarification.getByText('Cancelled', { exact: true }).waitFor();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Technical records' })
+      .click();
     const incidents = page.getByRole('region', { name: 'Incidents' });
     await incidents.getByLabel('Resolution guidance').fill('Use the retained evidence');
     await incidents.getByRole('button', { name: 'Wait for user' }).click();

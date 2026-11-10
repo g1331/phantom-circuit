@@ -4,6 +4,8 @@ import type { Clarification, Incident, Project, Snapshot } from '../shared/types
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention } from '../shared/task-history.ts';
+import { teamView } from '../shared/team.ts';
+import { Fold } from './fold.tsx';
 
 export function ProjectActions({
   state,
@@ -34,6 +36,7 @@ export function ProjectActions({
     state.recoveryItems?.filter(
       (item) => item.projectId === project.id && ['pending', 'recoverable'].includes(item.status),
     ) ?? [];
+  const decisions = new Set(teamView(state, project.id).waiting.map((request) => request.id));
   async function act(key: string, path: string, body: unknown) {
     setBusy(key);
     setError('');
@@ -55,63 +58,85 @@ export function ProjectActions({
         </p>
       )}
       {!!recovery.length && (
-        <section aria-label={t('actions.recovery')}>
-          <h3>{t('actions.recovery')}</h3>
-          <button
-            className="secondary-button"
-            disabled={!!busy}
-            onClick={() => void act('all', 'recovery/resume', {})}
-          >
-            {t('actions.resumeAll')}
-          </button>
-          {recovery.map((item) => (
-            <article className="action-record" key={item.id}>
-              <strong>
-                {state.tasks.find((task) => task.id === item.taskId)?.title ?? item.oldRunId}
-              </strong>
-              <span className="runtime-badge">
-                {t(item.status === 'recoverable' ? 'actions.recoverable' : 'actions.pending')}
-              </span>
-              <p>{host(item.reason ?? '', item.reasonDescriptor)}</p>
-              <p className="muted">
-                {item.role?.toUpperCase()} · {item.oldRunId}
-                {item.stage && <> · {t(`stage.${item.stage}`)}</>} ·{' '}
-                {t(item.policy === 'automatic' ? 'runtime.automatic' : 'runtime.manual')}
-              </p>
-              <div className="detail-actions">
-                <button
-                  className="secondary-button"
-                  disabled={!!busy}
-                  onClick={() => void act(item.id, 'recovery/resume', { id: item.id })}
-                >
-                  {t('actions.resume')}
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={!!busy}
-                  onClick={() => void act(item.id, `recovery/${item.id}/cancel`, {})}
-                >
-                  {t('actions.cancel')}
-                </button>
-              </div>
-            </article>
-          ))}
-        </section>
+        <Fold title={t('actions.recovery')}>
+          <section aria-label={t('actions.recovery')}>
+            <h3>{t('actions.recovery')}</h3>
+            <button
+              className="secondary-button"
+              disabled={!!busy}
+              onClick={() => void act('all', 'recovery/resume', {})}
+            >
+              {t('actions.resumeAll')}
+            </button>
+            {recovery.map((item) => (
+              <article className="action-record" key={item.id}>
+                <strong>
+                  {state.tasks.find((task) => task.id === item.taskId)?.title ?? item.oldRunId}
+                </strong>
+                <span className="runtime-badge">
+                  {t(item.status === 'recoverable' ? 'actions.recoverable' : 'actions.pending')}
+                </span>
+                <p>{host(item.reason ?? '', item.reasonDescriptor)}</p>
+                <p className="muted">
+                  {item.role?.toUpperCase()} · {item.oldRunId}
+                  {item.stage && <> · {t(`stage.${item.stage}`)}</>} ·{' '}
+                  {t(item.policy === 'automatic' ? 'runtime.automatic' : 'runtime.manual')}
+                </p>
+                <div className="detail-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={!!busy}
+                    onClick={() => void act(item.id, 'recovery/resume', { id: item.id })}
+                  >
+                    {t('actions.resume')}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={!!busy}
+                    onClick={() => void act(item.id, `recovery/${item.id}/cancel`, {})}
+                  >
+                    {t('actions.cancel')}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </section>
+        </Fold>
       )}
-      {!!incidents.length && (
+      {incidents.some((incident) => decisions.has(incident.id)) && (
         <section aria-label={t('actions.incidents')}>
           <h3>{t('actions.incidents')}</h3>
-          {incidents.map((incident) => (
-            <IncidentCard
-              key={incident.id}
-              incident={incident}
-              disabled={!!busy}
-              submit={(action, guidance) =>
-                act(incident.id, `incidents/${incident.id}/resolve`, { action, guidance })
-              }
-            />
-          ))}
+          {incidents
+            .filter((incident) => decisions.has(incident.id))
+            .map((incident) => (
+              <IncidentCard
+                key={incident.id}
+                incident={incident}
+                disabled={!!busy}
+                submit={(action, guidance) =>
+                  act(incident.id, `incidents/${incident.id}/resolve`, { action, guidance })
+                }
+              />
+            ))}
         </section>
+      )}
+      {incidents.some((incident) => !decisions.has(incident.id)) && (
+        <Fold title={t('ui.technicalRecords')}>
+          <section aria-label={t('actions.incidents')}>
+            {incidents
+              .filter((incident) => !decisions.has(incident.id))
+              .map((incident) => (
+                <IncidentCard
+                  key={incident.id}
+                  incident={incident}
+                  disabled={!!busy}
+                  submit={(action, guidance) =>
+                    act(incident.id, `incidents/${incident.id}/resolve`, { action, guidance })
+                  }
+                />
+              ))}
+          </section>
+        </Fold>
       )}
       {!!clarifications.length && (
         <section aria-label={t('actions.clarifications')}>

@@ -607,11 +607,15 @@ export async function checkUsability() {
       (await workPage.locator('.work-group > :is(h2, summary)').allInnerTexts()).map((text) =>
         text.replace(/\s+/g, ' '),
       ),
-      ['等你处理 1', '进行中 2', '排队中 3', '已交付 1', '已取消 1'],
+      ['进行中 3', '排队中 3', '已交付 1', '已取消 1'],
       'groups follow the order of attention and count their work',
     );
-    assert.deepEqual(await titlesIn('等你处理'), ['Stage developing']);
-    assert.deepEqual(await titlesIn('进行中'), ['Stage merging', 'Stage reviewing']);
+    assert.equal(await workPage.getByRole('heading', { name: /^等你处理/ }).count(), 0);
+    assert.deepEqual(await titlesIn('进行中'), [
+      'Stage developing',
+      'Stage merging',
+      'Stage reviewing',
+    ]);
     assert.deepEqual(await titlesIn('排队中'), [
       'Persistent task',
       'Stage clarifying',
@@ -647,7 +651,7 @@ export async function checkUsability() {
     await search.fill('');
     // The work page is an address: a reload stays on it.
     await page.reload();
-    await workPage.getByRole('heading', { name: /^等你处理/ }).waitFor();
+    await workPage.getByRole('heading', { name: /^进行中/ }).waitFor();
     assert.equal(
       JSON.stringify(store.snapshot()),
       unchanged,
@@ -834,7 +838,7 @@ export async function checkUsability() {
     await choosePreference(page, 'language', 'en');
     assert.equal(await page.locator('html').getAttribute('lang'), 'en');
     assert.equal(await page.title(), 'Phantom Circuit · Local workspace');
-    await workPage.getByRole('heading', { name: /^Needs you/ }).waitFor();
+    await workPage.getByRole('heading', { name: /^In progress/ }).waitFor();
     await page.reload();
     await workPage.getByRole('heading', { name: 'Work', exact: true }).waitFor();
     await mkdir(resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'), {

@@ -97,6 +97,22 @@ export async function checkClientAttention({
     questions: [{ id: 'scope', question: '本次先向哪些用户开放？' }],
   });
   await page.reload();
+  await openPage(page, 'home');
+  await page.locator('.project-actions .clarification-card textarea').waitFor();
+  assert.equal(
+    await page
+      .locator('.project-actions .action-record:not(.clarification-card) textarea:visible')
+      .count(),
+    0,
+    'everyday conversation keeps internal diagnostic guidance behind technical records',
+  );
+  assert.equal(
+    await page
+      .locator('.project-actions .action-record:not(.clarification-card) button:visible')
+      .count(),
+    0,
+    'automatic recovery does not request manual handling in everyday conversation',
+  );
   for (const locale of ['zh-CN', 'en'] as const) {
     await choosePreference(page, 'language', locale);
     const copy = locale === 'en' ? pagesEn : pagesZh;
@@ -113,6 +129,15 @@ export async function checkClientAttention({
             path: resolve(artifacts, `attention-${view}-${width}-${locale}-${theme}.png`),
           });
         };
+        await openPage(page, 'home');
+        await page.locator('.project-actions .clarification-card textarea').waitFor();
+        assert.equal(
+          await page
+            .locator('.project-actions .action-record:not(.clarification-card) button:visible')
+            .count(),
+          0,
+        );
+        await capture('home');
         await openPage(page, 'work');
         await page.locator('.group-needs_you .work-row').waitFor();
         assert.equal(await page.locator('.group-needs_you .work-row').count(), 1);

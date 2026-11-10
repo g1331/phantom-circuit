@@ -212,7 +212,7 @@ export async function checkMaintenance() {
     await group('Delivered').getByRole('link').filter({ hasText: history.title }).waitFor();
     assert.equal(await card.locator('em').count(), 0);
     await group('Paused').getByRole('link').filter({ hasText: userPause.title }).waitFor();
-    await group('Paused').getByText('You paused it', { exact: true }).waitFor();
+    await group('Paused').getByText('Paused by you', { exact: true }).waitFor();
     let releaseDetail!: () => void;
     const detailGate = new Promise<void>((resolve) => {
       releaseDetail = resolve;
