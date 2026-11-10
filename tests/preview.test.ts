@@ -53,7 +53,13 @@ test('a real preview becomes healthy, stops its process tree, and a cancelled st
     defaultBranch: 'main',
   });
   store.patchRepo(repo.id, {
-    commands: { install: '', test: 'node --version', build: '', start: 'node server.cjs', port },
+    commands: {
+      install: '',
+      test: 'node --version',
+      build: '',
+      start: 'echo preview-ready && node server.cjs',
+      port,
+    },
   });
   const head = (await git(['rev-parse', 'HEAD'])).stdout.trim();
   const message = store.addMessage(p.id, 'user', 'Preview the delivery', 'implement');

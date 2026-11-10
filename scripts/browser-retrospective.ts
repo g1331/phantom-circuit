@@ -65,7 +65,11 @@ export async function checkRetrospective(
   });
   await page.goto(`${origin}/#/p/${projectId}/brief`);
   await page.getByRole('link', { name: '查看团队说明修改建议' }).waitFor();
-  assert.match(await page.locator('.brief-needs:visible h3').innerText(), /1/);
+  assert.equal(
+    await page.locator('.brief-needs:visible').count(),
+    0,
+    'team improvement suggestions stay separate from actionable product questions',
+  );
   assert.equal(await page.getByRole('link', { name: '查看团队说明修改建议' }).count(), 1);
   for (const width of [1440, 1366, 1280, 390])
     for (const theme of ['dark', 'light']) {

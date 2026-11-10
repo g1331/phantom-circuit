@@ -229,6 +229,94 @@ test('Codex owner fork uses native read-only branching, rejects inherited host t
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
+async function lifecycleFixture(work: (codex: Codex) => Promise<void>) {
+  const script = `
+    const send = value => console.log(JSON.stringify(value));
+    let start, interrupts = [];
+    require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+      const m = JSON.parse(line);
+      if (m.id === undefined) return;
+      if (m.method === 'turn/start') { start = m; return; }
+      if (m.method === 'turn/interrupt') interrupts.push(m.params);
+      if (m.method === 'fixture/accept') {
+        const response = { id: start.id, result: { turn: { id: 'turn' } } };
+        const event = { method: 'turn/started', params: {
+          threadId: 'thread', turn: { id: 'turn' } } };
+        send(response);
+        send(event);
+      }
+      if (m.method === 'fixture/complete') send({ method: 'turn/completed', params: {
+        threadId: 'thread', turn: { id: 'turn', status: 'completed' } } });
+      send({ id: m.id, result: m.method === 'fixture/read' ? { interrupts } : {} });
+    });
+  `;
+  const codex = new Codex((_binary, _args, options) =>
+    spawn(process.execPath, ['-e', script], options),
+  );
+  try {
+    await codex.start({ id: 'fixture', baseUrl: 'http://invalid.local', apiKey: 'fixture-key' });
+    await work(codex);
+  } finally {
+    // Also release a baseline turn whose stop failed to notify it during RED.
+    codex.emit('failure', new Error('test cleanup'));
+    await codex.stop();
+  }
+}
+
+test('Codex cancellation before start acknowledgement interrupts the accepted turn', async () => {
+  await lifecycleFixture(async (codex) => {
+    const controller = new AbortController();
+    const rejected = assert.rejects(
+      codex.turn('thread', 'work', { model: 'fixture', effort: 'low' }, controller.signal),
+      /执行已暂停/,
+    );
+    await codex.request('fixture/barrier');
+    controller.abort();
+    await rejected;
+    await codex.request('fixture/accept');
+    const observed = await codex.request('fixture/read');
+    assert.deepEqual(observed.interrupts, [{ threadId: 'thread', turnId: 'turn' }]);
+  });
+});
+
+test('Codex stop settles a turn that is waiting for completion', async () => {
+  await lifecycleFixture(async (codex) => {
+    const result = codex.turn('thread', 'work', { model: 'fixture', effort: 'low' }).then(
+      () => 'completed',
+      (error: Error) => error.message,
+    );
+    await codex.request('fixture/barrier');
+    await codex.request('fixture/accept');
+    await codex.stop();
+    assert.equal(
+      await Promise.race([
+        result,
+        new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 50)),
+      ]),
+      'Codex 已停止',
+    );
+  });
+});
+
+test('Codex reports each turn ID once across start response and notification', async () => {
+  await lifecycleFixture(async (codex) => {
+    const ids: string[] = [];
+    const result = codex.turn(
+      'thread',
+      'work',
+      { model: 'fixture', effort: 'low' },
+      undefined,
+      undefined,
+      (id) => ids.push(id),
+    );
+    await codex.request('fixture/barrier');
+    await codex.request('fixture/accept');
+    await codex.request('fixture/complete');
+    await result;
+    assert.deepEqual(ids, ['turn']);
+  });
+});
+
 async function streamingFixture(work: (codex: Codex) => Promise<void>) {
   let exited!: Promise<void>;
   const codex = new Codex((_binary, _args, options) => {

@@ -299,6 +299,10 @@ export async function checkRuntimeUI() {
       recursive: true,
     });
     await page.goto('http://127.0.0.1:4330');
+    const unconfiguredModel = page.locator('.pm-model-trigger');
+    await unconfiguredModel.waitFor();
+    assert.equal((await unconfiguredModel.innerText()).trim(), 'Not configured');
+    assert.equal(await unconfiguredModel.getAttribute('title'), 'Not configured');
     await page
       .locator('.project-actions > details > summary')
       .filter({ hasText: 'Technical records' })
@@ -312,6 +316,8 @@ export async function checkRuntimeUI() {
       .waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
     await choosePreference(page, 'language', 'zh-CN');
+    assert.equal((await unconfiguredModel.innerText()).trim(), '未配置');
+    assert.equal(await unconfiguredModel.getAttribute('title'), '未配置');
     await page.getByText('服务暂时不可用，请稍后重试', { exact: true }).waitFor();
     await page.getByText('当前资源状态不允许此操作', { exact: true }).waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();

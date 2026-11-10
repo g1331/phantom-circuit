@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../src/server/store.ts';
@@ -11,6 +11,128 @@ import { Providers } from '../src/server/providers.ts';
 import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import type { Task, ReviewResult, Profile } from '../src/shared/types.ts';
+import { devFixture, hang, until } from './dev-fixture.ts';
+
+for (const scope of ['task', 'team'] as const)
+  test(`${scope} pause remains authoritative after a running Dev stops`, async () => {
+    const f = await devFixture('phantom-dev-user-pause-');
+    let developing = false;
+    class Model extends Codex {
+      override async start() {}
+      override async stop() {}
+      override async thread() {
+        return 'dev';
+      }
+      override async turn(
+        _thread: string,
+        _prompt: string,
+        _profile: unknown,
+        signal?: AbortSignal,
+      ) {
+        developing = true;
+        return hang(signal);
+      }
+    }
+    const engine = new Engine(
+      f.store,
+      f.github,
+      new Workspaces(join(f.root, 'ws'), f.store),
+      f.root,
+      () => new Model(),
+    );
+    try {
+      await engine.start();
+      await engine.tick();
+      await until(() => developing, 'Dev executing');
+      if (scope === 'team') await engine.team(f.project.id, 'pause');
+      else engine.control(f.task.id, 'pause', { source: 'user', reason: 'http_task_control' });
+      await engine.stop();
+      const task = f.store.task(f.task.id);
+      assert.equal(task.control, 'paused');
+      assert.equal(task.pausedByUser, true, 'Dev cancellation must preserve the user hold');
+      assert.equal(task.blocked, undefined, 'intentional cancellation is not a delivery failure');
+      assert.equal(f.store.list('incident').length, 0);
+      assert.equal(f.store.list('run').find((run) => run.role === 'dev')?.status, 'paused');
+      await assert.rejects(
+        engine.resume(f.task.id, undefined, { source: 'pm', reason: 'resolve_task' }),
+        /任务已暂停或结束/,
+      );
+    } finally {
+      await engine.stop();
+      f.store.close();
+      await rm(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
+  });
+
+test('a resolved Dev failure stays resumed after the failed Run unwinds', async () => {
+  const f = await devFixture('phantom-dev-incident-resume-');
+  let assessed = false;
+  let controlAtAssessment: Task['control'] | undefined;
+  let blockerAtAssessment: string | undefined;
+  class Model extends Codex {
+    options?: Parameters<Codex['thread']>[0];
+    override async start() {}
+    override async stop() {}
+    override async thread(options: Parameters<Codex['thread']>[0]) {
+      this.options = options;
+      return options.writable ? 'dev' : 'pm';
+    }
+    override async turn() {
+      if (this.options!.writable) throw new Error('Transient developer transport failure');
+      const task = f.store.task(f.task.id);
+      controlAtAssessment = task.control;
+      blockerAtAssessment = task.blocked;
+      const incident = f.store.list('incident')[0];
+      await this.options!.toolHandler!('resolve_incident', {
+        incidentId: incident.id,
+        action: 'resolved',
+        guidance: 'Transport has recovered; retry the same implementation.',
+      });
+      assessed = true;
+      return 'Resolved; work can continue.';
+    }
+  }
+  const engine = new Engine(
+    f.store,
+    f.github,
+    new Workspaces(join(f.root, 'ws'), f.store),
+    f.root,
+    () => new Model(),
+  );
+  try {
+    await engine.start();
+    await engine.tick();
+    await until(() => assessed, 'PM resolved the Incident');
+    await until(
+      () => f.store.list('run').some((run) => run.role === 'pm' && run.status === 'completed'),
+      'PM assessment completed',
+    );
+    await engine.stop();
+    assert.equal(f.store.list('incident')[0].status, 'resolved');
+    assert.equal(
+      f.store.task(f.task.id).control,
+      'active',
+      'the failed Dev must not overwrite the later PM decision',
+    );
+    assert.equal(f.store.task(f.task.id).blocked, undefined);
+    assert.equal(controlAtAssessment, 'paused', 'publish the blocker before requesting assessment');
+    assert.match(blockerAtAssessment!, /Transient developer transport failure/);
+    assert.deepEqual(
+      f.store
+        .taskEvents(f.task.id)
+        .filter((event) => event.control)
+        .map((event) => [event.control!.source, event.control!.action]),
+      [
+        ['host', 'pause'],
+        ['pm', 'resume'],
+      ],
+    );
+  } finally {
+    await engine.stop();
+    f.store.close();
+    await rm(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
 
 for (const route of ['backend', 'frontend', 'fullstack', 'complex'] as const)
   test(`real worktrees complete ${route} through pinned Provider routing, review, rework and merge`, () =>

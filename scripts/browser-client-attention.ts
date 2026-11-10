@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { chromium, type Page } from 'playwright';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
@@ -15,7 +15,7 @@ import { createApp } from '../src/server/app.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import type { Message, Project, Repo } from '../src/shared/types.ts';
 import { pagesEn, pagesZh } from '../src/web/locale/pages.ts';
-import { openPage, openTask } from './browser-pages.ts';
+import { clickInSidebar, openPage, openTask } from './browser-pages.ts';
 import { choosePreference } from './browser-preferences.ts';
 
 export async function checkClientAttention({
@@ -221,10 +221,66 @@ export async function checkClientAttention({
   assert.equal((await resumed).ok(), true);
   assert.equal(store.task(paused.id).control, 'active');
   await checkProjectQuestion(page, store, artifacts);
+  await checkBriefProjectIsolation(page, store, artifacts);
   console.log('Client attention: synthetic question/internal hold/user pause matrix passed.');
 }
 
-async function checkProjectQuestion(page: Page, store: Store, artifacts: string) {
+export async function checkBriefProjectIsolation(page: Page, store: Store, artifacts: string) {
+  const first = store.createProject('Seen project', '');
+  const second = store.createProject('New delivery project', '');
+  const repo = store.createRepo({
+    projectId: second.id,
+    name: 'Brief fixture',
+    path: `/fixture/brief-${second.id}`,
+    github: `fixture/brief-${second.id}`,
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const source = store.addMessage(second.id, 'user', 'Deliver this request', 'implement');
+  const task = store.createTask({
+    projectId: second.id,
+    repoId: repo.id,
+    sourceMessageId: source.id,
+    title: 'Delivery since the last visit',
+    spec: 'Synthetic delivery',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  store.updateTask(task.id, { stage: 'done' });
+  await page.evaluate(
+    ({ first, second }) => {
+      localStorage.setItem(`phantom.seen.${first}`, '2099-01-01T00:00:00.000Z');
+      localStorage.setItem(`phantom.seen.${second}`, '2000-01-01T00:00:00.000Z');
+    },
+    { first: first.id, second: second.id },
+  );
+  const origin = new URL(page.url()).origin;
+  await page.goto(`${origin}/?brief-isolation-fixture=1#/p/${first.id}`);
+  await page.locator('.home-brief .brief').waitFor({ state: 'attached' });
+  await clickInSidebar(page, second.name);
+  await page
+    .locator('.project-header h1')
+    .filter({ hasText: second.name })
+    .waitFor({ state: 'attached' });
+  await page.locator('.drawer-scrim').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.home-brief .brief-delivered li').count(), 1);
+  await openPage(page, 'brief');
+  await page.locator('.brief-page .brief-delivered li').waitFor();
+  await page.screenshot({ path: resolve(artifacts, 'brief-project-isolation.png') });
+  await page.locator('.brief-page .brief-seen').click();
+  await page.locator('.brief-page .brief-last').waitFor();
+  const seen = await page.evaluate((id) => localStorage.getItem(`phantom.seen.${id}`), first.id);
+  assert.equal(
+    seen,
+    '2099-01-01T00:00:00.000Z',
+    'acknowledging one project leaves the other unchanged',
+  );
+}
+
+export async function checkProjectQuestion(page: Page, store: Store, artifacts: string) {
   const project = store.createProject('Project question', 'A decision before tasks exist');
   const source = store.addMessage(project.id, 'user', 'Choose the audience', 'discuss');
   for (let index = 0; index < 80; index++)
@@ -235,8 +291,60 @@ async function checkProjectQuestion(page: Page, store: Store, artifacts: string)
     sourceIntent: 'discuss',
     questions: [{ id: 'audience', question: 'Which audience starts first?' }],
   });
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'Question fixture',
+    path: `/fixture/project-question-${project.id}`,
+    github: `fixture/project-question-${project.id}`,
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const cancelledSource = store.addMessage(project.id, 'user', 'Cancel this request', 'implement');
+  const cancelled = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId: cancelledSource.id,
+    title: 'Cancelled request',
+    spec: 'Synthetic cancelled request',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  store.updateTask(cancelled.id, { stage: 'cancelled' });
   const original = store.list('message').filter((message) => message.projectId === project.id);
+  const alternate = store.createProject('Question route staging', '');
   const origin = new URL(page.url()).origin;
+  let visit = 0;
+  const viewportChecks: Record<
+    string,
+    { top: number; bottom: number; viewportTop: number; viewportBottom: number }
+  > = {};
+  const openQuestionEntry = async (entryPoint: 'work' | 'brief' | 'team') => {
+    // Start from a mounted conversation at its latest messages, then leave and follow the
+    // request link. A cold page with no reading anchor misses this regression.
+    await page.goto(`${origin}/?question-entry=${++visit}#/p/${project.id}`);
+    await page.getByText('Earlier discussion 79', { exact: true }).waitFor();
+    await page.locator('.history-control [role="status"]').waitFor({ state: 'detached' });
+    await page.waitForFunction(() => {
+      const conversation = document.querySelector('.conversation');
+      return (
+        conversation &&
+        conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop <= 1
+      );
+    });
+    await page.evaluate((id) => {
+      location.hash = `#/p/${id}/team`;
+    }, alternate.id);
+    await page.locator('.team-empty').first().waitFor();
+    await page.evaluate(
+      ({ id, entryPoint }) => {
+        location.hash = `#/p/${id}/${entryPoint}`;
+      },
+      { id: project.id, entryPoint },
+    );
+  };
   await page.goto(`${origin}/?project-question-fixture=1#/p/${project.id}/work`);
   for (const locale of ['zh-CN', 'en'] as const) {
     await choosePreference(page, 'language', locale);
@@ -245,7 +353,7 @@ async function checkProjectQuestion(page: Page, store: Store, artifacts: string)
       await choosePreference(page, 'theme', theme);
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
-        await openPage(page, 'work');
+        await openQuestionEntry('work');
         const entry = page.locator('.group-needs_you .work-row');
         await entry
           .getByText('Which audience starts first?', { exact: true })
@@ -268,22 +376,75 @@ async function checkProjectQuestion(page: Page, store: Store, artifacts: string)
           path: resolve(artifacts, `project-question-work-${width}-${locale}-${theme}.png`),
         });
         await entry.click();
-        const assertFocused = () =>
-          page.waitForFunction(
+        const assertFocused = async (entryPoint: string) => {
+          await page.waitForFunction(
             (id) => document.activeElement?.id === `project-request-${id}`,
             question.id,
           );
-        await assertFocused();
+          await page.getByText('Earlier discussion 79', { exact: true }).waitFor();
+          await page.locator('.history-control [role="status"]').waitFor({ state: 'detached' });
+          // Check after the loaded history commits and layout observers have run. Focus alone
+          // also passes when reading-anchor restoration has moved the form offscreen.
+          await page.evaluate(
+            () =>
+              new Promise<void>((done) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => done())),
+              ),
+          );
+          const bounds = await page
+            .locator(`#project-request-${question.id} textarea`)
+            .evaluate((input) => {
+              const field = input.getBoundingClientRect();
+              const viewport = input.closest('.conversation')!.getBoundingClientRect();
+              return {
+                top: field.top,
+                bottom: field.bottom,
+                viewportTop: viewport.top,
+                viewportBottom: viewport.bottom,
+              };
+            });
+          viewportChecks[`${entryPoint}-${width}-${locale}-${theme}`] = bounds;
+          await page.screenshot({
+            path: resolve(
+              artifacts,
+              `project-question-${entryPoint}-${width}-${locale}-${theme}.png`,
+            ),
+          });
+          assert.ok(
+            bounds.top >= bounds.viewportTop && bounds.bottom <= bounds.viewportBottom,
+            `${entryPoint}: answer input must remain inside the conversation viewport: ` +
+              JSON.stringify(bounds),
+          );
+        };
+        await assertFocused('from-work');
         await page.screenshot({
           path: resolve(artifacts, `project-question-home-${width}-${locale}-${theme}.png`),
         });
-        await page.goto(`${origin}/#/p/${project.id}/brief`);
+        await openQuestionEntry('brief');
         await page.locator('.brief-page .brief-request .brief-link').waitFor();
         await page.screenshot({
           path: resolve(artifacts, `project-question-brief-${width}-${locale}-${theme}.png`),
         });
         await page.locator('.brief-page .brief-request .brief-link').click();
-        await assertFocused();
+        await assertFocused('from-brief');
+        await openQuestionEntry('team');
+        const teamRequest = page.locator('.team-request');
+        await teamRequest.waitFor();
+        assert.equal(
+          await page.locator('.team-more').count(),
+          0,
+          'cancelled work is not delivered',
+        );
+        const answer = teamRequest.getByRole('link', { name: copy['brief.inConversation'] });
+        assert.equal(
+          await answer.getAttribute('href'),
+          `#/p/${project.id}/requests/${question.id}`,
+        );
+        await page.screenshot({
+          path: resolve(artifacts, `project-question-team-${width}-${locale}-${theme}.png`),
+        });
+        await answer.click();
+        await assertFocused('from-team');
         assert.equal(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
@@ -291,6 +452,10 @@ async function checkProjectQuestion(page: Page, store: Store, artifacts: string)
       }
     }
   }
+  await writeFile(
+    resolve(artifacts, 'project-question-viewports.json'),
+    JSON.stringify(viewportChecks, null, 2),
+  );
   const card = page.locator(`#project-request-${question.id}`);
   await card.locator('textarea').fill('Internal testers');
   const answered = page.waitForResponse((response) =>

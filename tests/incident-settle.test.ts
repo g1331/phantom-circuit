@@ -59,6 +59,28 @@ test('a later successful Run of the same phase settles the stale Incident; other
     assert.match(store.get('incident', primary.id)!.message, new RegExp(retried.id));
     assert.equal(store.get('incident', dev.id)?.status, 'open');
 
+    const working = store.updateTask(task.id, { stage: 'developing', worktree: root });
+    const implementation = store.run('dev', project.id, task.profile, working);
+    store.bindRunThread(implementation, 'saved-dev-history');
+    store.finishRun(implementation.id, 'failed', 'dev broke');
+    store.updateTask(task.id, { control: 'paused', blocked: 'dev broke' });
+    const question = store.addOwnerMessage(task.id, 'What happened?');
+    const answer = store.run('dev', project.id, task.profile, store.task(task.id), {
+      ownerMessageId: question.id,
+    });
+    store.finishRun(answer.id, 'completed');
+    assert.equal(
+      store.get('incident', dev.id)?.status,
+      'open',
+      'a read-only owner answer does not prove implementation recovery',
+    );
+    assert.equal(store.task(task.id).control, 'paused');
+    assert.equal(store.task(task.id).blocked, 'dev broke');
+    store.control(task.id, 'resume', { source: 'host', reason: 'test_retry' });
+    const repaired = store.run('dev', project.id, task.profile, store.task(task.id));
+    store.finishRun(repaired.id, 'completed');
+    assert.equal(store.get('incident', dev.id)?.status, 'resolved');
+
     // Host-made Incidents carry whole command output; a long one must still be recorded.
     const long = store.createIncident({
       projectId: project.id,

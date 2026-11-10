@@ -94,7 +94,7 @@ export class Previews {
       const cmd = repo.commands.start.replaceAll('{port}', String(repo.commands.port));
       const child =
         process.platform === 'win32'
-          ? spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
+          ? spawn('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cmd], {
               cwd: path,
               windowsHide: true,
               stdio: ['ignore', 'pipe', 'pipe'],

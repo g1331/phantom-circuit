@@ -374,6 +374,7 @@ export async function checkMaintenance() {
       await summary.waitFor();
       if (!(await summary.evaluate((node) => (node.parentElement as HTMLDetailsElement).open)))
         await summary.click();
+      await summary.locator('xpath=..').locator(':scope > .fold-body').waitFor();
     };
     const incidentCases = [
       {
@@ -487,6 +488,7 @@ export async function checkMaintenance() {
     assert.deepEqual(store.get('incident', orphan.id), orphan);
     await page.getByRole('button', { name: 'Background refresh happened', exact: true }).click();
     await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
+    await openTechnicalActions();
     assert.equal(await page.locator('.project-actions').count(), 1);
     assert.equal(await page.locator('.project-actions .action-record').count(), currentIncidents);
     await page.getByLabel('Message to PM').fill('Draft after project switch');

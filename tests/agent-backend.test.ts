@@ -51,6 +51,34 @@ test('model normalization preserves exact model and effort capability metadata',
   assert.equal(model.model, 'fixture-model');
 });
 
+test('effective model validation preserves namespaced IDs and rejects leaf-name fallback', () => {
+  for (const provider of ['gateway', undefined]) {
+    for (const model of ['org/model', 'gateway/org/model']) {
+      const profile = { provider, model, effort: 'low' };
+      assert.doesNotThrow(() =>
+        assertEffectiveProfile(
+          {
+            model: { provider: 'gateway', id: 'org/model' },
+            thinkingLevel: 'low',
+          },
+          profile,
+        ),
+      );
+      assert.throws(
+        () =>
+          assertEffectiveProfile(
+            {
+              model: { provider: 'gateway', id: 'model' },
+              thinkingLevel: 'low',
+            },
+            profile,
+          ),
+        /实际模型与请求不一致/,
+      );
+    }
+  }
+});
+
 test('effective model validation rejects provider, model, or effort fallback', () => {
   assert.doesNotThrow(() =>
     assertEffectiveProfile(

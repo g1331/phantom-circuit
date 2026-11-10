@@ -4,6 +4,7 @@ import type { Role, Snapshot } from '../shared/types.ts';
 import { teamView, type TeamMember, type TeamWork, type WorkStep } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
 import { WorkHold } from './work-hold.tsx';
+import { routeHref } from './route.ts';
 
 const icons: Record<Role, typeof Code2> = {
   pm: MessagesSquare,
@@ -137,7 +138,7 @@ export function TeamRoom({
   const working = view.members.length;
   const now = useNow(working > 0);
   const open = view.work.filter((w) => w.step !== 'done' && w.step !== 'cancelled');
-  const delivered = view.work.length - open.length;
+  const delivered = view.work.filter((w) => w.step === 'done').length;
   // Paused by the team control: every unfinished piece of work is held and none is running.
   const teamPaused = open.length > 0 && open.every((w) => w.attention === 'paused') && !working;
   return (
@@ -175,10 +176,17 @@ export function TeamRoom({
                 <span className="team-request-kind">{t(`team.request.${request.kind}`)}</span>
                 {request.taskTitle && <strong>{request.taskTitle}</strong>}
                 <p>{request.text}</p>
-                {request.taskId && (
+                {request.taskId ? (
                   <button className="team-link" onClick={() => onOpenTask(request.taskId!)}>
                     {t('team.open')} <ArrowUpRight size={12} />
                   </button>
+                ) : (
+                  <a
+                    className="team-link"
+                    href={routeHref({ page: 'home', projectId, view: request.id })}
+                  >
+                    {t('brief.inConversation')} <ArrowUpRight size={12} />
+                  </a>
                 )}
               </li>
             ))}

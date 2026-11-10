@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowUpRight,
@@ -227,26 +227,25 @@ function App() {
   if (processDisclosures.current.projectId !== (project?.id ?? '')) {
     processDisclosures.current = { projectId: project?.id ?? '', items: new Map() };
   }
-  useReadingAnchor(scroll, conversationContent, followingLatest, `${project?.id}:${page}`);
   const requestId = page === 'home' ? route.view : undefined;
   const requestReady =
     !!requestId &&
     [...(state?.clarifications ?? []), ...(state?.incidents ?? [])].some(
       (request) => request.id === requestId,
     );
-  useEffect(() => {
+  // Explicit navigation owns the initial viewport. Position it before the reading-anchor
+  // hook captures this route, so its resize restoration preserves the requested form.
+  useLayoutEffect(() => {
     if (page !== 'home') return;
     const element = scroll.current;
     if (!element) return;
     followingLatest.current = !requestId;
     setAtLatest(!requestId);
-    const frame = requestAnimationFrame(() => {
-      if (requestId) {
-        const request = document.getElementById(`project-request-${requestId}`);
-        request?.scrollIntoView({ block: 'start' });
-        request?.focus({ preventScroll: true });
-      } else element.scrollTop = element.scrollHeight;
-    });
+    if (requestId) {
+      const request = document.getElementById(`project-request-${requestId}`);
+      request?.scrollIntoView({ block: 'start' });
+      request?.focus({ preventScroll: true });
+    } else element.scrollTop = element.scrollHeight;
     const observer = new ResizeObserver(() => {
       if (followingLatest.current) element.scrollTop = element.scrollHeight;
     });
@@ -256,10 +255,15 @@ function App() {
       if (userScrollTimer.current !== undefined) window.clearTimeout(userScrollTimer.current);
       userScrollTimer.current = undefined;
       userScrollIntent.current = false;
-      cancelAnimationFrame(frame);
       observer.disconnect();
     };
   }, [project?.id, page, requestId, requestReady]);
+  useReadingAnchor(
+    scroll,
+    conversationContent,
+    followingLatest,
+    `${project?.id}:${page}:${requestId ?? ''}:${requestReady}`,
+  );
   useEffect(() => {
     const element = scroll.current;
     if (followingLatest.current && element) element.scrollTop = element.scrollHeight;
@@ -350,6 +354,7 @@ function App() {
   const brief =
     state && project && team ? (
       <Brief
+        key={project.id}
         state={state}
         project={project}
         view={team}

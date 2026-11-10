@@ -13,10 +13,14 @@ export interface Route {
 const pages: Page[] = ['brief', 'work', 'team', 'project'];
 
 export function parseRoute(hash: string): Route {
-  const [p, projectId, section, a, b] = hash
-    .replace(/^#\/?/, '')
-    .split('/')
-    .map(decodeURIComponent);
+  let parts: string[];
+  try {
+    parts = hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+  } catch (error) {
+    if (error instanceof URIError) return { page: 'home' };
+    throw error;
+  }
+  const [p, projectId, section, a, b] = parts;
   if (p !== 'p' || !projectId) return { page: 'home' };
   if (section === 'requests' && a) return { page: 'home', projectId, view: a };
   if (section === 'work' && a) return { page: 'task', projectId, taskId: a, ...(b && { view: b }) };

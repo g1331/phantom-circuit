@@ -499,6 +499,253 @@ test('OMP cancellation rejects the turn and sends abort instead of reporting suc
   }
 });
 
+test('OMP cancellation before admission handles a delayed prompt response', async () => {
+  let release!: () => void;
+  const client = new OmpRpcClient({
+    dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-admission-')),
+    ...fakeLauncher((message, child) => {
+      if (message.type === 'prompt') {
+        release = () => child.stdout.write(response(message, { agentInvoked: false }));
+      } else child.stdout.write(response(message, { sessionId: 'session-admission' }));
+    }),
+  });
+  try {
+    await client.start();
+    const controller = new AbortController();
+    const rejected = assert.rejects(
+      client.prompt('session-admission', 'long', { signal: controller.signal }),
+      /执行已暂停/,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort();
+    // Admission may await image preparation while the server already handles abort.
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    release();
+    await rejected;
+  } finally {
+    await client.stop();
+  }
+});
+
+test('OMP timeout before admission rejects before the prompt acknowledgement', async () => {
+  let release!: () => void;
+  let acknowledged = false;
+  const client = new OmpRpcClient({
+    dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-admission-timeout-')),
+    ...fakeLauncher((message, child) => {
+      if (message.type === 'prompt')
+        release = () => {
+          acknowledged = true;
+          child.stdout.write(response(message, { agentInvoked: false }));
+        };
+      else child.stdout.write(response(message, { sessionId: 'session-timeout' }));
+    }),
+  });
+  let acknowledgement: NodeJS.Timeout | undefined;
+  try {
+    await client.start();
+    const rejected = assert.rejects(
+      client.prompt('session-timeout', 'slow admission', { timeoutMs: 10 }),
+      /超过单次运行时限/,
+    );
+    acknowledgement = setTimeout(() => release(), 50);
+    await rejected;
+    assert.equal(acknowledged, false);
+  } finally {
+    clearTimeout(acknowledgement);
+    release?.();
+    await client.stop();
+  }
+});
+
+test('OMP cancellation before dispatch releases a session without a terminal', async () => {
+  const messages: string[] = [];
+  const client = new OmpRpcClient({
+    dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-before-dispatch-')),
+    ...fakeLauncher((message, child) => {
+      messages.push(message.type);
+      child.stdout.write(response(message, { sessionId: 'before-dispatch', agentInvoked: false }));
+    }),
+  });
+  try {
+    await client.start();
+    const controller = new AbortController();
+    await assert.rejects(
+      client.prompt('before-dispatch', 'cancelled', {
+        signal: controller.signal,
+        onTurn: () => controller.abort(),
+      }),
+      /执行已暂停/,
+    );
+    await client.abort();
+    assert.equal(messages.includes('prompt'), false);
+    assert.equal((await client.prompt('before-dispatch', 'next')).status, 'completed');
+  } finally {
+    await client.stop();
+  }
+});
+
+test('OMP completed failures and rejected commands release the session', async () => {
+  for (const rejectedCommand of [false, true]) {
+    let calls = 0;
+    const client = new OmpRpcClient({
+      dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-retry-')),
+      ...fakeLauncher((message, child) => {
+        if (message.type === 'prompt') {
+          calls++;
+          if (calls === 1 && rejectedCommand) {
+            child.stdout.write(
+              `${JSON.stringify({
+                id: message.id,
+                type: 'response',
+                command: 'prompt',
+                success: false,
+                error: 'rejected fixture',
+              })}\n`,
+            );
+            return;
+          }
+          child.stdout.write(response(message, { agentInvoked: true }));
+          if (calls === 1)
+            child.stdout.write(
+              `${JSON.stringify({
+                type: 'notice',
+                level: 'error',
+                message: 'failed fixture',
+              })}\n`,
+            );
+          child.stdout.write(`${JSON.stringify({ type: 'agent_end' })}\n`);
+        } else child.stdout.write(response(message, { sessionId: 'session-retry' }));
+      }),
+    });
+    try {
+      await client.start();
+      await assert.rejects(client.prompt('session-retry', 'first'), /fixture/);
+      assert.equal((await client.prompt('session-retry', 'second')).status, 'completed');
+    } finally {
+      await client.stop();
+    }
+  }
+});
+
+test('OMP waits for both abort acknowledgement and old terminal before reuse', async () => {
+  for (const terminalFirst of [false, true]) {
+    let child!: FakeProcess;
+    let acknowledgeAbort!: () => void;
+    const prompts: string[] = [];
+    const client = new OmpRpcClient({
+      dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-drain-')),
+      ...fakeLauncher((message, process) => {
+        child = process;
+        if (message.type === 'prompt') prompts.push(message.message);
+        if (message.type === 'abort') {
+          acknowledgeAbort = () => child.stdout.write(response(message));
+        } else child.stdout.write(response(message, { sessionId: 'session-drain' }));
+      }),
+    });
+    const terminal = () => child.stdout.write(`${JSON.stringify({ type: 'agent_end' })}\n`);
+    try {
+      await client.start();
+      const controller = new AbortController();
+      const rejected = assert.rejects(
+        client.prompt('session-drain', 'first', { signal: controller.signal }),
+        /执行已暂停/,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      controller.abort();
+      await rejected;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (terminalFirst) terminal();
+      else acknowledgeAbort();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const early = client.prompt('session-drain', 'too soon').then(
+        () => 'completed',
+        (error: Error & { code?: string }) => error.code,
+      );
+      assert.equal(
+        await Promise.race([
+          early,
+          new Promise<string>((resolve) => setTimeout(() => resolve('accepted-pending'), 25)),
+        ]),
+        'busy',
+      );
+      if (terminalFirst) acknowledgeAbort();
+      else {
+        child.stdout.write(
+          `${JSON.stringify({
+            type: 'message_update',
+            assistantMessageEvent: { delta: 'old output' },
+          })}\n`,
+        );
+        terminal();
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const next = client.prompt('session-drain', 'second');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      child.stdout.write(
+        `${JSON.stringify({
+          type: 'message_update',
+          assistantMessageEvent: { delta: 'new output' },
+        })}\n`,
+      );
+      terminal();
+      assert.equal((await next).text, 'new output');
+      assert.deepEqual(prompts, ['first', 'second']);
+    } finally {
+      await client.stop();
+    }
+  }
+});
+
+test('OMP retains namespaced model IDs when applying and validating a profile', async () => {
+  const selected: unknown[] = [];
+  const backend = new OmpBackend({
+    dataDir: await mkdtemp(join(tmpdir(), 'phantom-omp-model-id-')),
+    ...fakeLauncher((message, child) => {
+      let data: unknown;
+      if (message.type === 'get_state')
+        data = {
+          sessionId: 'namespaced',
+          model: { provider: 'gateway', id: 'org/model' },
+          thinkingLevel: 'low',
+        };
+      if (message.type === 'get_available_models')
+        data = {
+          models: [
+            {
+              provider: 'gateway',
+              id: 'org/model',
+              reasoningEfforts: ['low'],
+            },
+          ],
+        };
+      if (message.type === 'set_model')
+        selected.push({
+          provider: message.provider,
+          modelId: message.modelId,
+        });
+      child.stdout.write(response(message, data));
+    }),
+  });
+  try {
+    for (const provider of ['gateway', undefined]) {
+      for (const model of ['org/model', 'gateway/org/model']) {
+        const profile = { provider, model, effort: 'low' };
+        await backend.createSession({ cwd: process.cwd(), profile, allowedTools: [] });
+        await backend.validate(profile);
+      }
+    }
+    assert.deepEqual(selected, [
+      { provider: 'gateway', modelId: 'org/model' },
+      { provider: 'gateway', modelId: 'org/model' },
+      { provider: 'gateway', modelId: 'org/model' },
+      { provider: 'gateway', modelId: 'org/model' },
+    ]);
+  } finally {
+    await backend.stop();
+  }
+});
+
 test(
   'real OMP handshake and model listing are read-only when the executable is installed',
   { skip: !process.env.PHANTOM_RUN_OMP_PROBE },

@@ -464,6 +464,7 @@ export class OmpRpcClient extends EventEmitter {
   #stopping = false;
   #fatal?: Error;
   #activeTurn?: OmpActiveTurn;
+  #abortRequest?: Promise<void>;
   #activeSessionId?: string;
   #hostTools = new Map<string, AgentToolSpec>();
   #hostToolHandlers = new Map<string, AgentToolHandler>();
@@ -639,6 +640,7 @@ export class OmpRpcClient extends EventEmitter {
     this.#hostToolControllers.clear();
     if (this.#activeTurn && !this.#activeTurn.settled)
       this.#finishTurnError(this.#activeTurn, error);
+    this.#activeTurn = undefined;
     try {
       child.kill();
     } catch {
@@ -709,14 +711,17 @@ export class OmpRpcClient extends EventEmitter {
 
   async applyProfile(profile: AgentProfile): Promise<void> {
     const provider = profileProvider(profile);
-    const requestedModel = profile.model.includes('/')
-      ? profile.model.split('/').at(-1)!
-      : profile.model;
+    const requestedModel =
+      provider && profile.model.startsWith(`${provider}/`)
+        ? profile.model.slice(provider.length + 1)
+        : profile.model;
     if (provider) await this.request('set_model', { provider, modelId: requestedModel });
     else {
       const models = await this.getAvailableModels();
       const model = models.find(
-        (candidate) => candidate?.id === requestedModel || candidate?.id === profile.model,
+        (candidate) =>
+          candidate?.id === requestedModel ||
+          `${candidate?.provider}/${candidate?.id}` === profile.model,
       );
       if (!model)
         throw new Fault(`模型不可用：${profile.model}`, 409, {
@@ -750,7 +755,7 @@ export class OmpRpcClient extends EventEmitter {
     message: string,
     options: AgentPromptOptions = {},
   ): Promise<AgentTurnResult> {
-    if (this.#activeTurn && !this.#activeTurn.settled)
+    if (this.#activeTurn || this.#abortRequest)
       throw new AgentTurnError('OMP 会话已有运行中的回合', 'failed', 'busy');
     if (options.signal?.aborted) throw new AgentTurnError('执行已暂停', 'interrupted', 'aborted');
     const images = options.images ?? (await imagesFromPaths(options.imagePaths));
@@ -764,7 +769,6 @@ export class OmpRpcClient extends EventEmitter {
       if (!active || active.settled) return;
       active.error = new AgentTurnError('Agent 超过单次运行时限', 'failed', 'timeout');
       void this.abort().catch(() => {});
-      this.#finishTurnError(active, active.error);
     }, timeoutMs);
     timer.unref();
     const active: OmpActiveTurn = {
@@ -784,26 +788,31 @@ export class OmpRpcClient extends EventEmitter {
     options.onTurn?.(turnId);
     const abort = () => {
       void this.abort().catch(() => {});
-      if (!active.settled)
-        this.#finishTurnError(active, new AgentTurnError('执行已暂停', 'interrupted', 'aborted'));
     };
     options.signal?.addEventListener('abort', abort, { once: true });
     active.cleanup = () => options.signal?.removeEventListener('abort', abort);
     if (options.signal?.aborted) {
       abort();
+      if (this.#activeTurn === active) this.#activeTurn = undefined;
       return promise;
     }
-    try {
-      const data = await this.request(
-        'prompt',
-        { message, ...(images?.length ? { images } : {}) },
-        this.#options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
-        requestId,
-      );
-      if (data?.agentInvoked === false) this.#finishTurn(active, 'completed', data);
-    } catch (error) {
-      this.#finishTurnError(active, errorFromUnknown(error));
-    }
+    void this.request(
+      'prompt',
+      { message, ...(images?.length ? { images } : {}) },
+      this.#options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      requestId,
+    )
+      .then((data) => {
+        if (data?.agentInvoked === false) {
+          this.#finishTurn(active, 'completed', data);
+          if (this.#activeTurn === active) this.#activeTurn = undefined;
+        }
+      })
+      .catch((error: unknown) => {
+        this.#finishTurnError(active, errorFromUnknown(error));
+        if (error instanceof OmpRpcCommandError && this.#activeTurn === active)
+          this.#activeTurn = undefined;
+      });
     return promise;
   }
 
@@ -816,12 +825,22 @@ export class OmpRpcClient extends EventEmitter {
   }
 
   async abort(): Promise<void> {
-    await this.request('abort');
-    if (this.#activeTurn && !this.#activeTurn.settled)
+    if (this.#abortRequest) return this.#abortRequest;
+    const active = this.#activeTurn;
+    // Keep admission closed until both the abort response and the old terminal arrive.
+    this.#abortRequest = Promise.resolve()
+      .then(async () => {
+        await this.request('abort');
+      })
+      .finally(() => {
+        this.#abortRequest = undefined;
+      });
+    if (active && !active.settled)
       this.#finishTurnError(
-        this.#activeTurn,
-        new AgentTurnError('执行已暂停', 'interrupted', 'aborted'),
+        active,
+        active.error ?? new AgentTurnError('执行已暂停', 'interrupted', 'aborted'),
       );
+    return this.#abortRequest;
   }
 
   async newSession(): Promise<OmpSessionState> {
@@ -989,8 +1008,10 @@ export class OmpRpcClient extends EventEmitter {
         if (active.error) this.#finishTurnError(active, active.error);
         else this.#finishTurn(active, 'completed', frame);
       }
+      if (this.#activeTurn === active) this.#activeTurn = undefined;
     } else if (frame.type === 'prompt_result' && (frame as any).agentInvoked === false && active) {
       this.#finishTurn(active, 'completed', frame);
+      if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
     this.emit('session-event', frame);
   }
@@ -1113,10 +1134,6 @@ export class OmpRpcClient extends EventEmitter {
         : undefined,
     });
     active.reject(turnError);
-    // Keep an aborted OMP turn associated with the process until its terminal
-    // agent_end arrives. This prevents a second prompt racing the RPC abort.
-    if (this.#activeTurn === active && turnError.status === 'interrupted')
-      this.#activeTurn = active;
   }
 
   #processFailure(error: Error): void {
@@ -1277,12 +1294,14 @@ export class OmpBackend extends EventEmitter implements AgentBackend {
     await this.ensureStarted();
     const capabilities = await this.modelCapabilities();
     const provider = profileProvider(profile);
-    const requestedId = profile.model.includes('/')
-      ? profile.model.split('/').at(-1)!
-      : profile.model;
+    const requestedId =
+      provider && profile.model.startsWith(`${provider}/`)
+        ? profile.model.slice(provider.length + 1)
+        : profile.model;
     const model = capabilities.find(
       (candidate) =>
-        (candidate.id === requestedId || candidate.id === profile.model) &&
+        (candidate.id === requestedId ||
+          `${candidate.provider}/${candidate.id}` === profile.model) &&
         (!provider || !candidate.provider || candidate.provider === provider),
     );
     if (!model)

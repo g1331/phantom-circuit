@@ -5,6 +5,7 @@ import type { AgentKind, ModelDiscovery, Profile, Project, Settings } from '../s
 import { api } from './api.ts';
 import { ErrorText } from './error-text.tsx';
 import { useLocale } from './locale/provider.tsx';
+import { unset } from './ui.tsx';
 
 type Model = { id: string; provider?: string; reasoningEfforts?: string[] };
 
@@ -114,6 +115,8 @@ export function PMModelControl({
   const value = JSON.stringify([providerId, profile?.model ?? '']);
   const selected = models.find((model) => key(model) === value);
   const efforts = selected?.reasoningEfforts;
+  const modelLabel = unset(profile?.model) ? t('runtime.unconfigured') : profile?.model;
+  const effort = unset(profile?.effort) ? '' : profile?.effort;
   async function save(next: Profile) {
     if (saving) return;
     setSaving(true);
@@ -211,7 +214,7 @@ export function PMModelControl({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={id}
-        title={`${profile?.model ?? ''} · ${profile?.effort ?? ''}`}
+        title={[modelLabel, effort].filter(Boolean).join(' · ')}
         aria-disabled={saving}
         onKeyDown={(event) => {
           if (open) navigate(event);
@@ -223,8 +226,8 @@ export function PMModelControl({
           setOpen((value) => !value);
         }}
       >
-        <span>{profile?.model || t('ui.selectAModel')}</span>
-        {profile?.effort && <small>{profile.effort}</small>}
+        <span>{modelLabel}</span>
+        {effort && <small>{effort}</small>}
         {saving ? <LoaderCircle size={13} className="model-spinner" /> : <ChevronDown size={13} />}
       </button>
       {createPortal(
@@ -247,7 +250,7 @@ export function PMModelControl({
                 onClick={() => setPane('model')}
               >
                 <span>{t('ui.model')}</span>
-                <small>{profile?.model}</small>
+                <small>{modelLabel}</small>
                 <ChevronRight size={14} />
               </button>
               <button
@@ -257,7 +260,7 @@ export function PMModelControl({
                 onClick={() => setPane('effort')}
               >
                 <span>{t('ui.reasoningEffort')}</span>
-                <small>{profile?.effort}</small>
+                <small>{effort}</small>
                 <ChevronRight size={14} />
               </button>
             </>

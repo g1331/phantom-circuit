@@ -1,5 +1,6 @@
 import { command } from './process.ts';
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { Fault, Store, id, now, redact } from './store.ts';
 import { externalValue } from './redaction.ts';
 import type {
@@ -1104,18 +1105,44 @@ export class GitHub {
         }),
     );
   }
+  private async checkPages(endpoint: string, field: 'check_runs' | 'statuses'): Promise<unknown[]> {
+    const entries: unknown[] = [];
+    for (let page = 1; ; page++) {
+      const response = z
+        .object({
+          total_count: z.number().int().nonnegative(),
+        })
+        .catchall(z.unknown())
+        .parse(await this.api(`${endpoint}?per_page=100&page=${page}`));
+      const items = z.array(z.unknown()).parse(response[field]);
+      entries.push(...items);
+      if (entries.length >= response.total_count) return entries;
+      if (items.length < 100) throw new Fault('GitHub 检查列表未完整读取', 502);
+    }
+  }
   async checks(task: Task): Promise<{ ready: boolean; reason?: string }> {
     const repo = this.store.repo(task.repoId);
     const [checks, status] = await Promise.all([
-      this.api(`repos/${repo.github}/commits/${task.head}/check-runs?per_page=100`),
-      this.api(`repos/${repo.github}/commits/${task.head}/status`),
+      this.checkPages(`repos/${repo.github}/commits/${task.head}/check-runs`, 'check_runs'),
+      this.checkPages(`repos/${repo.github}/commits/${task.head}/status`, 'statuses'),
     ]);
     const entries = [
-      ...checks.check_runs.map((x: any) => ({
-        name: x.name,
-        ok: x.status === 'completed' && ['success', 'neutral', 'skipped'].includes(x.conclusion),
-      })),
-      ...status.statuses.map((x: any) => ({ name: x.context, ok: x.state === 'success' })),
+      ...z
+        .array(
+          z.object({ name: z.string(), status: z.string(), conclusion: z.string().nullable() }),
+        )
+        .parse(checks)
+        .map((x) => ({
+          name: x.name,
+          ok:
+            x.status === 'completed' &&
+            x.conclusion !== null &&
+            ['success', 'neutral', 'skipped'].includes(x.conclusion),
+        })),
+      ...z
+        .array(z.object({ context: z.string(), state: z.string() }))
+        .parse(status)
+        .map((x) => ({ name: x.context, ok: x.state === 'success' })),
     ];
     for (const name of repo.requiredChecks)
       if (!entries.some((x) => x.name === name && x.ok))

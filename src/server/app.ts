@@ -193,14 +193,22 @@ export function createApp(
       'FST_PARTS_LIMIT',
     ].includes(code);
     const providerRequest = req.url.startsWith('/api/providers');
+    const frameworkStatus =
+      typeof error === 'object' &&
+      error !== null &&
+      'statusCode' in error &&
+      typeof error.statusCode === 'number' &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
+        ? error.statusCode
+        : 500;
     const status = uploadLimit
       ? 413
       : error instanceof Fault
         ? error.status
-        : error instanceof z.ZodError ||
-            (providerRequest && (error as { statusCode?: number }).statusCode === 400)
+        : error instanceof z.ZodError
           ? 400
-          : 500;
+          : frameworkStatus;
     if (status >= 500) req.log.error({ err: error, statusCode: status }, 'request failed');
     else req.log.warn({ errorCode: code || 'bad_request', statusCode: status }, 'request rejected');
     const legacy = uploadStorageFailure
@@ -487,40 +495,18 @@ export function createApp(
     await agentSettingsReady;
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const parsed = runtimeSchema.parse(req.body);
-    const warnings: string[] = [];
-    if (parsed.profiles) {
-      const saved = await providers.saveAssignments(parsed.profiles, id);
-      warnings.push(...(saved.warnings ?? []));
-    }
-    if (parsed.ompProfiles) store.saveProjectOmpProfiles(id, parsed.ompProfiles);
-    const {
-      profiles: _profiles,
-      ompProfiles: _ompProfiles,
-      secondaryReviewProfile,
-      secondaryReviewProfiles,
-      ...runtime
-    } = parsed;
-    if (Object.keys(runtime).length || secondaryReviewProfile || secondaryReviewProfiles) {
-      store.saveProjectRuntimeConfig(id, {
-        ...runtime,
-        ...(secondaryReviewProfile ? { secondaryReviewProfile } : {}),
-        ...(secondaryReviewProfiles
-          ? {
-              secondaryReviewProfiles: Object.fromEntries(
-                Object.entries(secondaryReviewProfiles).filter(([, profile]) => profile !== null),
-              ),
-            }
-          : {}),
-      });
-    }
-    if (secondaryReviewProfile === null) {
-      const project = store.project(id);
-      delete project.secondaryReviewProfile;
-      store.put('project', id, project);
-      store.changes.emit('change');
-    }
-    const project = store.project(id);
-    return warnings.length ? { ...project, warnings } : project;
+    if (!Object.keys(parsed).length) return store.project(id);
+    const { secondaryReviewProfiles, ...runtime } = parsed;
+    return providers.saveProjectRuntime(id, {
+      ...runtime,
+      ...(secondaryReviewProfiles
+        ? {
+            secondaryReviewProfiles: Object.fromEntries(
+              Object.entries(secondaryReviewProfiles).filter(([, profile]) => profile !== null),
+            ),
+          }
+        : {}),
+    });
   });
   app.patch('/api/projects/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);

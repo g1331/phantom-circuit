@@ -563,9 +563,13 @@ export class Store {
     const previous = this.settings();
     settings = normalizeSettings(settingsSchema.parse(settings) as Settings);
     this.validateProfiles(settings.profiles, 'codex');
+    if (settings.secondaryReviewProfiles?.codex)
+      this.validateCodexProvider(settings.secondaryReviewProfiles.codex, 'secondaryReview.codex');
     // OMP profile provider IDs are resolved by OMP and are deliberately not required to exist in
     // the local Provider table. Validate the shape, but never ask Providers for credentials here.
     profileSetSchema.parse(settings.ompProfiles);
+    for (const project of this.list('project'))
+      this.validateEffectiveSecondaryReview(project, settings);
     this.transaction(() => {
       this.put('settings', 'global', settings);
       this.invalidateInheritedThreads(previous, settings);
@@ -576,16 +580,33 @@ export class Store {
   private validateProfiles(profiles: Settings['profiles'], agent: AgentKind = 'codex') {
     profileSetSchema.parse(profiles);
     if (agent === 'omp') return;
-    for (const [role, profile] of Object.entries(profiles)) {
-      if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
-        throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
-    }
+    for (const [role, profile] of Object.entries(profiles))
+      this.validateCodexProvider(profile, role);
+  }
+  private validateCodexProvider(profile: Profile, role: string) {
+    if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
+      throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
   }
 
   private effectiveAgent(project: Project, settings = this.settings()): AgentKind {
     return project.agentSelection?.mode === 'override'
       ? project.agentSelection.agent
       : (settings.defaultAgent ?? 'codex');
+  }
+
+  private secondaryReviewProfile(project: Project, agent: AgentKind, settings: Settings) {
+    return (
+      project.secondaryReviewProfiles?.[agent] ??
+      settings.secondaryReviewProfiles?.[agent] ??
+      project.secondaryReviewProfile ??
+      settings.secondaryReviewProfile
+    );
+  }
+
+  private validateEffectiveSecondaryReview(project: Project, settings = this.settings()) {
+    const agent = this.effectiveAgent(project, settings);
+    const profile = this.secondaryReviewProfile(project, agent, settings);
+    if (agent === 'codex' && profile) this.validateCodexProvider(profile, 'secondaryReview');
   }
 
   private invalidateInheritedThreads(previous: Settings, next: Settings) {
@@ -726,6 +747,10 @@ export class Store {
   }
 
   saveProjectAgentSelection(projectId: string, selection: AgentSelection) {
+    return this.saveProjectRuntimeConfig(projectId, { agentSelection: selection });
+  }
+
+  private applyProjectAgentSelection(projectId: string, selection: AgentSelection) {
     if (selection.mode === 'override' && !['omp', 'codex'].includes(selection.agent))
       throw new Fault('Agent 类型无效');
     return this.transaction(() => {
@@ -791,19 +816,33 @@ export class Store {
         Project,
         | 'agentSelection'
         | 'profileModes'
-        | 'secondaryReviewProfile'
+        | 'profiles'
+        | 'ompProfiles'
         | 'secondaryReviewProfiles'
         | 'recoveryPolicy'
       >
-    >,
+    > & { secondaryReviewProfile?: Profile | null },
   ) {
-    let project = this.project(projectId);
-    if (patch.agentSelection)
-      project = this.saveProjectAgentSelection(projectId, patch.agentSelection);
-    if (patch.profileModes) project = this.saveProjectProfileModes(projectId, patch.profileModes);
+    const previous = this.project(projectId);
+    const project = {
+      ...previous,
+      ...patch,
+      secondaryReviewProfile:
+        patch.secondaryReviewProfile === null
+          ? undefined
+          : (patch.secondaryReviewProfile ?? previous.secondaryReviewProfile),
+    };
+    this.validateEffectiveSecondaryReview(project);
+    if (patch.secondaryReviewProfiles?.codex)
+      this.validateCodexProvider(patch.secondaryReviewProfiles.codex, 'secondaryReview.codex');
     return this.transaction(() => {
+      if (patch.profiles) this.saveProjectProfiles(projectId, patch.profiles);
+      if (patch.ompProfiles) this.saveProjectOmpProfiles(projectId, patch.ompProfiles);
+      if (patch.agentSelection) this.applyProjectAgentSelection(projectId, patch.agentSelection);
+      if (patch.profileModes) this.saveProjectProfileModes(projectId, patch.profileModes);
       const current = this.project(projectId);
-      if (patch.secondaryReviewProfile !== undefined)
+      if (patch.secondaryReviewProfile === null) delete current.secondaryReviewProfile;
+      else if (patch.secondaryReviewProfile !== undefined)
         current.secondaryReviewProfile = structuredClone(patch.secondaryReviewProfile);
       if (patch.secondaryReviewProfiles !== undefined)
         current.secondaryReviewProfiles = structuredClone(patch.secondaryReviewProfiles);
@@ -2020,10 +2059,7 @@ export class Store {
     const secondaryProfile =
       options.secondaryProfile ??
       options.secondaryReviewProfile ??
-      project.secondaryReviewProfiles?.[agentKind] ??
-      settings.secondaryReviewProfiles?.[agentKind] ??
-      project.secondaryReviewProfile ??
-      settings.secondaryReviewProfile;
+      this.secondaryReviewProfile(project, agentKind, settings);
     if (options.secondaryReview && secondaryProfile)
       return {
         agentKind,
@@ -2373,7 +2409,7 @@ export class Store {
       }
       // A later clean Run of the same phase is the evidence that an operational Incident is over.
       const phase = r.role === 'dev' ? 'dev' : r.role === 'review' ? `review:${r.reviewAxis}` : '';
-      if (r.status === 'completed' && phase)
+      if (r.status === 'completed' && phase && !r.ownerMessageId)
         for (const incident of this.list('incident').filter(
           (i) => i.taskId === r.taskId && i.phase === phase && i.status !== 'resolved',
         )) {

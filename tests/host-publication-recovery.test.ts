@@ -134,7 +134,7 @@ test('engine shutdown drains a review Incident assessment before the Store close
     await f.engine.stop();
     assert.equal(f.store.activeRuns().length, 0, 'stop must finish every Run before Store close');
   } finally {
-    f.store.close();
+    await f.close();
   }
 });
 

@@ -1335,6 +1335,7 @@ export class Engine {
     trigger = '宿主事件：技术协调',
     recoveryItemId?: string,
     existingRun?: Run,
+    coordinatingOwnerRunId?: string,
   ): Promise<string> {
     const run =
       existingRun ??
@@ -1467,9 +1468,13 @@ export class Engine {
                 throw new Fault((error as Error).message);
               }
             }
-            // The PM's own Run may be bound to this Task; only delivery work is in the way.
+            // The owner awaiting this PM decision cannot finish until this tool returns.
             const working = () =>
-              this.store.activeRuns().filter((r) => r.taskId === old.id && r.role !== 'pm');
+              this.store
+                .activeRuns()
+                .filter(
+                  (r) => r.taskId === old.id && r.role !== 'pm' && r.id !== coordinatingOwnerRunId,
+                );
             if (working().length) {
               // A user-authorized revision supersedes in-flight work: stop it, keeping the worktree.
               this.store.updateTaskControl(
@@ -1794,15 +1799,7 @@ export class Engine {
       }
       while ((claim = this.store.claimNext())) {
         const run = claim;
-        void this.track(
-          this.develop(run).catch((e) =>
-            this.block(run.taskId!, String(e), {
-              source: 'host',
-              reason: 'task_blocked',
-              runId: run.id,
-            }),
-          ),
-        );
+        void this.track(this.develop(run));
       }
       for (const task of this.store.list('task')) {
         if (historicalCompletionReason(task)) continue;
@@ -2562,6 +2559,9 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
               undefined,
               this.store.task(task.id),
               '宿主事件：负责人对齐方向',
+              undefined,
+              undefined,
+              run.id,
             ),
           true,
         );
@@ -2805,9 +2805,14 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       this.store.finishRun(run.id, paused ? 'paused' : 'failed', String(e), {
         descriptor: diagnosticDescriptor('dev_failed', String(e)),
       });
+      if (paused) return;
+      this.block(run.taskId!, String(e), {
+        source: 'host',
+        reason: 'task_blocked',
+        runId: run.id,
+      });
       const expectedRecoveryBlock = /外部操作结果不明|核对结论与当前任务版本不一致/.test(String(e));
-      if (!paused && !expectedRecoveryBlock) await this.incidentForRun(run, e, 'dev');
-      throw e;
+      if (!expectedRecoveryBlock) await this.incidentForRun(run, e, 'dev');
     } finally {
       if (this.store.get('run', run.id)?.status === 'running')
         this.store.finishRun(run.id, 'completed');
