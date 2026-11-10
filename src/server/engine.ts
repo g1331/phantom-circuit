@@ -140,6 +140,7 @@ const configureInput = z
 const resolveInput = z
   .object({ taskId: z.string(), guidance: z.string().min(1), upgrade: z.boolean() })
   .strict();
+const reconcileIssueInput = z.object({ taskId: z.string() }).strict();
 const feedbackSchema = z
   .object({ action: z.enum(['rework', 'ignore', 'clarify']), reason: z.string().min(1) })
   .strict();
@@ -1407,6 +1408,14 @@ export class Engine {
               'Resume a blocked technical task with concrete guidance; optionally upgrade to the complex profile.',
             inputSchema: jsonSchema(resolveInput),
           },
+          {
+            name: 'reconcile_task_issue',
+            description:
+              'Reconcile an uncertain create-issue and resume the original phase. ' +
+              'Returns adopt, authorize (one creation), none, or blocked with evidence. ' +
+              'Preserves user pauses; never rebuild the Task or bypass the host.',
+            inputSchema: jsonSchema(reconcileIssueInput),
+          },
         ];
         const effectiveSource = () => {
           const live = this.store.get('run', run.id);
@@ -1592,6 +1601,14 @@ export class Engine {
               throw new Fault('任务不在可恢复范围');
             await this.resume(t.id, input, { source: 'pm', reason: 'resolve_task', runId: run.id });
             return this.store.task(t.id);
+          }
+          if (name === 'reconcile_task_issue') {
+            const input = reconcileIssueInput.parse(args);
+            return this.reconcileTaskIssue(projectId, input.taskId, {
+              source: 'pm',
+              reason: 'reconcile_task_issue',
+              runId: run.id,
+            });
           }
           throw new Fault('未知 PM 操作');
         };
@@ -3522,7 +3539,11 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           }
           continue;
         }
-        if (!task.issue) await this.github.publishIssue(task);
+        if (!task.issue) {
+          // A queued retry authorization must remain unused while the user or host holds work.
+          if (this.store.task(task.id).control === 'paused') continue;
+          await this.github.publishIssue(task);
+        }
         const t = this.store.task(task.id);
         const pr = t.pr ? await this.github.pull(t) : undefined;
         if (pr?.merged) {
@@ -3673,6 +3694,36 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     });
     if (t.control === 'paused') await this.resume(taskId, undefined, context);
   }
+  async reconcileTaskIssue(projectId: string, taskId: string, context?: TaskControlContext) {
+    const task = this.store.task(taskId);
+    if (task.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
+    if (['done', 'cancelled'].includes(task.stage)) throw new Fault('任务已经结束', 409);
+    const operation = this.store.get('operation', `issue:${taskId}`);
+    if (
+      task.issue ||
+      operation?.kind !== 'create-issue' ||
+      !['pending', 'uncertain', 'done'].includes(operation.status)
+    )
+      return { action: 'none' as const, resumed: false };
+    try {
+      const result = await this.resume(
+        taskId,
+        undefined,
+        context ?? {
+          source: 'pm',
+          reason: 'reconcile_task_issue',
+        },
+      );
+      return {
+        ...(result ?? { action: 'none' as const }),
+        resumed: this.store.task(taskId).control === 'active',
+      };
+    } catch (error) {
+      // This is the host tool's failure boundary: preserve the operation and expose a specific
+      // internal blocker to the assessing PM, without turning remote failure into absence.
+      return { action: 'blocked' as const, resumed: false, reason: redact(String(error)) };
+    }
+  }
   async resume(
     taskId: string,
     guidance?: { guidance: string; upgrade: boolean },
@@ -3680,6 +3731,18 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
   ) {
     let t = this.store.task(taskId);
     if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束');
+    const controlEvent = this.store.taskEvents(taskId).findLast((event) => event.control)?.id;
+    const assertResumeAllowed = () => {
+      const current = this.store.task(taskId);
+      const latest = this.store.taskEvents(taskId).findLast((event) => event.control);
+      if (
+        ['done', 'cancelled'].includes(current.stage) ||
+        (context?.source === 'pm' && current.pausedByUser) ||
+        (latest?.id !== controlEvent && latest?.control?.action !== 'resume')
+      )
+        throw new Fault('任务已暂停或结束，保留核对结果并等待原控制入口恢复', 409);
+    };
+    assertResumeAllowed();
     const gate = this.store.clarificationGate(t.sourceMessageId);
     if (gate)
       throw new Fault(
@@ -3704,6 +3767,11 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     )
       throw new Fault('正在停止任务，请稍后恢复', 409);
     try {
+      const issueReconciliation = await this.github.authorizeTaskIssueRetry(
+        t,
+        context?.source === 'pm' || guidance ? 'pm' : 'user',
+      );
+      assertResumeAllowed();
       // An explicit resume is the host's supported reconciliation path for an external creation
       // whose outcome is still unknown. Re-read the remote state here and authorize at most one
       // controlled retry; a failed, ambiguous or already-satisfied read never repeats the write.
@@ -3725,6 +3793,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         if (t.pr) {
           const pr = await this.github.pull(t);
           if (pr.merged) {
+            assertResumeAllowed();
             this.store.control(taskId, 'resume', context);
             await this.completed(this.store.task(taskId));
             return;
@@ -3832,9 +3901,13 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
             : {}),
         });
       }
+      assertResumeAllowed();
       this.store.control(taskId, 'resume', context);
+      return issueReconciliation;
     } catch (e) {
-      this.block(taskId, `任务恢复环境阻塞：${String(e)}`);
+      const current = this.store.task(taskId);
+      if (!current.pausedByUser && !['done', 'cancelled'].includes(current.stage))
+        this.block(taskId, `任务恢复环境阻塞：${String(e)}`);
       throw e;
     }
   }

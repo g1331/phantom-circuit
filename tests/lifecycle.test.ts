@@ -93,6 +93,11 @@ async function completeLifecycle(
   const axes: string[] = [];
   class FakeGitHub extends GitHub {
     override async setupProject() {}
+    override async gh(args: string[]) {
+      assert.equal(args[0], 'api');
+      assert.match(args[1], /^repos\/fixture\/source\/issues\?/);
+      return { stdout: '[]', stderr: '', code: 0 };
+    }
     override async publishPR(t: Task) {
       store.updateTask(t.id, { pr: 2, prUrl: 'https://example.invalid/pull/2' });
       return this.pull(t);

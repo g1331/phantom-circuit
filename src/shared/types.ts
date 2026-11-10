@@ -567,7 +567,7 @@ export interface Reconciliation {
   actor: 'user' | 'pm';
   /** The operation attempt the remote verification was performed against. */
   observedOperation: OperationAttempt;
-  /** The task revision (repository, branch, head, base) the remote verification was about. */
+  /** PR repository/branch/head/base, or Issue repository and canonical creation content. */
   taskRevision: string;
   evidence: string;
   at: string;
@@ -588,6 +588,8 @@ export interface Operation {
    * authorization binds to.
    */
   attempt?: number;
+  /** Content binding saved before a create-issue attempt; legacy operations have no binding. */
+  taskRevision?: string;
   /**
    * Durable, single-use authorization recorded only after an explicit host coordination step
    * re-read the remote state and proved this operation created no remote object. Automatic
