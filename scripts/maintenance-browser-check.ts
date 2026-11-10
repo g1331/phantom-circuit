@@ -212,7 +212,7 @@ export async function checkMaintenance() {
     await group('Delivered').getByRole('link').filter({ hasText: history.title }).waitFor();
     assert.equal(await card.locator('em').count(), 0);
     await group('Paused').getByRole('link').filter({ hasText: userPause.title }).waitFor();
-    await group('Paused').getByText('Paused by you', { exact: true }).waitFor();
+    await group('Paused').getByText('You paused it', { exact: true }).waitFor();
     let releaseDetail!: () => void;
     const detailGate = new Promise<void>((resolve) => {
       releaseDetail = resolve;
@@ -363,6 +363,13 @@ export async function checkMaintenance() {
     // Classify each Incident independently, even when several belong to the same Task.
     await openPage(page, 'home');
     let currentIncidents = 0;
+    const openTechnicalActions = async () => {
+      const summary = page.locator('.project-actions > details > summary')
+        .filter({ hasText: 'Technical records' });
+      await summary.waitFor();
+      if (!(await summary.evaluate((node) => (node.parentElement as HTMLDetailsElement).open)))
+        await summary.click();
+    };
     const incidentCases = [
       {
         phase: 'finalize',
@@ -415,6 +422,7 @@ export async function checkMaintenance() {
         evidence: `Original evidence ${index}`,
       });
       if (!sample.historical) currentIncidents++;
+      if (currentIncidents) await openTechnicalActions();
       await page.waitForFunction(
         (count) => document.querySelectorAll('.project-actions .action-record').length === count,
         currentIncidents,
@@ -441,6 +449,7 @@ export async function checkMaintenance() {
     }
     const orphan = store.createIncident({ projectId: project.id, phase: 'sync', message: reason });
     currentIncidents++;
+    await openTechnicalActions();
     await page.waitForFunction(
       (count) => document.querySelectorAll('.project-actions .action-record').length === count,
       currentIncidents,
@@ -460,6 +469,7 @@ export async function checkMaintenance() {
     });
     await page.getByRole('button', { name: otherProject.name, exact: true }).click();
     await page.getByRole('heading', { name: otherProject.name, exact: true }).waitFor();
+    await openTechnicalActions();
     await page.waitForFunction(
       () => document.querySelectorAll('.project-actions .action-record').length === 1,
     );

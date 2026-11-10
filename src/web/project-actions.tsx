@@ -57,6 +57,41 @@ export function ProjectActions({
           {t('actions.errors')} <ErrorText error={error} />
         </p>
       )}
+      {!!clarifications.length && (
+        <section aria-label={t('actions.clarifications')}>
+          <h3>{t('actions.clarifications')}</h3>
+          {clarifications.map((clarification) => (
+            <ClarificationCard
+              key={clarification.id}
+              clarification={clarification}
+              taskTitle={state.tasks.find((task) => task.id === clarification.taskId)?.title}
+              onOpenTask={onOpenTask}
+              disabled={!!busy}
+              submit={(answers) =>
+                act(clarification.id, `clarifications/${clarification.id}/answer`, { answers })
+              }
+              cancel={() => act(clarification.id, `clarifications/${clarification.id}/cancel`, {})}
+            />
+          ))}
+        </section>
+      )}
+      {incidents.some((incident) => decisions.has(incident.id)) && (
+        <section aria-label={t('actions.incidents')}>
+          <h3>{t('actions.incidents')}</h3>
+          {incidents
+            .filter((incident) => decisions.has(incident.id))
+            .map((incident) => (
+              <IncidentCard
+                key={incident.id}
+                incident={incident}
+                disabled={!!busy}
+                submit={(action, guidance) =>
+                  act(incident.id, `incidents/${incident.id}/resolve`, { action, guidance })
+                }
+              />
+            ))}
+        </section>
+      )}
       {!!recovery.length && (
         <Fold title={t('actions.recovery')}>
           <section aria-label={t('actions.recovery')}>
@@ -103,23 +138,6 @@ export function ProjectActions({
           </section>
         </Fold>
       )}
-      {incidents.some((incident) => decisions.has(incident.id)) && (
-        <section aria-label={t('actions.incidents')}>
-          <h3>{t('actions.incidents')}</h3>
-          {incidents
-            .filter((incident) => decisions.has(incident.id))
-            .map((incident) => (
-              <IncidentCard
-                key={incident.id}
-                incident={incident}
-                disabled={!!busy}
-                submit={(action, guidance) =>
-                  act(incident.id, `incidents/${incident.id}/resolve`, { action, guidance })
-                }
-              />
-            ))}
-        </section>
-      )}
       {incidents.some((incident) => !decisions.has(incident.id)) && (
         <Fold title={t('ui.technicalRecords')}>
           <section aria-label={t('actions.incidents')}>
@@ -137,24 +155,6 @@ export function ProjectActions({
               ))}
           </section>
         </Fold>
-      )}
-      {!!clarifications.length && (
-        <section aria-label={t('actions.clarifications')}>
-          <h3>{t('actions.clarifications')}</h3>
-          {clarifications.map((clarification) => (
-            <ClarificationCard
-              key={clarification.id}
-              clarification={clarification}
-              taskTitle={state.tasks.find((task) => task.id === clarification.taskId)?.title}
-              onOpenTask={onOpenTask}
-              disabled={!!busy}
-              submit={(answers) =>
-                act(clarification.id, `clarifications/${clarification.id}/answer`, { answers })
-              }
-              cancel={() => act(clarification.id, `clarifications/${clarification.id}/cancel`, {})}
-            />
-          ))}
-        </section>
       )}
     </section>
   );

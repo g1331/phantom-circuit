@@ -121,13 +121,16 @@ function TaskOverview({
             ))}
           </div>
         )}
-        {attention.blocked && (
-          <Fold className="task-blocker" title={t('ui.technicalRecords')}>
-            <Clamp height={100}>
-              <p>{host(attention.blocked, detail.blockedDescriptor)}</p>
-            </Clamp>
-          </Fold>
-        )}
+        {attention.blocked &&
+          (finished ? (
+            <p className="inline-warning">{host(attention.blocked, detail.blockedDescriptor)}</p>
+          ) : (
+            <Fold className="task-blocker" title={t('ui.technicalRecords')}>
+              <Clamp height={100}>
+                <p>{host(attention.blocked, detail.blockedDescriptor)}</p>
+              </Clamp>
+            </Fold>
+          ))}
         <ProjectActions
           state={{
             ...state,
