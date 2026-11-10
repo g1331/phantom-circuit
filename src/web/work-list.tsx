@@ -22,6 +22,7 @@ import { incidentAttention } from '../shared/task-history.ts';
 import { routeHref } from './route.ts';
 import { Empty } from './ui.tsx';
 import { EngineeringReference } from './engineering-reference.tsx';
+import { WorkHold } from './work-hold.tsx';
 
 const icons: Record<WorkGroup, typeof CircleDot> = {
   needs_you: Hand,
@@ -50,6 +51,7 @@ function Row({
   projectId,
   repoName,
   activity,
+  request,
 }: {
   work: TeamWork;
   group: WorkGroup;
@@ -57,8 +59,9 @@ function Row({
   projectId: string;
   repoName?: string;
   activity?: string;
+  request?: string;
 }) {
-  const { t, host } = useLocale();
+  const { t } = useLocale();
   const when = useWhen();
   const task = state.tasks.find((x) => x.id === work.taskId)!;
   const Icon = icons[group];
@@ -75,9 +78,7 @@ function Row({
   const line = issue
     ? t('work.deliveredIssue')
     : group === 'needs_you'
-      ? task.blocked
-        ? host(task.blocked, task.blockedDescriptor)
-        : t('team.attention.needs_user')
+      ? request || t('team.attention.needs_user')
       : group === 'paused'
         ? task.pausedByUser
           ? t('work.pausedByYou')
@@ -94,13 +95,15 @@ function Row({
   return (
     <li>
       <a
-        className={`work-row group-${group}`}
+        className={`work-row group-${group} ${work.teamHold === 'blocked' ? 'hold-blocked' : ''}`}
         href={routeHref({ page: 'task', projectId, taskId: work.taskId })}
       >
         <Icon className="work-icon" size={16} aria-hidden="true" />
         <span className="work-main">
           <strong>{work.title}</strong>
-          <span className={`work-line ${issue ? 'has-issue' : ''}`}>{line}</span>
+          <span className={`work-line ${issue || work.teamHold === 'blocked' ? 'has-issue' : ''}`}>
+            {work.teamHold ? <WorkHold work={work} /> : line}
+          </span>
         </span>
         <span className="work-meta">
           {work.rounds > 0 && group !== 'delivered' && group !== 'cancelled' && (
@@ -183,6 +186,7 @@ export function WorkList({
                     projectId={project.id}
                     repoName={multiRepo ? repos.get(specs.get(work.taskId)!.repoId) : undefined}
                     activity={activity(work.taskId)}
+                    request={view.waiting.find((r) => r.taskId === work.taskId)?.text}
                   />
                 ))}
               </ul>

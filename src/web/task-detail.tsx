@@ -9,6 +9,7 @@ import { Receipt } from './receipt.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, taskAttention } from '../shared/task-history.ts';
 import { hasOwner, teamView, type TeamMember, type TeamWork } from '../shared/team.ts';
+import { WorkHold } from './work-hold.tsx';
 
 export type TaskView = 'overview' | 'spec' | 'process';
 
@@ -27,8 +28,8 @@ function progressFor({
   if (task.stage === 'cancelled') return 'cancelled';
   if (task.pausedByUser && task.control === 'paused') return 'paused';
   if (needsDecision) return 'needsYou';
+  if (work?.teamHold) return 'teamHandling';
   if (member) return member.activity;
-  if (work?.attention === 'blocked') return 'teamHandling';
   if (work?.step === 'planned') return 'queued';
   if (task.stage === 'reviewing') return 'reviewQueued';
   if (task.stage === 'merging') return 'merging';
@@ -92,16 +93,7 @@ function TaskOverview({
   const team = teamView(state, detail.projectId);
   const work = team.work.find((work) => work.taskId === detail.id);
   const member = team.members.find((member) => member.taskId === detail.id);
-  const requests = team.waiting.filter(
-    (request) =>
-      request.taskId === detail.id &&
-      request.kind !== 'blocked' &&
-      (request.kind !== 'decision' ||
-        state.incidents?.some(
-          (incident) =>
-            incident.id === request.id && incidentAttention(incident, detail).actionable,
-        )),
-  );
+  const requests = team.waiting.filter((request) => request.taskId === detail.id);
   const status = progressFor({ task: detail, work, member, needsDecision: requests.length > 0 });
   const next =
     status === 'delivered' || status === 'cancelled' || status === 'paused' || status === 'needsYou'
@@ -111,10 +103,17 @@ function TaskOverview({
     hasOwner(detail) || state.ownerMessages?.some((line) => line.taskId === detail.id);
   return (
     <div className="task-detail task-workspace">
-      <section className="task-progress" data-progress={status} aria-label={t('task.progress')}>
+      <section
+        className="task-progress"
+        data-progress={status}
+        data-hold={work?.teamHold}
+        aria-label={t('task.progress')}
+      >
         <p className="task-section-label">{t('task.progress')}</p>
-        <h2>{t(`task.progress.${status}`)}</h2>
-        <p className="muted task-next-step">{t(`task.next.${next}`)}</p>
+        <h2>{work?.teamHold ? t(`work.hold.${work.teamHold}`) : t(`task.progress.${status}`)}</h2>
+        <p className="muted task-next-step">
+          {work?.teamHold ? <WorkHold work={work} /> : t(`task.next.${next}`)}
+        </p>
         {requests.length > 0 && (
           <div className="task-decisions">
             {requests.map((request) => (
@@ -123,18 +122,20 @@ function TaskOverview({
           </div>
         )}
         {attention.blocked && (
-          <div className="task-blocker inline-warning">
+          <Fold className="task-blocker" title={t('ui.technicalRecords')}>
             <Clamp height={100}>
               <p>{host(attention.blocked, detail.blockedDescriptor)}</p>
             </Clamp>
-          </div>
+          </Fold>
         )}
         <ProjectActions
           state={{
             ...state,
-            incidents: [],
+            incidents: state.incidents?.filter((i) => requests.some((r) => r.id === i.id)),
             recoveryItems: [],
-            clarifications: state.clarifications?.filter((c) => c.taskId === detail.id && c.review),
+            clarifications: state.clarifications?.filter(
+              (c) => c.taskId === detail.id && requests.some((r) => r.id === c.id),
+            ),
           }}
           project={state.projects.find((p) => p.id === detail.projectId)!}
           reload={reload}

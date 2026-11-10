@@ -513,6 +513,15 @@
 .task-progress[data-progress='needsYou'] h2 {
   color: var(--warning);
 }
+.task-progress[data-hold='blocked'] h2,
+.task-status.group-moving[data-hold='blocked'] .task-status-group,
+.work-row.hold-blocked .work-icon,
+.work-hold.attention-blocked {
+  color: var(--danger);
+}
+.work-hold {
+  overflow-wrap: anywhere;
+}
 .task-progress[data-progress='delivered'] h2 {
   color: var(--delivery);
 }

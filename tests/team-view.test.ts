@@ -38,7 +38,11 @@ test('the team view shows who is working on what and what waits on the user', as
     const asking = task('Billing');
     store.updateTask(building.id, { stage: 'developing', devPhase: 'implement' });
     const dev = store.run('dev', project.id, 'backend', store.task(building.id));
-    store.updateTask(stuck.id, { stage: 'developing', control: 'paused', blocked: 'GitHub 拒绝推送' });
+    store.updateTask(stuck.id, {
+      stage: 'developing',
+      control: 'paused',
+      blocked: 'GitHub 拒绝推送',
+    });
     store.updateTask(asking.id, { stage: 'reviewing', control: 'paused', blocked: '等待确认' });
     store.createClarification({
       projectId: project.id,
@@ -74,24 +78,87 @@ test('the team view shows who is working on what and what waits on the user', as
     assert.equal(work['Search page'].attention, 'none');
     assert.deepEqual(work['Search page'].owners, ['dev', 'pm']);
     assert.equal(work['Export'].attention, 'blocked');
+    assert.equal(work['Export'].teamNext, 'diagnosis');
     assert.equal(work['Billing'].attention, 'needs_user');
-    assert.deepEqual(
-      view.waiting.map((w) => [w.kind, w.taskTitle, w.text]).sort(),
-      [
-        ['blocked', 'Export', 'GitHub 拒绝推送'],
-        ['clarification', 'Billing', '按月还是按年计费？'],
-      ],
-    );
+    assert.deepEqual(view.waiting.map((w) => [w.kind, w.taskTitle, w.text]).sort(), [
+      ['clarification', 'Billing', '按月还是按年计费？'],
+    ]);
     assert.deepEqual(
       view.feed.map((f) => [f.role, f.kind, f.taskTitle]),
       [['review', 'finished', 'Billing']],
       'the feed holds finished turns only: live ones are members, a question waits on the user',
     );
     assert.ok(view.feed[0].durationMs >= 0);
-    assert.deepEqual(
-      Object.fromEntries(view.work.map((w) => [w.title, workGroup(w)])),
-      { 'Search page': 'moving', Export: 'needs_you', Billing: 'needs_you' },
+    assert.deepEqual(Object.fromEntries(view.work.map((w) => [w.title, workGroup(w)])), {
+      'Search page': 'moving',
+      Export: 'moving',
+      Billing: 'needs_you',
+    });
+    const legacy = store.createIncident({
+      projectId: project.id,
+      taskId: stuck.id,
+      phase: 'validation',
+      message: 'PM assessment interrupted',
+    });
+    store.updateIncident(legacy.id, { status: 'waiting_user' });
+    let held = teamView(store.snapshot(), project.id);
+    assert.equal(held.waiting.length, 1, 'legacy internal failures do not ask the client');
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.teamHold, 'blocked');
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.teamNext, 'validation');
+    const ownerState = store.snapshot();
+    ownerState.runs.push({
+      ...dev,
+      id: 'read-only',
+      taskId: stuck.id,
+      ownerMessageId: 'read-only-question',
+    });
+    held = teamView(ownerState, project.id);
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.teamHold, 'blocked');
+    const assessment = store.run('pm', project.id, 'pm', store.task(stuck.id), {
+      incidentId: legacy.id,
+    });
+    held = teamView(store.snapshot(), project.id);
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.teamHold, 'running');
+    store.finishRun(assessment.id, 'interrupted');
+    const snapshot = store.snapshot();
+    snapshot.recoveryItems = [
+      {
+        id: 'recovery',
+        projectId: project.id,
+        taskId: stuck.id,
+        oldRunId: assessment.id,
+        runId: assessment.id,
+        status: 'pending',
+        policy: 'automatic',
+        pauseProvenance: 'runtime',
+        createdAt: stuck.createdAt,
+        updatedAt: stuck.updatedAt,
+      },
+    ];
+    held = teamView(snapshot, project.id);
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.teamHold, 'queued');
+    snapshot.recoveryItems[0].pauseProvenance = 'user';
+    assert.equal(
+      teamView(snapshot, project.id).work.find((w) => w.taskId === stuck.id)?.teamHold,
+      'blocked',
+      'a user-held recovery is not promised as a team pickup',
     );
+    snapshot.recoveryItems[0].pauseProvenance = 'runtime';
+    snapshot.recoveryItems[0].policy = 'manual';
+    assert.equal(
+      teamView(snapshot, project.id).work.find((w) => w.taskId === stuck.id)?.teamHold,
+      'blocked',
+    );
+    store.updateIncident(legacy.id, {
+      descriptor: { code: 'incident_waiting_user' },
+      message: 'Approve paid access?',
+    });
+    held = teamView(store.snapshot(), project.id);
+    assert.equal(held.waiting.length, 2, 'explicit decisions remain actionable');
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.attention, 'needs_user');
+    store.control(stuck.id, 'pause', { source: 'user', reason: 'Pause for now' });
+    held = teamView(store.snapshot(), project.id);
+    assert.equal(held.work.find((w) => w.taskId === stuck.id)?.attention, 'paused');
   } finally {
     store.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

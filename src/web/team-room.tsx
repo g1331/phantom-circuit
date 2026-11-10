@@ -3,6 +3,7 @@ import { ArrowUpRight, Code2, MessagesSquare, Pause, Play, ScanEye, Siren } from
 import type { Role, Snapshot } from '../shared/types.ts';
 import { teamView, type TeamMember, type TeamWork, type WorkStep } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
+import { WorkHold } from './work-hold.tsx';
 
 const icons: Record<Role, typeof Code2> = {
   pm: MessagesSquare,
@@ -60,17 +61,22 @@ function Member({ member, now }: { member: TeamMember; now: number }) {
 function Work({ work, onOpen }: { work: TeamWork; onOpen: (id: string) => void }) {
   const { t } = useLocale();
   const at = track.indexOf(work.step);
-  const live = work.owners.length > 0;
+  const live = work.teamHold ? work.teamHold === 'running' : work.owners.length > 0;
+  const attention = work.teamHold && work.teamHold !== 'blocked' ? 'none' : work.attention;
   return (
     <li>
       <button
-        className={`team-work attention-${work.attention} ${live ? 'is-live' : ''}`}
+        className={`team-work attention-${attention} ${live ? 'is-live' : ''}`}
         onClick={() => onOpen(work.taskId)}
       >
         <span className="team-work-head">
           <strong>{work.title}</strong>
           {work.attention !== 'none' ? (
-            <span className="team-badge">{t(`team.attention.${work.attention}`)}</span>
+            <span className="team-badge">
+              {work.teamHold
+                ? t(`work.hold.${work.teamHold}`)
+                : t(`team.attention.${work.attention}`)}
+            </span>
           ) : (
             work.rounds > 0 && (
               <span className="team-rounds">{t('team.rounds', { count: work.rounds + 1 })}</span>
@@ -96,7 +102,7 @@ function Work({ work, onOpen }: { work: TeamWork; onOpen: (id: string) => void }
               })}
             </span>
           )}
-          {work.reason && <span className="team-reason">{work.reason}</span>}
+          {work.teamHold && <WorkHold work={work} />}
         </span>
       </button>
     </li>

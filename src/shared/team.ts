@@ -1,4 +1,5 @@
 import type { Role, Run, Snapshot, Task } from './types.ts';
+import { incidentAttention } from './task-history.ts';
 
 /**
  * The team view (ADR 0013): what the team and each member are doing, in codes the interface
@@ -34,6 +35,8 @@ export interface TeamWork {
   title: string;
   step: WorkStep;
   attention: WorkAttention;
+  teamHold?: 'running' | 'queued' | 'blocked';
+  teamNext?: 'registration' | 'validation' | 'diagnosis';
   /** Host-written reason when the work is held; shown as-is. */
   reason?: string;
   owners: Role[];
@@ -44,7 +47,7 @@ export interface TeamWork {
 }
 export interface TeamRequest {
   id: string;
-  kind: 'clarification' | 'decision' | 'blocked';
+  kind: 'clarification' | 'decision';
   taskId?: string;
   taskTitle?: string;
   text: string;
@@ -124,10 +127,15 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
   members.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
 
   const clarifications = (state.clarifications ?? []).filter(
-    (c) => c.projectId === projectId && c.status === 'open',
+    (c) => c.projectId === projectId && c.status === 'open' && c.questions.length > 0,
   );
   const decisions = (state.incidents ?? []).filter(
-    (i) => i.projectId === projectId && i.status === 'waiting_user',
+    (i) =>
+      i.projectId === projectId &&
+      i.status === 'waiting_user' &&
+      i.descriptor?.code === 'incident_waiting_user' &&
+      !!i.message.trim() &&
+      incidentAttention(i, i.taskId ? tasks.get(i.taskId) : undefined).actionable,
   );
   const waiting: TeamRequest[] = [];
   for (const c of clarifications)
@@ -162,29 +170,49 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
   for (const task of tasks.values()) {
     const owners = [...new Set(active.filter((r) => r.taskId === task.id).map((r) => r.role))];
     const held = task.control === 'paused' && !['done', 'cancelled'].includes(task.stage);
-    const attention: WorkAttention = !held
-      ? 'none'
-      : task.pausedByUser
+    const attention: WorkAttention =
+      held && task.pausedByUser
         ? 'paused'
         : asked.has(task.id)
           ? 'needs_user'
-          : owners.length
-            ? 'none'
-            : 'blocked';
-    if (attention === 'blocked')
-      waiting.push({
-        id: `blocked:${task.id}`,
-        kind: 'blocked',
-        taskId: task.id,
-        taskTitle: task.title,
-        text: task.blocked ?? '',
-        at: task.updatedAt,
-      });
+          : held
+            ? 'blocked'
+            : 'none';
+    const executing = active.some((r) => r.taskId === task.id && !r.ownerMessageId && !r.purpose);
+    const pending = state.recoveryItems?.some(
+      (r) =>
+        r.projectId === projectId &&
+        r.taskId === task.id &&
+        r.status === 'pending' &&
+        r.policy === 'automatic' &&
+        r.pauseProvenance !== 'user' &&
+        r.pauseProvenance !== 'terminal' &&
+        !r.pausedByUser,
+    );
+    const incident = state.incidents?.findLast(
+      (i) => i.projectId === projectId && i.taskId === task.id && i.status !== 'resolved',
+    );
+    const teamNext: TeamWork['teamNext'] =
+      incident?.phase === 'sync'
+        ? 'registration'
+        : incident?.phase === 'validation'
+          ? 'validation'
+          : 'diagnosis';
     work.push({
       taskId: task.id,
       title: task.title,
       step: steps[task.stage],
       attention,
+      ...(attention === 'blocked'
+        ? {
+            teamNext,
+            teamHold: executing
+              ? ('running' as const)
+              : pending
+                ? ('queued' as const)
+                : ('blocked' as const),
+          }
+        : {}),
       ...(held && task.blocked ? { reason: task.blocked } : {}),
       owners,
       rounds: task.retries,
@@ -231,8 +259,9 @@ export const workGroups: WorkGroup[] = [
 export function workGroup(work: TeamWork): WorkGroup {
   if (work.step === 'cancelled') return 'cancelled';
   if (work.step === 'done') return 'delivered';
-  if (work.attention === 'needs_user' || work.attention === 'blocked') return 'needs_you';
+  if (work.attention === 'needs_user') return 'needs_you';
   if (work.attention === 'paused') return 'paused';
+  if (work.attention === 'blocked') return 'moving';
   return work.step === 'planned' && !work.owners.length ? 'queued' : 'moving';
 }
 /** Reworks the host allows before it stops the work and asks (engine `rework`). */
