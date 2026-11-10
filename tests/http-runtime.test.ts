@@ -9,6 +9,7 @@ import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { Codex } from '../src/server/codex.ts';
 import { createApp } from '../src/server/app.ts';
+import type { ConversationPage } from '../src/shared/types.ts';
 
 class RuntimeCodex extends Codex {
   override async start() {}
@@ -94,6 +95,78 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
     });
   return { app, store, request };
 }
+
+test('HTTP PM history is bounded on initial state, refresh and cursor pages', async (t) => {
+  const { store, request } = await fixture(t);
+  const project = store.createProject('Bounded history', '');
+  const other = store.createProject('Other history', '');
+  const foreign = store.addMessage(other.id, 'user', 'private');
+  const expected: string[] = [];
+  for (let index = 0; index < 1003; index++) {
+    const message = store.addMessage(project.id, 'user', `full body ${index}`);
+    store.updateMessage(message.id, { createdAt: '2026-01-01T00:00:00.000Z' });
+    expected.push(message.id);
+  }
+  const get = async (query = '') => {
+    const response = await request('GET', `/projects/${project.id}/messages${query}`);
+    assert.equal(response.statusCode, 200);
+    return response.json<ConversationPage>();
+  };
+  const state = await request('GET', '/state?messages=none');
+  assert.equal(state.statusCode, 200);
+  assert.deepEqual(state.json().messages, []);
+  assert.deepEqual(state.json().activities, []);
+  const first = await get();
+  assert.deepEqual(
+    first.entries.map((entry) => entry.cursor),
+    expected.slice(-50),
+  );
+  assert.equal(first.hasBefore, true);
+  assert.equal(first.hasAfter, false);
+  const cursor = first.entries[0]!.cursor;
+  const arrival = store.addMessage(project.id, 'assistant', 'New reply');
+  let page = first;
+  const history = page.entries.map((entry) => entry.cursor);
+  while (page.hasBefore) {
+    page = await get(`?before=${page.entries[0]!.cursor}`);
+    assert.ok(page.entries.length <= 50);
+    history.unshift(...page.entries.map((entry) => entry.cursor));
+  }
+  assert.deepEqual(history, expected);
+  assert.deepEqual(
+    (await get(`?after=${expected.at(-1)}`)).entries.map((entry) => entry.cursor),
+    [arrival.id],
+  );
+  store.updateMessage(expected[10]!, { content: 'updated queued message', status: 'completed' });
+  const refreshedIds = await get(`?ids=${expected.slice(0, 50).join(',')}`);
+  const changed = refreshedIds.entries[10]!;
+  assert.equal(changed.kind, 'message');
+  if (changed.kind === 'message') {
+    assert.equal(changed.value.content, 'updated queued message');
+    assert.equal(changed.value.status, 'completed');
+  }
+  const cross = await request('GET', `/projects/${other.id}/messages?before=${cursor}`);
+  assert.equal(cross.statusCode, 403);
+  const crossIds = await request('GET', `/projects/${project.id}/messages?ids=${foreign.id}`);
+  assert.equal(crossIds.statusCode, 403);
+  const unauthenticated = await request('GET', `/projects/${project.id}/messages`, undefined, {
+    cookie: '',
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+  const invalid = await request(
+    'GET',
+    `/projects/${project.id}/messages?before=${cursor}&after=${cursor}`,
+  );
+  assert.equal(invalid.statusCode, 400);
+  const oversized = await request(
+    'GET',
+    `/projects/${project.id}/messages?ids=${Array(51).fill(cursor).join(',')}`,
+  );
+  assert.equal(oversized.statusCode, 400);
+  const refreshed = await request('GET', '/state?messages=none');
+  assert.equal(refreshed.body.includes('full body'), false);
+  assert.equal(store.list('message').length, 1005);
+});
 
 test('HTTP review answers stay Project-scoped, persist partial answers and never auto-resume an independent pause', async (t) => {
   const { store, request } = await fixture(t);

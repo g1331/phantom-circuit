@@ -310,6 +310,8 @@ export const zhCN = {
   'chat.explore': '了解现有项目',
   'chat.message': '给 PM 的消息',
   'chat.backToLatest': '回到最新消息',
+  'chat.historyEarlier': '加载更早消息',
+  'chat.historyRetry': '历史加载失败，重试',
   'chat.discussPlaceholder': '有什么想法？先聊清楚，再决定开工。',
   'chat.implementPlaceholder': '描述你明确希望完成的需求…',
   'chat.feedbackPlaceholder': '告诉 PM 你的使用感受，哪里需要改进…',

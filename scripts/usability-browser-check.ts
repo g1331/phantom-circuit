@@ -183,13 +183,26 @@ export async function checkUsability() {
   );
   let stateGate: Promise<void> | undefined;
   let stateStarted: (() => void) | undefined;
-  await page.route('**/api/state', async (route) => {
-    const snapshot = store.snapshot();
+  await page.route('**/api/state?messages=none', async (route) => {
+    const snapshot = store.snapshot({ conversation: 'bounded' });
     const gate = stateGate;
     stateGate = undefined;
     stateStarted?.();
     if (gate) await gate;
     await route.fulfill({ json: snapshot });
+  });
+  await page.route(/\/api\/projects\/[^/]+\/messages(?:\?.*)?$/, (route) => {
+    const url = new URL(route.request().url());
+    const projectId = url.pathname.split('/')[3];
+    const before = url.searchParams.get('before');
+    const after = url.searchParams.get('after');
+    const ids = url.searchParams.get('ids');
+    return route.fulfill({
+      json: store.conversationPage(
+        projectId,
+        ids ? { ids: ids.split(',') } : after ? { after } : { before: before ?? undefined },
+      ),
+    });
   });
   await page.route('**/api/events', (route) =>
     route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' }),
@@ -436,32 +449,37 @@ export async function checkUsability() {
       'light',
       'explicit theme survives reload',
     );
-    const firstProcess = page.locator('.pm-process').first();
+    const completedRun = store
+      .list('run')
+      .filter((run) => run.projectId === conversationProject.id && run.status === 'completed')
+      .at(-1)!;
+    const firstProcess = page.locator(`.pm-process[data-run-id="${completedRun.id}"]`);
     const liveProcess = page.locator(`.pm-process[data-run-id="${pendingRun.id}"]`);
     await liveProcess.locator(':scope > summary').waitFor();
     await checkTyping(page);
     assert.equal(await liveProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
     assert.equal(await firstProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
     assert.equal(
-      await page.getByText('Intermediate 1', { exact: true }).isVisible(),
+      await page.getByText('Intermediate 50', { exact: true }).isVisible(),
       false,
       'completed intermediate prose folds with the tools',
     );
     assert.equal(
-      await page.getByText(/^Final answer 1\b/).isVisible(),
+      await page.getByText(/^Final answer 50\b/).isVisible(),
       true,
       'final answer is retained',
     );
     // The turn rail needs a 900px conversation; with the brief beside it that takes a wide screen.
     await page.setViewportSize({ width: 1600, height: 768 });
-    await page.getByRole('button', { name: '跳转到第 1 轮', exact: true }).focus();
-    await page.getByRole('tooltip').getByText('Question 1', { exact: true }).waitFor();
+    const turnMarks = page.locator('.turn-mark');
+    await turnMarks.nth((await turnMarks.count()) - 2).focus();
+    await page.getByRole('tooltip').getByText('Question 50', { exact: true }).waitFor();
     await page.keyboard.press('Enter');
     await firstProcess.locator(':scope > summary').click();
-    assert.equal(await page.getByText('Intermediate 1', { exact: true }).isVisible(), true);
+    assert.equal(await page.getByText('Intermediate 50', { exact: true }).isVisible(), true);
     const firstQuestion = page
       .getByRole('region', { name: '与 PM 讨论', exact: true })
-      .getByText('Question 1', { exact: true });
+      .getByText('Question 50', { exact: true });
     const before = await firstQuestion.boundingBox();
     store.finishRun(pendingRun.id, 'completed');
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
@@ -525,7 +543,11 @@ export async function checkUsability() {
       details: { summary: 'Relevant evidence' },
     });
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
-    await page.getByRole('button', { name: '跳转到第 52 轮', exact: true }).click();
+    await page
+      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByText('Reading a live reply', { exact: true })
+      .waitFor();
+    await page.locator('.turn-mark').last().click();
     const liveExplanation = page
       .getByRole('region', { name: '与 PM 讨论', exact: true })
       .getByText('Live explanation being read', { exact: true });
@@ -540,7 +562,10 @@ export async function checkUsability() {
     );
     store.finishRun(readingRun.id, 'completed');
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
-    await page.getByText('New final answer', { exact: true }).waitFor();
+    await page
+      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByText('New final answer', { exact: true })
+      .waitFor();
     assert.equal(
       await liveExplanation.isVisible(),
       true,
@@ -572,7 +597,7 @@ export async function checkUsability() {
     await page.setViewportSize({ width: 390, height: 500 });
     await page.getByRole('button', { name: '对话目录', exact: true }).click();
     const directory = page.getByRole('dialog', { name: '对话目录' });
-    await directory.getByRole('button', { name: '50 Question 50', exact: true }).click();
+    await directory.getByRole('button', { name: /^\d+ Question 50$/, exact: true }).click();
     await directory.waitFor({ state: 'hidden' });
     assert.ok(
       await page

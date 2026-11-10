@@ -186,7 +186,7 @@ export function PriorityEditor({
       setResult(conflict ? 'conflict' : 'failed');
       if (conflict) {
         try {
-          const state = await api<{ tasks: Task[] }>('/state');
+          const state = await api<{ tasks: Task[] }>('/state?messages=none');
           setVersion(state.tasks.find((t) => t.id === task.id)?.priorityVersion ?? 0);
           await reload();
         } catch {

@@ -175,7 +175,9 @@ export async function checkMaintenance() {
     await page.unroute('**/assets/settings-panel-*.js');
     await page.getByLabel('Global Dev limit').fill('9');
     const settingsInput = await page.getByLabel('Global Dev limit').elementHandle();
-    const refreshed = page.waitForResponse((response) => response.url().endsWith('/api/state'));
+    const refreshed = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/state',
+    );
     store.transaction(() =>
       store.put('project', project.id, {
         ...store.project(project.id),
@@ -268,7 +270,9 @@ export async function checkMaintenance() {
     });
     const detailScroll = await dialog.evaluate((element) => element.scrollTop);
     assert.ok(detailScroll > 0, 'the work page scrolls');
-    const update = page.waitForResponse((response) => response.url().endsWith('/api/state'));
+    const update = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/state',
+    );
     store.updateTask(history.id, {
       feedback: [
         'External delivery: https://github.com/example/history/pull/7',

@@ -324,6 +324,8 @@ export const en = {
   'chat.explore': 'Explore the project',
   'chat.message': 'Message to PM',
   'chat.backToLatest': 'Back to latest',
+  'chat.historyEarlier': 'Load earlier messages',
+  'chat.historyRetry': 'History failed to load. Retry',
   'chat.discussPlaceholder': 'What do you have in mind? Discuss it before starting work.',
   'chat.implementPlaceholder': 'Describe what you want implemented…',
   'chat.feedbackPlaceholder': 'Tell the PM about your experience and what needs improvement…',

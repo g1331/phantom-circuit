@@ -155,8 +155,19 @@ export async function checkRuntimeUI() {
           : request.postDataJSON();
     let result: unknown = {};
     if (path === '/session') result = { csrf: 'fixture' };
-    else if (path === '/state') result = snapshot;
-    else if (path === '/events') {
+    else if (path === '/state') result = { ...snapshot, messages: [], activities: [] };
+    else if (path.endsWith('/messages') && request.method() === 'GET') {
+      for (const message of snapshot.messages) store.put('message', message.id, message);
+      for (const activity of snapshot.activities) store.put('activity', activity.id, activity);
+      const query = new URL(request.url()).searchParams;
+      const before = query.get('before');
+      const after = query.get('after');
+      const ids = query.get('ids');
+      result = store.conversationPage(
+        path.split('/')[2],
+        ids ? { ids: ids.split(',') } : after ? { after } : { before: before ?? undefined },
+      );
+    } else if (path === '/events') {
       await route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
       return;
     } else if (path.endsWith('/scheduling'))

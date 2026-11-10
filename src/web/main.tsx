@@ -19,6 +19,7 @@ import { PMModelControl } from './pm-model-control.tsx';
 import { DeferredSettings } from './deferred-panels.tsx';
 import { ProjectActions } from './project-actions.tsx';
 import { ConversationFlow, TurnNavigator, useReadingAnchor } from './conversation.tsx';
+import { useConversation } from './use-conversation.ts';
 import { LocaleProvider, useLocale } from './locale/provider.tsx';
 import { Sidebar, isRunning } from './sidebar.tsx';
 import { ChatMessage, PendingReply } from './chat-message.tsx';
@@ -81,25 +82,13 @@ function App() {
       userScrollTimer.current = undefined;
     }, 250);
   }, []);
-  const scrollToLatest = useCallback(() => {
-    const element = scroll.current;
-    if (!element) return;
-    followingLatest.current = true;
-    setAtLatest(true);
-    element.scrollTop = element.scrollHeight;
-  }, []);
-  const trackConversationScroll = useCallback(() => {
-    const element = scroll.current;
-    if (!element || !userScrollIntent.current) return;
-    const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
-    followingLatest.current = atBottom;
-    setAtLatest(atBottom);
-  }, []);
   const stateRequest = useRef(0);
   const reload = useCallback(async (signal?: AbortSignal) => {
     const request = ++stateRequest.current;
-    const result = await api<Snapshot>('/state', undefined, 'GET', signal);
-    if (!signal?.aborted && request === stateRequest.current) setState(result);
+    const result = await api<Snapshot>('/state?messages=none', undefined, 'GET', signal);
+    if (!signal?.aborted && request === stateRequest.current) {
+      setState(result);
+    }
   }, []);
   useEffect(() => {
     let source: EventSource | undefined;
@@ -198,6 +187,34 @@ function App() {
   }
   const selected = route.projectId ?? localStorage.getItem('phantom.project') ?? '';
   const project = state?.projects.find((p) => p.id === selected) ?? state?.projects[0];
+  const history = useConversation(project?.id, state, followingLatest);
+  const messages = history.messages;
+  const activities = history.activities;
+  const scrollToLatest = useCallback(() => {
+    const finish = () => {
+      followingLatest.current = true;
+      setAtLatest(true);
+      requestAnimationFrame(() => {
+        if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
+      });
+    };
+    if (history.hasAfter)
+      void history.load('latest').then((loaded) => {
+        if (loaded) finish();
+      });
+    else finish();
+  }, [history.hasAfter, history.load]);
+  const trackConversationScroll = useCallback(() => {
+    const element = scroll.current;
+    if (!element || !userScrollIntent.current) return;
+    const remaining = element.scrollHeight - element.clientHeight - element.scrollTop;
+    const atBottom = remaining <= 64 && !history.hasAfter;
+    followingLatest.current = atBottom;
+    setAtLatest(atBottom);
+    if (history.failure || history.loading) return;
+    if (element.scrollTop < 200 && history.hasBefore) void history.load('before');
+    else if (remaining < 200 && history.hasAfter) void history.load('after');
+  }, [history.hasBefore, history.hasAfter, history.load, history.loading, history.failure]);
   // Every page names its project in the address, so links and the back button land in place.
   useEffect(() => {
     if (!project) return;
@@ -236,7 +253,7 @@ function App() {
   useEffect(() => {
     const element = scroll.current;
     if (followingLatest.current && element) element.scrollTop = element.scrollHeight;
-  }, [state?.messages.length, stream]);
+  }, [history.entries.at(-1)?.cursor, stream]);
   const projectAgent =
     project?.agentSelection?.mode === 'override'
       ? project.agentSelection.agent
@@ -251,10 +268,20 @@ function App() {
         : project?.profiles.pm;
   const repos = state?.repos.filter((r) => r.projectId === project?.id) ?? [];
   const tasks = state?.tasks.filter((t) => t.projectId === project?.id) ?? [];
-  const runs = state?.runs.filter((r) => r.projectId === project?.id) ?? [];
+  const runs = history.runs;
+  useEffect(() => {
+    const live = new Set([
+      ...runs.filter((run) => isRunning(run.status)).map((run) => run.id),
+      ...(state?.runs.filter((run) => isRunning(run.status)).map((run) => run.id) ?? []),
+    ]);
+    setStream((previous) => {
+      const entries = Object.entries(previous);
+      return entries.every(([runId]) => live.has(runId))
+        ? previous
+        : Object.fromEntries(entries.filter(([runId]) => live.has(runId)));
+    });
+  }, [runs, state?.runs]);
   const active = runs.filter((r) => isRunning(r.status));
-  const messages = state?.messages.filter((m) => m.projectId === project?.id) ?? [];
-  const activities = state?.activities?.filter((a) => a.projectId === project?.id) ?? [];
   const pmBusy = active.some((r) => r.role === 'pm');
   const team = useMemo(
     () => (state && project ? teamView(state, project.id) : undefined),
@@ -499,6 +526,27 @@ function App() {
                       }}
                     >
                       <div className="conversation-content" ref={conversationContent}>
+                        {(history.loading || history.failure || history.hasBefore) && (
+                          <div className="history-control">
+                            {history.failure ? (
+                              <button onClick={() => void history.retry()}>
+                                {t('chat.historyRetry')}
+                              </button>
+                            ) : history.loading ? (
+                              <span role="status">{t('connection.loading')}</span>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  followingLatest.current = false;
+                                  setAtLatest(false);
+                                  void history.load('before');
+                                }}
+                              >
+                                {t('chat.historyEarlier')}
+                              </button>
+                            )}
+                          </div>
+                        )}
                         <ProjectActions
                           key={`project-actions:${project.id}`}
                           onOpenTask={openTask}
@@ -506,31 +554,34 @@ function App() {
                           project={project}
                           reload={reload}
                         />
-                        {!messages.length && !activities.length && (
-                          <div className="chat-empty">
-                            <div className="pm-avatar">
-                              <Layers3 size={22} />
+                        {!history.loading &&
+                          !history.failure &&
+                          !messages.length &&
+                          !activities.length && (
+                            <div className="chat-empty">
+                              <div className="pm-avatar">
+                                <Layers3 size={22} />
+                              </div>
+                              <h2>{t('chat.emptyTitle')}</h2>
+                              <p>{t('chat.emptyDescription')}</p>
+                              <div className="suggestions">
+                                <button
+                                  onClick={() =>
+                                    composerRef.current?.setDraft(t('chat.requirementsDraft'))
+                                  }
+                                >
+                                  {t('chat.requirements')} <ArrowUpRight size={13} />
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    composerRef.current?.setDraft(t('chat.exploreDraft'))
+                                  }
+                                >
+                                  {t('chat.explore')} <ArrowUpRight size={13} />
+                                </button>
+                              </div>
                             </div>
-                            <h2>{t('chat.emptyTitle')}</h2>
-                            <p>{t('chat.emptyDescription')}</p>
-                            <div className="suggestions">
-                              <button
-                                onClick={() =>
-                                  composerRef.current?.setDraft(t('chat.requirementsDraft'))
-                                }
-                              >
-                                {t('chat.requirements')} <ArrowUpRight size={13} />
-                              </button>
-                              <button
-                                onClick={() =>
-                                  composerRef.current?.setDraft(t('chat.exploreDraft'))
-                                }
-                              >
-                                {t('chat.explore')} <ArrowUpRight size={13} />
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                          )}
                         <ConversationFlow
                           key={`conversation-flow:${project.id}`}
                           messages={messages}
@@ -538,6 +589,9 @@ function App() {
                           runs={runs}
                           disclosures={processDisclosures.current.items}
                           following={followingLatest}
+                          positions={
+                            new Map(history.entries.map((entry, index) => [entry.cursor, index]))
+                          }
                           roots={repos.map((repo) => repo.path)}
                           renderMessage={(m) => (
                             <ChatMessage
@@ -555,22 +609,25 @@ function App() {
                             />
                           )}
                         />
-                        {active
-                          .filter(
-                            (r) =>
-                              r.role === 'pm' &&
-                              !messages.some(
-                                (message) => message.role === 'assistant' && message.runId === r.id,
-                              ),
-                          )
-                          .map((r) => (
-                            <PendingReply
-                              key={r.id}
-                              run={r}
-                              activities={activities}
-                              streamText={stream[r.id]}
-                            />
-                          ))}
+                        {!history.hasAfter &&
+                          active
+                            .filter(
+                              (r) =>
+                                r.role === 'pm' &&
+                                !messages.some(
+                                  (message) =>
+                                    message.role === 'assistant' && message.runId === r.id,
+                                ),
+                            )
+                            .slice(0, Math.max(0, 150 - messages.length))
+                            .map((r) => (
+                              <PendingReply
+                                key={r.id}
+                                run={r}
+                                activities={activities}
+                                streamText={stream[r.id]}
+                              />
+                            ))}
                       </div>
                     </div>
                     <TurnNavigator
@@ -583,7 +640,7 @@ function App() {
                         setAtLatest(false);
                       }}
                     />
-                    {!atLatest && (
+                    {(!atLatest || history.hasAfter) && (
                       <button className="latest-message" onClick={scrollToLatest}>
                         <ChevronDown size={15} />
                         {t('chat.backToLatest')}

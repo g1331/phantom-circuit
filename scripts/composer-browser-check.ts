@@ -54,7 +54,7 @@ export async function checkComposerLayout(page: Page, artifacts: string, state: 
   await page.setViewportSize(viewport);
 }
 
-export async function checkTyping(page: Page) {
+export async function checkTyping(page: Page, scenario = '50 turns') {
   const input = page.locator('.composer textarea');
   await input.fill('');
   await input.focus();
@@ -75,7 +75,8 @@ export async function checkTyping(page: Page) {
   assert.equal(await input.inputValue(), 'Typing performance test');
   const p95 = timings[Math.floor(timings.length * 0.95)];
   console.log(
-    `PM typing (50 turns): median=${timings[Math.floor(timings.length / 2)].toFixed(1)}ms p95=${p95.toFixed(1)}ms`,
+    `PM typing (${scenario}): median=${timings[Math.floor(timings.length / 2)].toFixed(1)}ms ` +
+      `p95=${p95.toFixed(1)}ms`,
   );
   assert.ok(p95 < 100, `PM input-to-frame p95 exceeded 100ms: ${p95.toFixed(1)}ms`);
   await input.fill('');
@@ -123,9 +124,10 @@ export async function checkComposer(page: Page, store: Store, projectId: string,
     'IME composition must not submit',
   );
 
-  await page.route('**/api/projects/*/messages', (route) =>
-    route.fulfill({ status: 503, json: { error: 'Fixture upload failed' } }),
-  );
+  await page.route('**/api/projects/*/messages', (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    return route.fulfill({ status: 503, json: { error: 'Fixture upload failed' } });
+  });
   await send.click();
   await page.getByText('Fixture upload failed', { exact: true }).waitFor();
   assert.equal(await input.inputValue(), '普通粘贴文本');

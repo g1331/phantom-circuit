@@ -26,6 +26,8 @@ import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
   InstructionSuggestion,
+  ConversationPage,
+  ConversationQuery,
   TeamInstructionSections,
   TeamInstructionsVersion,
   AccountAllowance,
@@ -246,7 +248,12 @@ export class Store {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS conversation_timeline ON documents (
+        json_extract(body, '$.projectId'),
+        COALESCE(json_extract(body, '$.createdAt'), json_extract(body, '$.startedAt')),
+        COALESCE(json_extract(body, '$.timelineOrder'), 0)
+      ) WHERE kind IN ('message', 'activity');`);
     this.transaction(() => {
       if (!this.db.prepare("SELECT value FROM meta WHERE key='priority-contract-v1'").get()) {
         // Legacy claimNext used list('task') ORDER BY rowid for exact ties.
@@ -1317,17 +1324,84 @@ export class Store {
         ['open', 'cancelled'].includes(clarification.status),
     );
   }
-  snapshot(): Snapshot {
+  conversationPage(projectId: string, query: ConversationQuery = {}): ConversationPage {
+    this.project(projectId);
+    // Cursor subqueries must share the index without materializing every historical body.
+    const timeline = `WITH timeline AS NOT MATERIALIZED (
+      SELECT kind, id, body, rowid AS position,
+        COALESCE(json_extract(body, '$.createdAt'), json_extract(body, '$.startedAt')) AS at,
+        COALESCE(json_extract(body, '$.timelineOrder'), 0) AS ordinal
+      FROM documents WHERE kind IN ('message', 'activity')
+        AND json_extract(body, '$.projectId') = ?
+    )`;
+    const cursor = query.before ?? query.after;
+    if (query.ids && query.ids.length > 50) throw new Fault('每批最多读取 50 项', 400);
+    const requested = query.ids ?? (cursor ? [cursor] : []);
+    if (
+      requested.length &&
+      this.db
+        .prepare(
+          `SELECT 1 FROM documents
+      WHERE kind IN ('message', 'activity') AND id IN (${requested.map(() => '?').join(',')})
+        AND json_extract(body, '$.projectId') <> ? LIMIT 1`,
+        )
+        .get(...requested, projectId)
+    )
+      throw new Fault('跨项目操作被拒绝', 403);
+    if (
+      cursor &&
+      !this.db.prepare(`${timeline} SELECT id FROM timeline WHERE id = ?`).get(projectId, cursor)
+    )
+      throw new Fault('聊天游标无效', 400);
+    const relation = query.before ? '<' : '>';
+    const condition = query.ids
+      ? `WHERE id IN (${query.ids.map(() => '?').join(',') || 'NULL'})`
+      : cursor
+        ? `WHERE (at, ordinal, position) ${relation}
+          (SELECT at, ordinal, position FROM timeline WHERE id = ?)`
+        : '';
+    const direction = query.after || query.ids ? 'ASC' : 'DESC';
+    const rows = this.db
+      .prepare(
+        `${timeline} SELECT kind, id, body FROM timeline
+      ${condition} ORDER BY at ${direction}, ordinal ${direction}, position ${direction}
+      LIMIT 50`,
+      )
+      .all(projectId, ...(query.ids ?? (cursor ? [cursor] : []))) as {
+      kind: 'message' | 'activity';
+      id: string;
+      body: string;
+    }[];
+    if (direction === 'DESC') rows.reverse();
+    const exists = (id: string | undefined, comparison: '<' | '>') =>
+      !!id &&
+      !!this.db
+        .prepare(
+          `${timeline} SELECT 1 FROM timeline WHERE (at, ordinal, position) ${comparison}
+        (SELECT at, ordinal, position FROM timeline WHERE id = ?) LIMIT 1`,
+        )
+        .get(projectId, id);
+    return {
+      entries: rows.map((row) =>
+        row.kind === 'message'
+          ? { kind: 'message', cursor: row.id, value: JSON.parse(row.body) as Message }
+          : { kind: 'activity', cursor: row.id, value: JSON.parse(row.body) as PMActivity },
+      ),
+      hasBefore: exists(rows[0]?.id, '<'),
+      hasAfter: exists(rows.at(-1)?.id, '>'),
+    };
+  }
+  snapshot(options?: { conversation: 'bounded' }): Snapshot {
     return {
       teamInstructions: this.list('teamInstructions'),
       suggestions: this.list('suggestion'),
-      activities: this.list('activity'),
+      activities: options ? [] : this.list('activity'),
       providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),
       runs: this.list('run'),
-      messages: this.list('message'),
+      messages: options ? [] : this.list('message'),
       events: this.events(),
       settings: this.settings(),
       documents: this.list('document'),

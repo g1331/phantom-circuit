@@ -112,6 +112,7 @@ export async function checkWorkspace() {
     page.on('pageerror', (error) => errors.push(error.message));
     let messages = 0;
     await page.route('**/api/projects/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
       messages++;
       await route.fulfill({ json: {} });
     });

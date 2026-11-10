@@ -30,6 +30,7 @@ import { checkRuntimeUI } from './runtime-browser-check.ts';
 import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
 import { checkReconnect } from './browser-reconnect.ts';
+import { checkHistory } from './browser-history.ts';
 import {
   backToWork,
   clickInSidebar,
@@ -128,10 +129,11 @@ try {
   throw error;
 }
 const errors: string[] = [];
+const recordPageError = (error: Error) => errors.push(error.message);
 // Windows normalizes line endings in its native clipboard; the source text is unchanged.
 const readClipboard = async () =>
   (await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n');
-page.on('pageerror', (e) => errors.push(e.message));
+page.on('pageerror', recordPageError);
 try {
   await page.goto(origin);
   await page.getByText('从一个项目开始。').waitFor();
@@ -355,6 +357,7 @@ try {
     releaseUpload = resolve;
   });
   await page.route('**/api/projects/*/messages', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
     uploads++;
     await uploadGate;
     await route.continue();
@@ -436,6 +439,7 @@ try {
     assert.equal(await page.locator('.image-drafts img').count(), 1, 'IME keeps the draft');
     const modelBefore = await page.locator('.pm-model-trigger').getAttribute('title');
     await page.route('**/api/projects/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
       assert.equal(await queue.isDisabled(), true, 'queue is disabled during submission');
       assert.equal(await steer.isDisabled(), true, 'adjust is disabled during submission');
       await route.fulfill({ status: 503, json: { error: 'Fixture delivery failed' } });
@@ -490,6 +494,7 @@ try {
     await page.locator('.image-drafts img').waitFor();
     let endedBeforeSteer = false;
     await page.route('**/api/projects/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
       store.finishRun(deliveryRun.id, 'completed');
       endedBeforeSteer = true;
       await route.continue();
@@ -669,9 +674,42 @@ try {
     );
   await page.getByText(/滚动阅读历史 8：/).waitFor();
   const conversation = page.locator('.conversation');
-  await conversation.focus();
-  await conversation.press('Home');
-  await page.waitForFunction(() => (document.querySelector('.conversation')?.scrollTop ?? 1) <= 1);
+  async function readBeginning() {
+    // This short fixture tests the absolute beginning after resolving its paged history.
+    for (let batch = 0; batch < 4; batch++) {
+      const earlier = page.getByRole('button', { name: '加载更早消息', exact: true });
+      if (!(await earlier.count())) break;
+      const loaded = page.waitForResponse((response) =>
+        response.url().includes('/messages?before='),
+      );
+      await earlier.click();
+      await loaded;
+      await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
+    }
+    await conversation.focus();
+    await conversation.press('Home');
+    await page.waitForFunction(
+      () => (document.querySelector('.conversation')?.scrollTop ?? 1) <= 1,
+    );
+  }
+  await readBeginning();
+  const readingAnchor = await conversation.evaluate((element) => {
+    const top = element.getBoundingClientRect().top;
+    const node = [...element.querySelectorAll<HTMLElement>('.message[id], .pm-process[id]')].find(
+      (node) => node.getBoundingClientRect().bottom > top,
+    )!;
+    return { id: node.id, offset: node.getBoundingClientRect().top - top };
+  });
+  const assertReadingAnchor = () =>
+    page.waitForFunction(({ id, offset }) => {
+      const node = document.getElementById(id);
+      const region = document.querySelector('.conversation');
+      return (
+        !!node &&
+        !!region &&
+        Math.abs(node.getBoundingClientRect().top - region.getBoundingClientRect().top - offset) < 3
+      );
+    }, readingAnchor);
   await page.getByRole('button', { name: '回到最新消息', exact: true }).waitFor();
   const readingRun = store.run('pm', project.id, 'pm');
   store.activity(readingRun, 'reader-command', {
@@ -684,7 +722,7 @@ try {
   await readingProcess.locator(':scope > summary').waitFor();
   store.addMessage(project.id, 'assistant', '阅读期间出现的新消息');
   await page.getByText('阅读期间出现的新消息', { exact: true }).waitFor();
-  assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
+  await assertReadingAnchor();
   assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
   await page.screenshot({ path: resolve(artifacts, 'chat-reading-unread.png') });
   store.finishRun(readingRun.id, 'completed');
@@ -695,7 +733,7 @@ try {
         ?.getAttribute('data-status') === 'completed',
     readingRun.id,
   );
-  assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
+  await assertReadingAnchor();
   assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
   await page.getByRole('button', { name: '回到最新消息', exact: true }).click();
   await page.waitForFunction(() => {
@@ -737,15 +775,12 @@ try {
   const originalReadingChat = engine.chat.bind(engine);
   engine.chat = async () => 'fixture intercepted';
   try {
-    await conversation.focus();
-    await conversation.press('Home');
-    await page.waitForFunction(
-      () => (document.querySelector('.conversation')?.scrollTop ?? 1) <= 1,
-    );
+    await readBeginning();
     await page.getByRole('button', { name: '回到最新消息', exact: true }).waitFor();
-    await page.route('**/api/projects/*/messages', (route) =>
-      route.fulfill({ status: 503, json: { error: 'Browser fixture: send failure' } }),
-    );
+    await page.route('**/api/projects/*/messages', (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      return route.fulfill({ status: 503, json: { error: 'Browser fixture: send failure' } });
+    });
     await page.getByLabel('给 PM 的消息').fill('失败发送保留阅读位置');
     await page.getByRole('button', { name: '排队发送', exact: true }).click();
     await page.getByRole('alert').waitFor();
@@ -1292,6 +1327,18 @@ try {
   await checkTeamInstructions();
   await checkRepoConventions();
   await checkReconnect();
+  const historyPage = await browser.newPage({
+    locale: 'zh-CN',
+    viewport: { width: 1280, height: 900 },
+    reducedMotion: 'reduce',
+  });
+  historyPage.on('pageerror', recordPageError);
+  try {
+    await historyPage.goto(origin);
+    await checkHistory(historyPage, store, artifacts);
+  } finally {
+    await historyPage.close();
+  }
   assert.deepEqual(errors, []);
   console.log(
     'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, page links and phone drawer, work grouped by attention with search, task pages with delivery receipts and back navigation, project page with claim order and run log, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',

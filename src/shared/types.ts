@@ -604,6 +604,19 @@ export interface Operation {
    */
   reconciliation?: Reconciliation;
 }
+export type ConversationEntry = { cursor: string } & (
+  { kind: 'message'; value: Message } | { kind: 'activity'; value: PMActivity }
+);
+export interface ConversationPage {
+  entries: ConversationEntry[];
+  hasBefore: boolean;
+  hasAfter: boolean;
+}
+export type ConversationQuery =
+  | { before?: string; after?: never; ids?: never }
+  | { after: string; before?: never; ids?: never }
+  | { ids: string[]; before?: never; after?: never };
+
 export interface Snapshot {
   teamInstructions?: TeamInstructionsVersion[];
   suggestions?: InstructionSuggestion[];

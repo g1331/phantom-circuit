@@ -280,9 +280,34 @@ export function createApp(
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return store.setTaskPriority(id, req.body, { actor: 'user' });
   });
-  app.get('/api/state', async () => {
+  app.get('/api/state', async (req) => {
     await agentSettingsReady;
-    return store.snapshot();
+    const { messages } = z.object({ messages: z.literal('none').optional() }).parse(req.query);
+    return store.snapshot(messages ? { conversation: 'bounded' } : undefined);
+  });
+  app.get('/api/projects/:id/messages', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const query = z
+      .object({
+        before: z.string().min(1).optional(),
+        after: z.string().min(1).optional(),
+        ids: z
+          .string()
+          .transform((value) => value.split(','))
+          .pipe(z.array(z.string().min(1)).min(1).max(50))
+          .optional(),
+      })
+      .strict()
+      .refine((value) => [value.before, value.after, value.ids].filter(Boolean).length <= 1)
+      .parse(req.query);
+    return store.conversationPage(
+      id,
+      query.ids
+        ? { ids: query.ids }
+        : query.after
+          ? { after: query.after }
+          : { before: query.before },
+    );
   });
   const providerId = (params: unknown) => z.object({ id: z.string() }).parse(params).id;
   app.get('/api/providers', async () => providers.list());
