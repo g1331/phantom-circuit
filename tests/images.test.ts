@@ -216,6 +216,7 @@ test('PM sends the same managed images on first turn and retry in the same threa
     override async start() {}
     override async stop() {}
     override async request(method: string, params: any) {
+      if (method === 'config/read') return { config: { mcp_servers: {} } };
       if (method === 'model/list')
         return {
           data: [{ model: 'fixture', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }],

@@ -112,8 +112,12 @@ export const runtimeEn = {
   'delivery.sendQueue': 'Queue message',
   'delivery.sendSteer': 'Adjust now',
   'delivery.steerFallback':
-    'If steering is unavailable, the message will queue; unconfirmed delivery remains pending review.',
+    'Adjustments wait until PM is ready. After the current reply ends, adjustments queue. ' +
+    'Unconfirmed receipt awaits review.',
   'delivery.queued': 'Queued',
+  'delivery.adjusting': 'Adjusting',
+  'delivery.steerUncertain': 'Receipt unconfirmed',
+  'delivery.steerEnded': 'No current reply could receive this adjustment; it is queued.',
   'delivery.running': 'Processing',
   'delivery.completed': 'Completed',
   'delivery.failed': 'Delivery failed',
@@ -264,7 +268,11 @@ export const runtimeZh: { [K in keyof typeof runtimeEn]: string } = {
   'delivery.queued': '已排队',
   'delivery.sendQueue': '排队发送',
   'delivery.sendSteer': '立即调整',
-  'delivery.steerFallback': '当前 Run 不可引导时将排队；未确认的投递仍待核对。',
+  'delivery.steerFallback':
+    '准备期间的调整会接入当前回复；当前回复结束后会排队处理；接收结果未确认时等待核对。',
+  'delivery.adjusting': '调整中',
+  'delivery.steerUncertain': '待核对',
+  'delivery.steerEnded': '当前没有可接收调整的回复，这条消息已排队处理。',
   'delivery.running': '处理中',
   'delivery.completed': '已完成',
   'delivery.failed': '投递失败',

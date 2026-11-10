@@ -1700,6 +1700,22 @@ export class Store {
       sourceIntent: message.intent,
       clientUserMessageId: message.id,
     });
+    for (const item of this.list('recovery')) {
+      if (
+        item.oldRunId !== run.id ||
+        item.incidentId ||
+        item.successorRunId ||
+        !['pending', 'recoverable'].includes(item.status)
+      )
+        continue;
+      this.put('recovery', item.id, {
+        ...item,
+        sourceMessageId: message.id,
+        messageId: message.id,
+        recoveryPrompt: message.content,
+        updatedAt: now(),
+      });
+    }
     if (run.taskId) {
       const task = this.get('task', run.taskId);
       if (task)
@@ -1720,7 +1736,7 @@ export class Store {
         throw new Fault('Steer 来源消息不属于当前 Run', 403);
       const key = `steer:${runId}:${messageId}`;
       const existing = this.get('operation', key);
-      if (existing) return structuredClone(existing);
+      if (existing) return { operation: structuredClone(existing), created: false };
       if (!run.threadId) throw new Fault('当前 PM Run 尚未建立会话', 409);
       const operation: Operation = {
         id: key,
@@ -1739,7 +1755,7 @@ export class Store {
         runId,
         sourceMessageId: messageId,
       });
-      return structuredClone(operation);
+      return { operation: structuredClone(operation), created: true };
     });
   }
   finishSteer(
@@ -1771,6 +1787,8 @@ export class Store {
                   deliveryMode: 'queue' as const,
                   status: 'queued' as const,
                   draftStatus: 'queued' as const,
+                  runId: undefined,
+                  sourceMessageId: undefined,
                 }
               : {
                   status: status === 'done' ? ('completed' as const) : ('failed' as const),
@@ -1783,7 +1801,9 @@ export class Store {
                     detail: redact(error ?? 'Steer 结果未知'),
                   },
                 }
-              : {}),
+              : status === 'done'
+                ? { descriptor: undefined }
+                : {}),
           });
       }
       return structuredClone(next);
@@ -2740,6 +2760,9 @@ export class Store {
         ...item,
         status: 'resumed',
         successorRunId: run.id,
+        ...(options.sourceMessageId
+          ? { sourceMessageId: options.sourceMessageId, messageId: options.sourceMessageId }
+          : {}),
         ...(options.reviewAxis ? { reviewAxis: options.reviewAxis } : {}),
         ...(options.incidentId ? { incidentId: options.incidentId } : {}),
         ...(options.recoveryPrompt ? { recoveryPrompt: options.recoveryPrompt } : {}),
@@ -2778,8 +2801,33 @@ export class Store {
           status: 'uncertain',
           error: operation.error ?? '服务重启时 Steer 结果未知，必须先核对后重试',
         });
+    const steers = this.list('operation').filter((operation) => operation.kind === 'steer');
     for (const m of this.list('message'))
       if (m.role === 'user' && m.status === 'running') {
+        const operation = steers.find((op) => op.clientUserMessageId === m.id);
+        if (operation && ['pending', 'uncertain'].includes(operation.status)) {
+          this.updateMessage(m.id, {
+            status: 'failed',
+            draftStatus: 'failed',
+            descriptor: { code: 'steer_uncertain', detail: '调整结果待核对' },
+          });
+          continue;
+        }
+        if (
+          m.deliveryMode === 'steer' &&
+          m.descriptor?.code === 'steer_waiting' &&
+          m.runId &&
+          !operation
+        ) {
+          this.updateMessage(m.id, {
+            status: 'queued',
+            draftStatus: 'queued',
+            runId: undefined,
+            sourceMessageId: undefined,
+            descriptor: { code: 'steer_recovering', detail: '重启前调整尚未发送，等待继续处理' },
+          });
+          continue;
+        }
         // Automatic recovery resumes this message's PM Run and settles the message itself.
         const resumes =
           (this.project(m.projectId).recoveryPolicy ?? 'automatic') === 'automatic' &&

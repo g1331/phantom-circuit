@@ -52,10 +52,12 @@ test('PM startup failures expose bounded, redacted trailing stderr in the public
   }
 });
 
-test('Codex starts without inherited MCP connections when plugins disappear under isolation', async () => {
+test('native thread entries refresh MCP isolation without a list CLI', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-codex-discovery-'));
   const entry = join(root, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
   const marker = join(root, 'external-mcp-started');
+  const fixtureConfig = join(root, 'merged-config.json');
+  const cliCalls = join(root, 'cli-calls.jsonl');
   const path = process.env.PATH;
   const codex = new Codex();
   await mkdir(join(root, 'node_modules', '@openai', 'codex', 'bin'), { recursive: true });
@@ -68,6 +70,7 @@ test('Codex starts without inherited MCP connections when plugins disappear unde
         const [key, ...value] = args[++i].split('=');
         config.set(key, value.join('='));
       }
+    fs.appendFileSync(${JSON.stringify(cliCalls)}, JSON.stringify(args) + '\\n');
     const plugins = config.get('features.plugins') !== 'false';
     if (args.includes('--version')) {
       console.log('codex-cli fixture');
@@ -80,17 +83,39 @@ test('Codex starts without inherited MCP connections when plugins disappear unde
       console.error('Error: invalid transport in mcp_servers.fixture-plugin');
       process.exitCode = 1;
     } else {
-      if (config.get('mcp_servers.fixture-external.enabled') !== 'false' ||
-          (plugins && config.get('mcp_servers.fixture-plugin.enabled') !== 'false'))
-        fs.writeFileSync(${JSON.stringify(marker)}, 'external MCP started');
+      const calls = [];
       require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
         const message = JSON.parse(line);
-        if (message.id !== undefined)
-          console.log(JSON.stringify({ id: message.id, result: {} }));
+        if (message.id === undefined) return;
+        calls.push(message);
+        const { method, params } = message;
+        let result = {};
+        if (method === 'config/read') {
+          const value = JSON.parse(fs.readFileSync(${JSON.stringify(fixtureConfig)}, 'utf8'));
+          if (value?.error) {
+            console.log(JSON.stringify({ id: message.id, error: { message: value.error } }));
+            return;
+          }
+          result = value;
+        }
+        if (['thread/start', 'thread/resume', 'thread/fork'].includes(method)) {
+          const value = JSON.parse(fs.readFileSync(${JSON.stringify(fixtureConfig)}, 'utf8'));
+          for (const name of Object.keys(value.config?.mcp_servers ?? {}))
+            if (params.config['mcp_servers.' + name + '.enabled'] !== false)
+              fs.writeFileSync(${JSON.stringify(marker)}, 'external MCP started');
+          result = { thread: { id: 'fixture-thread' }, model: params.model,
+            modelProvider: params.modelProvider,
+            reasoningEffort: params.config.model_reasoning_effort };
+        }
+        if (method === 'thread/goal/get') result = { goal: null };
+        if (method === 'thread/goal/clear') result = { cleared: true };
+        if (method === 'fixture/read') result = { calls };
+        console.log(JSON.stringify({ id: message.id, result }));
       });
     }
   `;
   try {
+    await writeFile(fixtureConfig, JSON.stringify({ config: { mcp_servers: {} } }));
     await writeFile(entry, script);
     if (process.platform === 'win32') {
       await writeFile(join(root, 'codex.cmd'), '@echo off\r\n');
@@ -99,8 +124,101 @@ test('Codex starts without inherited MCP connections when plugins disappear unde
       await chmod(join(root, 'codex'), 0o755);
     }
     process.env.PATH = `${root}${delimiter}${path ?? ''}`;
-    await codex.start();
+    await codex.start({ id: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'private-api-key' });
+    const launches = (await readFile(cliCalls, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.ok(!launches.some((args: string[]) => args.includes('list')));
+    assert.ok(launches.some((args: string[]) => args.includes('features.plugins=false')));
+    const options = {
+      cwd: root,
+      instructions: '',
+      writable: false,
+      profile: { model: 'fixture-model', effort: 'low' },
+    };
+    const enter = [
+      () => codex.thread(options),
+      () => codex.thread({ ...options, cwd: join(root, 'resume'), threadId: 'source' }),
+      () =>
+        codex.forkReadOnlyThread({
+          ...options,
+          cwd: join(root, 'fork'),
+          sourceThreadId: 'source',
+          dataDir: root,
+        }),
+    ];
+    for (const [index, entry] of enter.entries()) {
+      const servers = Object.fromEntries(
+        [
+          '__proto__',
+          'constructor',
+          'prototype',
+          'user-server',
+          ...Array.from({ length: index + 1 }, (_, i) => `project-${i}`),
+        ].map((name) => [name, { command: 'canary', env: { PRIVATE: 'not-for-errors' } }]),
+      );
+      assert.ok(Object.hasOwn(servers, '__proto__'));
+      await writeFile(fixtureConfig, JSON.stringify({ config: { mcp_servers: servers } }));
+      assert.equal(await entry(), 'fixture-thread');
+    }
+    const { calls } = await codex.request('fixture/read');
+    const entries = calls.filter((m: { method: string }) =>
+      ['config/read', 'thread/start', 'thread/resume', 'thread/fork'].includes(m.method),
+    );
+    assert.deepEqual(
+      entries.map((m: { method: string }) => m.method),
+      ['config/read', 'thread/start', 'config/read', 'thread/resume', 'config/read', 'thread/fork'],
+    );
+    for (let i = 0; i < 3; i++) {
+      const read = entries[i * 2];
+      const thread = entries[i * 2 + 1];
+      assert.deepEqual(read.params, { cwd: thread.params.cwd, includeLayers: false });
+      assert.equal(thread.params.cwd, i === 0 ? root : join(root, i === 1 ? 'resume' : 'fork'));
+      assert.deepEqual(thread.params.config, {
+        model_reasoning_effort: 'low',
+        'features.multi_agent': false,
+        'mcp_servers.__proto__.enabled': false,
+        'mcp_servers.constructor.enabled': false,
+        'mcp_servers.prototype.enabled': false,
+        'mcp_servers.user-server.enabled': false,
+        ...Object.fromEntries(
+          Array.from({ length: i + 1 }, (_, n) => [`mcp_servers.project-${n}.enabled`, false]),
+        ),
+      });
+    }
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
+    for (const value of [
+      { error: 'private-config-failure' },
+      null,
+      {},
+      { config: null },
+      { config: { mcp_servers: [] } },
+      { config: { mcp_servers: 'invalid' } },
+      { config: { mcp_servers: { 'unsafe.name': {} } } },
+    ]) {
+      await writeFile(fixtureConfig, JSON.stringify(value));
+      for (const entry of enter)
+        await assert.rejects(entry(), /无法读取 Codex MCP 配置|无法隔离 Codex MCP 服务器/);
+    }
+    const failed = (await codex.request('fixture/read')).calls;
+    assert.equal(
+      failed.filter((m: { method: string }) =>
+        ['thread/start', 'thread/resume', 'thread/fork'].includes(m.method),
+      ).length,
+      3,
+      'failed discovery must not send any thread RPC or reuse a prior snapshot',
+    );
+    await writeFile(fixtureConfig, JSON.stringify({ config: {} }));
+    assert.equal(await enter[0](), 'fixture-thread', 'an absent MCP table is empty');
+    assert.deepEqual(
+      (await readFile(cliCalls, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line)),
+      launches,
+      'thread preparation must not launch another CLI',
+    );
   } finally {
     await codex.stop();
     if (path === undefined) delete process.env.PATH;

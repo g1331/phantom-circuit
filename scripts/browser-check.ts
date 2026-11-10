@@ -3,6 +3,7 @@ import { chromium, type Page } from 'playwright';
 import { checkComposer, checkComposerLayout, checkPMModels } from './composer-browser-check.ts';
 import { checkPriority } from './browser-priority.ts';
 import { checkOwnerConversation } from './browser-owner.ts';
+import { checkPMSteering } from './browser-pm-steering.ts';
 import { checkTeamInstructions } from './browser-team-instructions.ts';
 import { checkRepoConventions } from './browser-repo-conventions.ts';
 import { checkWorkspace } from './browser-workspace.ts';
@@ -403,7 +404,17 @@ try {
   await page.screenshot({ path: resolve(artifacts, '07-images-desktop.png'), fullPage: true });
   await checkComposer(page, store, project.id, imageFile.buffer);
   const originalChat = engine.chat.bind(engine);
-  engine.chat = async () => 'fixture intercepted';
+  const deliveryRequests: Parameters<typeof engine.chat>[0][] = [];
+  // This composer fixture holds delivery; checkPMSteering covers the actual Engine lifecycle.
+  engine.chat = async (message) => {
+    deliveryRequests.push(message);
+    if (message.deliveryMode === 'steer')
+      store.updateMessage(message.id, {
+        deliveryMode: 'queue',
+        descriptor: { code: 'steer_queued' },
+      });
+    return 'fixture intercepted';
+  };
   try {
     for (const run of store.activeRuns()) {
       if (run.projectId === project.id && run.role === 'pm') store.finishRun(run.id, 'completed');
@@ -508,7 +519,11 @@ try {
       .list('message')
       .find((message) => message.content === '运行结束时的引导图片');
     assert.ok(steeredImage);
-    assert.equal(steeredImage.deliveryMode, 'steer');
+    assert.equal(
+      deliveryRequests.find((message) => message.id === steeredImage.id)?.deliveryMode,
+      'steer',
+    );
+    assert.equal(steeredImage.deliveryMode, 'queue');
     assert.equal(steeredImage.status, 'queued');
     assert.equal(steeredImage.intent, 'feedback');
     assert.equal(steeredImage.attachments?.length, 1);
@@ -1327,6 +1342,11 @@ try {
   await checkTeamInstructions();
   await checkRepoConventions();
   await checkReconnect();
+  await checkPMSteering(
+    browser,
+    'C:/Users/admin/AppData/Local/Temp/opencode/pm-steer-browser',
+    await freePort(),
+  );
   const historyPage = await browser.newPage({
     locale: 'zh-CN',
     viewport: { width: 1280, height: 900 },
