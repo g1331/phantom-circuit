@@ -21,6 +21,16 @@ The product is now built from addressable pages. Hash routes make every page lin
 
 On a phone the same pages sit behind a bottom bar: conversation, brief, work and team. The brief and the receipts are designed for 390 px first.
 
+The liaison conversation reads message and activity entries in stable pages of at most 50.
+The client retains at most 150 entries and mounts at most 150 message components. Scrolling
+restores discarded records from the host without changing the stored history or model context.
+The turn directory describes the loaded window. Background state reads omit conversation
+bodies. Earlier-page failures retain the current window and draft for an inline retry.
+
+Project-level questions appear in the Work page's needs-you group even before a task exists.
+The Work and brief links address the question's conversation form and focus that form when
+opened, so a long conversation does not hide the requested answer above its latest messages.
+
 Delivery previews are result links beside completed work. Everyday pages and repository
 settings omit environment start, stop, port and process controls. Removing these controls
 leaves existing services, commands and configuration intact; the team's existing preview

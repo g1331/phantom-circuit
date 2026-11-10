@@ -220,7 +220,89 @@ export async function checkClientAttention({
   await page.getByRole('button', { name: 'Resume task', exact: true }).click();
   assert.equal((await resumed).ok(), true);
   assert.equal(store.task(paused.id).control, 'active');
+  await checkProjectQuestion(page, store, artifacts);
   console.log('Client attention: synthetic question/internal hold/user pause matrix passed.');
+}
+
+async function checkProjectQuestion(page: Page, store: Store, artifacts: string) {
+  const project = store.createProject('Project question', 'A decision before tasks exist');
+  const source = store.addMessage(project.id, 'user', 'Choose the audience', 'discuss');
+  for (let index = 0; index < 80; index++)
+    store.addMessage(project.id, 'assistant', `Earlier discussion ${index}`);
+  const question = store.createClarification({
+    projectId: project.id,
+    sourceMessageId: source.id,
+    sourceIntent: 'discuss',
+    questions: [{ id: 'audience', question: 'Which audience starts first?' }],
+  });
+  const original = store.list('message').filter((message) => message.projectId === project.id);
+  const origin = new URL(page.url()).origin;
+  await page.goto(`${origin}/?project-question-fixture=1#/p/${project.id}/work`);
+  for (const locale of ['zh-CN', 'en'] as const) {
+    await choosePreference(page, 'language', locale);
+    const copy = locale === 'en' ? pagesEn : pagesZh;
+    for (const theme of ['light', 'dark'] as const) {
+      await choosePreference(page, 'theme', theme);
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+        await openPage(page, 'work');
+        const entry = page.locator('.group-needs_you .work-row');
+        await entry
+          .getByText('Which audience starts first?', { exact: true })
+          .waitFor()
+          .catch(async (error: unknown) => {
+            console.error({
+              url: page.url(),
+              work: await page.locator('.work-page').textContent(),
+              question: store.get('clarification', question.id),
+            });
+            await page.screenshot({ path: resolve(artifacts, 'project-question-failure.png') });
+            throw error;
+          });
+        assert.equal(await entry.count(), 1);
+        const search = page.getByLabel(copy['work.search'], { exact: true });
+        await search.fill('no matching question');
+        assert.equal(await entry.count(), 0);
+        await search.fill('');
+        await page.screenshot({
+          path: resolve(artifacts, `project-question-work-${width}-${locale}-${theme}.png`),
+        });
+        await entry.click();
+        const assertFocused = () =>
+          page.waitForFunction(
+            (id) => document.activeElement?.id === `project-request-${id}`,
+            question.id,
+          );
+        await assertFocused();
+        await page.screenshot({
+          path: resolve(artifacts, `project-question-home-${width}-${locale}-${theme}.png`),
+        });
+        await page.goto(`${origin}/#/p/${project.id}/brief`);
+        await page.locator('.brief-page .brief-request .brief-link').waitFor();
+        await page.screenshot({
+          path: resolve(artifacts, `project-question-brief-${width}-${locale}-${theme}.png`),
+        });
+        await page.locator('.brief-page .brief-request .brief-link').click();
+        await assertFocused();
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+      }
+    }
+  }
+  const card = page.locator(`#project-request-${question.id}`);
+  await card.locator('textarea').fill('Internal testers');
+  const answered = page.waitForResponse((response) =>
+    response.url().endsWith(`/clarifications/${question.id}/answer`),
+  );
+  await card.locator('.primary-button').click();
+  assert.equal((await answered).ok(), true);
+  assert.equal(store.get('clarification', question.id)?.status, 'answered');
+  await openPage(page, 'work');
+  assert.equal(await page.locator('.group-needs_you').count(), 0);
+  for (const message of original)
+    assert.equal(store.get('message', message.id)?.content, message.content);
 }
 
 export async function checkAttentionBrowser() {

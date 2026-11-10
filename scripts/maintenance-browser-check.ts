@@ -368,7 +368,8 @@ export async function checkMaintenance() {
     await openPage(page, 'home');
     let currentIncidents = 0;
     const openTechnicalActions = async () => {
-      const summary = page.locator('.project-actions > details > summary')
+      const summary = page
+        .locator('.project-actions > details > summary')
         .filter({ hasText: 'Technical records' });
       await summary.waitFor();
       if (!(await summary.evaluate((node) => (node.parentElement as HTMLDetailsElement).open)))

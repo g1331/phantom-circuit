@@ -108,7 +108,12 @@ export function Brief({
                     {t('team.open')} <ArrowRight size={12} />
                   </a>
                 ) : (
-                  <span className="brief-hint">{t('brief.inConversation')}</span>
+                  <a
+                    className="brief-link"
+                    href={routeHref({ page: 'home', projectId: project.id, view: request.id })}
+                  >
+                    {t('brief.inConversation')} <ArrowRight size={12} />
+                  </a>
                 )}
               </li>
             ))}

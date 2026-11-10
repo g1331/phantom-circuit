@@ -32,6 +32,11 @@ export function ProjectActions({
     ) ?? [];
   const clarifications =
     state.clarifications?.filter((item) => item.projectId === project.id) ?? [];
+  const clarificationTitle = t(
+    clarifications.some((item) => item.status === 'open')
+      ? 'actions.clarifications'
+      : 'actions.questionHistory',
+  );
   const recovery =
     state.recoveryItems?.filter(
       (item) => item.projectId === project.id && ['pending', 'recoverable'].includes(item.status),
@@ -58,8 +63,8 @@ export function ProjectActions({
         </p>
       )}
       {!!clarifications.length && (
-        <section aria-label={t('actions.clarifications')}>
-          <h3>{t('actions.clarifications')}</h3>
+        <section aria-label={clarificationTitle}>
+          <h3>{clarificationTitle}</h3>
           {clarifications.map((clarification) => (
             <ClarificationCard
               key={clarification.id}
@@ -172,7 +177,7 @@ function IncidentCard({
   const { t, host } = useLocale();
   const [guidance, setGuidance] = useState('');
   return (
-    <article className="action-record">
+    <article className="action-record" id={`project-request-${incident.id}`} tabIndex={-1}>
       <span className="runtime-badge">{t(`actions.${incident.status}`)}</span>
       <p>{host(incident.message, incident.descriptor)}</p>
       {incident.evidence && (
@@ -257,7 +262,11 @@ function ClarificationCard({
     .map((question) => ({ questionId: question.id, value: value(question.id).trim() }))
     .filter((answer) => answer.value);
   return (
-    <article className="action-record clarification-card">
+    <article
+      className="action-record clarification-card"
+      id={`project-request-${clarification.id}`}
+      tabIndex={-1}
+    >
       {clarification.review && (
         <>
           <p className="runtime-badge">{t('review.needsUser')}</p>

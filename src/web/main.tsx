@@ -228,14 +228,24 @@ function App() {
     processDisclosures.current = { projectId: project?.id ?? '', items: new Map() };
   }
   useReadingAnchor(scroll, conversationContent, followingLatest, `${project?.id}:${page}`);
+  const requestId = page === 'home' ? route.view : undefined;
+  const requestReady =
+    !!requestId &&
+    [...(state?.clarifications ?? []), ...(state?.incidents ?? [])].some(
+      (request) => request.id === requestId,
+    );
   useEffect(() => {
     if (page !== 'home') return;
     const element = scroll.current;
     if (!element) return;
-    followingLatest.current = true;
-    setAtLatest(true);
+    followingLatest.current = !requestId;
+    setAtLatest(!requestId);
     const frame = requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
+      if (requestId) {
+        const request = document.getElementById(`project-request-${requestId}`);
+        request?.scrollIntoView({ block: 'start' });
+        request?.focus({ preventScroll: true });
+      } else element.scrollTop = element.scrollHeight;
     });
     const observer = new ResizeObserver(() => {
       if (followingLatest.current) element.scrollTop = element.scrollHeight;
@@ -249,7 +259,7 @@ function App() {
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [project?.id, page]);
+  }, [project?.id, page, requestId, requestReady]);
   useEffect(() => {
     const element = scroll.current;
     if (followingLatest.current && element) element.scrollTop = element.scrollHeight;

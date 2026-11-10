@@ -15,6 +15,7 @@ import {
   workGroup,
   workGroups,
   type TeamWork,
+  type TeamRequest,
   type WorkGroup,
 } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
@@ -120,6 +121,27 @@ function Row({
   );
 }
 
+function ProjectRequestRow({ request, projectId }: { request: TeamRequest; projectId: string }) {
+  const { t } = useLocale();
+  return (
+    <li>
+      <a
+        className="work-row group-needs_you"
+        href={routeHref({ page: 'home', projectId, view: request.id })}
+      >
+        <Hand className="work-icon" size={16} aria-hidden="true" />
+        <span className="work-main">
+          <strong>{request.text}</strong>
+          <span className="work-line">
+            {t(`team.request.${request.kind}`)} · {t('brief.inConversation')}
+          </span>
+        </span>
+        <ArrowRight className="work-go" size={14} aria-hidden="true" />
+      </a>
+    </li>
+  );
+}
+
 /** Every piece of work, grouped by what it asks of the user rather than by host stage. */
 export function WorkList({
   state,
@@ -140,13 +162,21 @@ export function WorkList({
   const multiRepo = state.repos.filter((r) => r.projectId === project.id).length > 1;
   const specs = new Map(state.tasks.map((x) => [x.id, x]));
   const needle = query.trim().toLowerCase();
+  const projectRequests = view.waiting.filter((request) => !request.taskId);
+  const shownRequests = projectRequests.filter(
+    (request) => !needle || request.text.toLowerCase().includes(needle),
+  );
   const shown = view.work.filter(
     (w) =>
       !needle || `${w.title} ${specs.get(w.taskId)?.spec ?? ''}`.toLowerCase().includes(needle),
   );
   const groups = workGroups
-    .map((group) => ({ group, items: shown.filter((w) => workGroup(w) === group) }))
-    .filter((g) => g.items.length);
+    .map((group) => ({
+      group,
+      items: shown.filter((w) => workGroup(w) === group),
+      requests: group === 'needs_you' ? shownRequests : [],
+    }))
+    .filter((g) => g.items.length || g.requests.length);
   const activity = (taskId: string) => {
     const member = view.members.find((m) => m.taskId === taskId);
     return member ? `${t(`team.role.${member.role}`)} ${t(`team.doing.${member.activity}`)}` : '';
@@ -155,7 +185,7 @@ export function WorkList({
     <div className="page work-page">
       <header className="page-header">
         <h1>{t('work.title')}</h1>
-        {view.work.length > 0 && (
+        {(view.work.length > 0 || projectRequests.length > 0) && (
           <input
             type="search"
             className="work-search"
@@ -166,17 +196,20 @@ export function WorkList({
           />
         )}
       </header>
-      {!view.work.length ? (
+      {!view.work.length && !projectRequests.length ? (
         <Empty icon={<CircleDashed size={26} />} title={t('work.title')} text={t('work.empty')} />
       ) : !groups.length ? (
         <p className="work-none">{t('work.noMatch')}</p>
       ) : (
-        groups.map(({ group, items }) => {
+        groups.map(({ group, items, requests }) => {
           const folded = (group === 'delivered' || group === 'cancelled') && !needle;
           const visible = folded && !expanded[group] ? items.slice(0, preview) : items;
           const body = (
             <>
               <ul className="work-rows">
+                {requests.map((request) => (
+                  <ProjectRequestRow key={request.id} request={request} projectId={project.id} />
+                ))}
                 {visible.map((work) => (
                   <Row
                     key={work.taskId}
@@ -202,7 +235,7 @@ export function WorkList({
           );
           const heading = (
             <>
-              {t(`work.group.${group}`)} <span>{number(items.length)}</span>
+              {t(`work.group.${group}`)} <span>{number(items.length + requests.length)}</span>
             </>
           );
           return group === 'cancelled' && !needle ? (

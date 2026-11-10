@@ -136,9 +136,7 @@ function TaskOverview({
             ...state,
             incidents: state.incidents?.filter((i) => requests.some((r) => r.id === i.id)),
             recoveryItems: [],
-            clarifications: state.clarifications?.filter(
-              (c) => c.taskId === detail.id && requests.some((r) => r.id === c.id),
-            ),
+            clarifications: state.clarifications?.filter((c) => c.taskId === detail.id),
           }}
           project={state.projects.find((p) => p.id === detail.projectId)!}
           reload={reload}
