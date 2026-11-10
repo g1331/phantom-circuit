@@ -28,7 +28,8 @@ test('resuming a thread rejects an effective model different from the requested 
         },
       ];
     }
-    override async request() {
+    override async request(method: string) {
+      if (method === 'config/read') return { config: {} };
       return { thread: { id: 'thread' }, model: 'substituted', reasoningEffort: 'low' };
     }
   }
@@ -57,7 +58,8 @@ test('thread setup rejects a mismatched or missing effective reasoning effort', 
           },
         ];
       }
-      override async request() {
+      override async request(method: string) {
+        if (method === 'config/read') return { config: {} };
         return { thread: { id: 'thread' }, model: 'requested', reasoningEffort: effort };
       }
     }

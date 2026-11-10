@@ -26,6 +26,27 @@ export function ChatMessage({
 }) {
   const { t, time, host } = useLocale();
   const delivery = m.draftStatus ?? m.status;
+  const uncertain =
+    m.role === 'user' && delivery !== 'completed' && m.descriptor?.code === 'steer_uncertain';
+  const cancelled =
+    m.role === 'user' &&
+    (delivery === 'failed' || delivery === 'cancelled') &&
+    m.descriptor?.code === 'steer_cancelled';
+  const adjusting =
+    m.role === 'user' &&
+    m.deliveryMode === 'steer' &&
+    m.descriptor?.code !== 'steer_recovering' &&
+    (delivery === 'queued' || delivery === 'running');
+  const deliveryLabel = uncertain
+    ? t('delivery.steerUncertain')
+    : cancelled
+      ? t('delivery.cancelled')
+      : adjusting
+        ? t('delivery.adjusting')
+        : delivery
+          ? t(`delivery.${delivery}`)
+          : undefined;
+  const deliveryClass = uncertain ? 'warning' : `delivery-${cancelled ? 'cancelled' : delivery}`;
   return (
     <article id={`message-${m.id}`} tabIndex={-1} className={`message ${m.role}`}>
       <div className="message-heading">
@@ -55,7 +76,12 @@ export function ChatMessage({
         <time dateTime={m.createdAt}>{time(m.createdAt)}</time>
         {/* A settled message needs no badge; only in-flight or failed delivery is news. */}
         {delivery && delivery !== 'completed' && (
-          <span className={`runtime-badge delivery-${delivery}`}>{t(`delivery.${delivery}`)}</span>
+          <span
+            className={`runtime-badge ${deliveryClass}`}
+            title={m.descriptor?.code === 'steer_queued' ? t('delivery.steerEnded') : undefined}
+          >
+            {deliveryLabel}
+          </span>
         )}
       </div>
       {activeRun && <PMProgress run={activeRun} activities={activities} />}
@@ -65,9 +91,9 @@ export function ChatMessage({
         ) : (
           <MarkdownContent
             content={
-              m.runId && isRunning(delivery ?? '') && streamText
+              m.role === 'assistant' && m.runId && isRunning(delivery ?? '') && streamText
                 ? streamText
-                : m.descriptor
+                : m.role !== 'user' && m.descriptor
                   ? host(m.content, m.descriptor)
                   : m.content
             }
@@ -88,7 +114,11 @@ export function ChatMessage({
         </div>
       )}
       {m.role === 'user' && (
-        <button className="retry-message" disabled={retryDisabled} onClick={onRetry}>
+        <button
+          className="retry-message"
+          disabled={retryDisabled || adjusting || uncertain}
+          onClick={onRetry}
+        >
           {t('common.retry')}
         </button>
       )}

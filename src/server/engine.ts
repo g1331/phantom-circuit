@@ -73,8 +73,25 @@ type AgentRuntime = Pick<
   Partial<Pick<AgentBackend, 'steer' | 'followUp' | 'abort' | 'reconcileSteer' | 'on' | 'off'>>;
 type AgentFactory = () => AgentRuntime;
 type AgentHooks = {
+  pmSteer?: true;
   onDelta?: (text: string) => void;
   onUsage?: (usage: AgentUsage) => void;
+};
+type PMSteerPhase =
+  | { kind: 'preparing' }
+  | { kind: 'ready'; threadId: string; turnId: string }
+  | { kind: 'ended'; reason: 'completed' | 'cancelled' | 'failed' | 'shutdown' };
+type PMSteerGate = {
+  phase: PMSteerPhase;
+  changed: Promise<void>;
+  wake: () => void;
+  tail: Promise<unknown>;
+};
+type ActiveExecution = {
+  abort: AbortController;
+  agent?: AgentRuntime;
+  codex?: Codex;
+  pmSteer?: PMSteerGate;
 };
 
 const recallTool: ToolSpec = {
@@ -315,10 +332,8 @@ export class Engine {
   >();
   private readonly stallMs: number;
   private readonly loopRepeats: number;
-  readonly active = new Map<
-    string,
-    { abort: AbortController; agent?: AgentRuntime; codex?: Codex }
-  >();
+  readonly active = new Map<string, ActiveExecution>();
+  private chats = new Map<string, Promise<string>>();
   private timer?: NodeJS.Timeout;
   private ticking = false;
   private stopping = false;
@@ -556,7 +571,34 @@ export class Engine {
   ): Promise<T> {
     const c = this.createAgent(run);
     const abort = hostAbort ?? new AbortController();
-    this.active.set(run.id, { abort, agent: c, ...(c instanceof Codex ? { codex: c } : {}) });
+    let wake = () => {};
+    const pmSteer: PMSteerGate | undefined = hooks.pmSteer
+      ? {
+          phase: { kind: 'preparing' },
+          changed: new Promise<void>((resolve) => {
+            wake = resolve;
+          }),
+          wake: () => wake(),
+          tail: Promise.resolve(),
+        }
+      : undefined;
+    const active: ActiveExecution = {
+      abort,
+      agent: c,
+      ...(c instanceof Codex ? { codex: c } : {}),
+      pmSteer,
+    };
+    this.active.set(run.id, active);
+    const endSteer = (reason: Extract<PMSteerPhase, { kind: 'ended' }>['reason']) => {
+      if (pmSteer && pmSteer.phase.kind !== 'ended') {
+        pmSteer.phase = { kind: 'ended', reason };
+        pmSteer.wake();
+      }
+    };
+    const onAbort = () =>
+      endSteer(this.stopping ? 'shutdown' : tripOf(abort.signal) ? 'failed' : 'cancelled');
+    abort.signal.addEventListener('abort', onAbort, { once: true });
+    if (abort.signal.aborted) onAbort();
     const progress: { at: number; signature?: string; repeats: number; tripped?: boolean } = {
       at: Date.now(),
       repeats: 0,
@@ -649,10 +691,12 @@ export class Engine {
       }
       const result = await fn(c, abort.signal);
       if (abort.signal.aborted) throw tripOf(abort.signal) ?? new Fault('执行已暂停', 409);
+      endSteer('completed');
       activities?.close();
       if (!hostAbort && !run.ownerMessageId) this.store.finishRun(run.id, 'completed');
       return result;
     } catch (caught) {
+      endSteer(this.stopping ? 'shutdown' : abort.signal.aborted ? 'cancelled' : 'failed');
       const e = tripOf(abort.signal) ?? caught;
       activities?.close();
       if (!hostAbort)
@@ -675,10 +719,17 @@ export class Engine {
         );
       throw e;
     } finally {
+      endSteer(this.stopping ? 'shutdown' : 'failed');
+      abort.signal.removeEventListener('abort', onAbort);
       if (this.progress.get(run.id) === progress) this.progress.delete(run.id);
-      await c.stop();
-      if (hostAbort) this.active.set(run.id, { abort });
-      else this.active.delete(run.id);
+      try {
+        await c.stop();
+      } finally {
+        if (this.active.get(run.id) === active) {
+          if (hostAbort) this.active.set(run.id, { abort });
+          else this.active.delete(run.id);
+        }
+      }
     }
   }
   private saveThread(run: Run, threadId: string) {
@@ -687,10 +738,22 @@ export class Engine {
     if (current) this.store.put('run', run.id, { ...current, sessionId: threadId });
   }
   private onTurn(run: Run) {
+    const execution = this.active.get(run.id);
     return (turnId: string) => {
       const value = this.store.get('run', run.id)!;
       value.turnId = turnId;
       this.store.put('run', run.id, value);
+      const active = this.active.get(run.id) === execution ? execution : undefined;
+      const gate = active?.pmSteer;
+      if (
+        gate?.phase.kind === 'preparing' &&
+        value.threadId &&
+        !active?.abort.signal.aborted &&
+        !this.stopping
+      ) {
+        gate.phase = { kind: 'ready', threadId: value.threadId, turnId };
+        gate.wake();
+      }
     };
   }
   /**
@@ -769,9 +832,36 @@ export class Engine {
     }
     return result;
   }
-  async chat(message: Message, recovering = false) {
+  chat(message: Message, recovering = false): Promise<string> {
+    const existing = this.chats.get(message.id);
+    if (existing) return existing;
+    const job = this.track(Promise.resolve().then(() => this.deliverChat(message, recovering)));
+    this.chats.set(message.id, job);
+    const clear = () => {
+      if (this.chats.get(message.id) === job) this.chats.delete(message.id);
+    };
+    void job.then(clear, clear);
+    return job;
+  }
+  private async deliverChat(message: Message, recovering: boolean): Promise<string> {
+    const prior = this.store
+      .list('operation')
+      .find((op) => op.kind === 'steer' && op.clientUserMessageId === message.id);
+    if (prior) {
+      const queued =
+        prior.status === 'done' &&
+        prior.result &&
+        typeof prior.result === 'object' &&
+        'queued' in prior.result &&
+        prior.result.queued === true &&
+        'accepted' in prior.result &&
+        prior.result.accepted === false &&
+        this.store.get('message', message.id)?.status === 'queued';
+      if (!recovering || !queued) return '';
+    }
     if (!recovering && message.deliveryMode === 'steer' && (await this.trySteer(message)))
       return '';
+    message = this.store.get('message', message.id) ?? message;
     return this.track(
       this.pmQueue(message.projectId, async () => {
         if (this.stopping) return '';
@@ -799,8 +889,9 @@ export class Engine {
   }
   private steerAllowed(run: Run, message: Message) {
     return (
-      !!run.threadId &&
       run.role === 'pm' &&
+      !run.ownerMessageId &&
+      !run.purpose &&
       ['running', 'waiting'].includes(run.status) &&
       message.role === 'user' &&
       message.projectId === run.projectId
@@ -809,19 +900,120 @@ export class Engine {
   private async trySteer(message: Message): Promise<boolean> {
     const run = this.store
       .activeRuns()
-      .find((candidate) => candidate.projectId === message.projectId && candidate.role === 'pm');
+      .find(
+        (candidate) =>
+          this.steerAllowed(candidate, message) &&
+          this.active.get(candidate.id)?.pmSteer &&
+          this.active.get(candidate.id)?.agent?.steer,
+      );
     const active = run ? this.active.get(run.id) : undefined;
-    if (!run || !active?.agent?.steer || !this.steerAllowed(run, message)) return false;
-    const operation = this.store.beginSteer(run.id, message.id);
-    if (operation.status === 'done') return true;
-    // A pending/uncertain operation belongs to a previous attempt. Never resend it without a
-    // backend history result; startup reconciliation handles adapters that can prove acceptance.
-    if (operation.status !== 'pending') return true;
+    const gate = active?.pmSteer;
+    if (!run || !active || !gate) {
+      this.store.updateMessage(message.id, {
+        deliveryMode: 'queue',
+        status: 'queued',
+        draftStatus: 'queued',
+        runId: undefined,
+        sourceMessageId: undefined,
+        descriptor: diagnosticDescriptor('steer_queued', '当前没有可接收调整的回复，排队处理'),
+      });
+      return false;
+    }
+    this.store.updateMessage(message.id, {
+      deliveryMode: 'steer',
+      status: 'running',
+      draftStatus: 'running',
+      runId: run.id,
+      descriptor: diagnosticDescriptor('steer_waiting', '等待当前回复准备完成'),
+    });
+    const delivery = gate.tail.then(() => this.deliverSteer(run, active, gate, message));
+    gate.tail = delivery;
+    return delivery;
+  }
+  private async deliverSteer(
+    run: Run,
+    active: ActiveExecution,
+    gate: PMSteerGate,
+    message: Message,
+  ): Promise<boolean> {
+    if (gate.phase.kind === 'preparing') await gate.changed;
+    let imagePaths: string[];
     try {
-      await active.agent.steer(run.threadId!, message.content, {
+      imagePaths = await new MessageImages(this.store, this.dataDir).paths(message);
+    } catch (error) {
+      this.store.updateMessage(message.id, {
+        status: 'failed',
+        draftStatus: 'failed',
+        descriptor: diagnosticDescriptor('steer_prepare_failed', String(error)),
+      });
+      return true;
+    }
+    const phase = gate.phase;
+    if (
+      !this.stopping &&
+      !active.abort.signal.aborted &&
+      this.store.unresolvedSteers().some((op) => op.runId === run.id)
+    ) {
+      this.store.updateMessage(message.id, {
+        status: 'failed',
+        draftStatus: 'failed',
+        descriptor: diagnosticDescriptor(
+          'steer_prepare_failed',
+          '前一条调整结果待核对，此条尚未发送',
+        ),
+      });
+      return true;
+    }
+    if (
+      phase.kind !== 'ready' ||
+      this.stopping ||
+      active.abort.signal.aborted ||
+      this.active.get(run.id) !== active
+    ) {
+      const reason = this.stopping
+        ? 'shutdown'
+        : phase.kind === 'ended'
+          ? phase.reason
+          : 'cancelled';
+      if (reason === 'completed') {
+        this.store.updateMessage(message.id, {
+          deliveryMode: 'queue',
+          status: 'queued',
+          draftStatus: 'queued',
+          runId: undefined,
+          sourceMessageId: undefined,
+          descriptor: diagnosticDescriptor('steer_queued', '当前回复已完成，排队处理'),
+        });
+        return false;
+      }
+      this.store.updateMessage(message.id, {
+        status: reason === 'shutdown' ? 'queued' : 'failed',
+        ...(reason === 'shutdown' ? { runId: undefined, sourceMessageId: undefined } : {}),
+        draftStatus:
+          reason === 'shutdown' ? 'queued' : reason === 'cancelled' ? 'cancelled' : 'failed',
+        descriptor: diagnosticDescriptor(
+          reason === 'shutdown'
+            ? 'steer_recovering'
+            : reason === 'cancelled'
+              ? 'steer_cancelled'
+              : 'steer_prepare_failed',
+          reason === 'shutdown'
+            ? '调整尚未发送，等待重启后处理'
+            : reason === 'cancelled'
+              ? '调整已取消，尚未发送'
+              : '当前回复准备失败，调整尚未发送',
+        ),
+      });
+      return true;
+    }
+    const { operation, created } = this.store.beginSteer(run.id, message.id);
+    if (!created) return true;
+    try {
+      await active.agent!.steer!(phase.threadId, message.content, {
         profile: this.agentProfile(run),
         clientUserMessageId: message.id,
-        expectedTurnId: run.turnId,
+        expectedTurnId: phase.turnId,
+        imagePaths,
       });
       this.store.finishSteer(operation.id, 'done');
     } catch (error) {
@@ -835,6 +1027,22 @@ export class Engine {
         (code === 'turn_not_active' ||
           /没有可 steer|expectedTurnId|过期|turn ended|not.*active|no active/i.test(text))
       ) {
+        const ended = gate.phase;
+        if (
+          !this.stopping &&
+          (active.abort.signal.aborted || (ended.kind === 'ended' && ended.reason !== 'completed'))
+        ) {
+          const cancelled = active.abort.signal.aborted && !tripOf(active.abort.signal);
+          this.store.finishSteer(operation.id, 'failed', text, false);
+          this.store.updateMessage(message.id, {
+            draftStatus: cancelled ? 'cancelled' : 'failed',
+            descriptor: diagnosticDescriptor(
+              cancelled ? 'steer_cancelled' : 'steer_prepare_failed',
+              text,
+            ),
+          });
+          return true;
+        }
         this.store.finishSteer(
           operation.id,
           'done',
@@ -864,7 +1072,6 @@ export class Engine {
   }
   /** Reconcile only adapters that can prove a durable client id; unknown stays blocked. */
   async reconcileSteers() {
-    const queued: Message[] = [];
     for (const operation of this.store.unresolvedSteers()) {
       const run = operation.runId ? this.store.get('run', operation.runId) : undefined;
       if (!run || !operation.sessionId || !operation.clientUserMessageId) {
@@ -916,13 +1123,12 @@ export class Engine {
         );
         const message = this.store.get('message', operation.clientUserMessageId);
         if (message) {
-          const next = this.store.updateMessage(message.id, {
+          this.store.updateMessage(message.id, {
             descriptor: diagnosticDescriptor(
               'steer_queued',
               'Backend history proved the steer was not accepted',
             ),
           });
-          queued.push(next);
         }
       } else {
         this.store.event(
@@ -933,10 +1139,6 @@ export class Engine {
         );
       }
     }
-    for (const message of queued)
-      void this.track(this.chat(message, true)).catch(() =>
-        this.store.updateMessage(message.id, { status: 'failed', draftStatus: 'failed' }),
-      );
   }
   private acceptedDocumentChanges(projectId: string, repoId: string, ids: string[]) {
     return ids.map((key) => {
@@ -1038,20 +1240,6 @@ export class Engine {
           return this.store.get('recovery', item.id);
         }
       }
-      const source =
-        !item.incidentId && item.sourceMessageId
-          ? this.store.get('message', item.sourceMessageId)
-          : undefined;
-      const content = item.recoveryPrompt ?? source?.content;
-      if (!content) {
-        this.store.finishRecovery(item.id, 'cancelled');
-        return this.store.get('recovery', item.id);
-      }
-      const settle = (status: 'completed' | 'failed') => {
-        // Manual policy marked it failed at restart; a later successful resume settles it too.
-        if (source?.role === 'user' && this.store.get('message', source.id)?.status !== 'completed')
-          this.store.updateMessage(source.id, { status, draftStatus: status });
-      };
       if (validationRecovery) this.mergeBusy.add(marker);
       const pending = this.pmQueue(item.projectId, async () => {
         // A queued recovery has not started work. Leave it pending when shutdown drains the queue.
@@ -1059,6 +1247,26 @@ export class Engine {
         const current = this.store.get('recovery', item.id);
         if (!current || current.status === 'cancelled' || current.successorRunId) return;
         if (validationRecovery && task && this.store.task(task.id).pausedByUser) return;
+        const sourceId =
+          this.store.get('run', oldRun.id)?.sourceMessageId ?? current.sourceMessageId;
+        const source =
+          !current.incidentId && sourceId ? this.store.get('message', sourceId) : undefined;
+        const content =
+          source && source.id !== current.sourceMessageId
+            ? source.content
+            : (current.recoveryPrompt ?? source?.content);
+        if (!content) {
+          this.store.finishRecovery(item.id, 'cancelled');
+          return;
+        }
+        const settle = (status: 'completed' | 'failed') => {
+          // Manual policy marked it failed at restart; a later successful resume settles it too.
+          if (
+            source?.role === 'user' &&
+            this.store.get('message', source.id)?.status !== 'completed'
+          )
+            this.store.updateMessage(source.id, { status, draftStatus: status });
+        };
         const run = this.store.ensureRecoverySuccessor(item.id, {
           role: 'pm',
           profile: oldRun.profile,
@@ -1346,6 +1554,8 @@ export class Engine {
     const recoveryDraftId = recoveryItemId
       ? this.store.get('recovery', recoveryItemId)?.draftId
       : undefined;
+    if (source && ['steer_queued', 'steer_recovering'].includes(source.descriptor?.code ?? ''))
+      this.store.updateMessage(source.id, { runId: run.id, sourceMessageId: source.id });
     const draft = this.store.assistantDraft(projectId, run.id, recoveryDraftId ?? run.id);
     this.store.updateMessage(draft.id, {
       runId: run.id,
@@ -1693,6 +1903,7 @@ export class Engine {
       },
       undefined,
       {
+        pmSteer: true,
         onDelta: (delta) => {
           draftText += delta;
           if (!draftTimer)

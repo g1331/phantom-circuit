@@ -534,12 +534,16 @@ export async function checkRuntimeUI() {
         ['steer', 'queued'],
       ],
     );
-    for (const content of ['Queued input', 'Shortcut message', 'Steered image input']) {
+    for (const [content, label] of [
+      ['Queued input', 'Queued'],
+      ['Shortcut message', 'Queued'],
+      ['Steered image input', 'Adjusting'],
+    ]) {
       await page
         .locator('.message.user')
         .filter({ hasText: content })
         .locator('.runtime-badge')
-        .getByText('Queued', { exact: true })
+        .getByText(label, { exact: true })
         .waitFor();
     }
     assert.equal(
@@ -573,7 +577,7 @@ export async function checkRuntimeUI() {
     await choosePreference(page, 'language', 'zh-CN');
     assert.equal(
       await page.getByRole('button', { name: '立即调整', exact: true }).getAttribute('title'),
-      '当前 Run 不可引导时将排队；未确认的投递仍待核对。',
+      '准备期间的调整会接入当前回复；当前回复结束后会排队处理；接收结果未确认时等待核对。',
     );
     await choosePreference(page, 'language', 'en');
     snapshot.runs = snapshot.runs.filter((run) => run.id !== 'active-pm');

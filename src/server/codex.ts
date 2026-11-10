@@ -74,10 +74,10 @@ const featureIsolationArgs = [
   'memories.generate_memories=false',
 ].flatMap((override) => ['-c', override]);
 
-function mcpIsolationArgs(mcpServers: string[]) {
+function mcpIsolationOverrides(mcpServers: string[]): Record<string, false> {
   const unsafe = mcpServers.find((name) => !/^[A-Za-z0-9_-]+$/.test(name));
   if (unsafe) throw new Fault(`无法隔离 Codex MCP 服务器：${unsafe}`, 409);
-  return mcpServers.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]);
+  return Object.fromEntries(mcpServers.map((name) => [`mcp_servers.${name}.enabled`, false]));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -348,24 +348,7 @@ export class Codex extends EventEmitter implements AgentBackend {
       binary = process.execPath;
       args = [entry, ...args];
     }
-    const prefix = binary === process.execPath ? [args[0]] : [];
-    let mcpServers: string[] = [];
-    if (this.launch === spawn) {
-      const listed = await command(
-        binary,
-        [...prefix, ...featureIsolationArgs, 'mcp', 'list', '--json'],
-        undefined,
-        undefined,
-        15000,
-        true,
-        signal,
-      ).catch(() => undefined);
-      const parsed: unknown = listed ? JSON.parse(listed.stdout || 'null') : undefined;
-      if (!Array.isArray(parsed) || !parsed.every((s) => isRecord(s) && typeof s.name === 'string'))
-        throw new Fault('无法读取 Codex MCP 配置，已拒绝启动以免用户级服务器进入项目', 503);
-      mcpServers = parsed.map((s) => s.name as string);
-    }
-    args.push(...featureIsolationArgs, ...mcpIsolationArgs(mcpServers));
+    args.push(...featureIsolationArgs);
     if (this.launch === spawn) {
       const versionArgs = binary === process.execPath ? [args[0], '--version'] : ['--version'];
       this.version = (
@@ -651,8 +634,23 @@ export class Codex extends EventEmitter implements AgentBackend {
     if (!model.supportedReasoningEfforts.some((x) => x.reasoningEffort === profile.effort))
       throw new Fault(`模型不支持推理档位：${profile.model} / ${profile.effort}`, 409);
   }
+  private async mcpOverrides(cwd: string): Promise<Record<string, false>> {
+    if (this.launch !== spawn) return {};
+    const response: unknown = await this.request('config/read', {
+      cwd,
+      includeLayers: false,
+    }).catch(() => undefined);
+    if (
+      !isRecord(response) ||
+      !isRecord(response.config) ||
+      (response.config.mcp_servers !== undefined && !isRecord(response.config.mcp_servers))
+    )
+      throw new Fault('无法读取 Codex MCP 配置，已拒绝启动以免用户级服务器进入项目', 503);
+    return mcpIsolationOverrides(Object.keys(response.config.mcp_servers ?? {}));
+  }
   async forkReadOnlyThread(options: AgentReadOnlyForkOptions): Promise<string> {
     await this.validate(options.profile);
+    const mcpOverrides = await this.mcpOverrides(options.cwd);
     this.toolHandler = async () => {
       throw new Fault('负责人问答没有宿主工具权限', 403);
     };
@@ -673,7 +671,11 @@ export class Codex extends EventEmitter implements AgentBackend {
           approvalPolicy: 'never',
           sandbox: 'read-only',
           developerInstructions: options.instructions,
-          config: { model_reasoning_effort: options.profile.effort, 'features.multi_agent': false },
+          config: {
+            model_reasoning_effort: options.profile.effort,
+            'features.multi_agent': false,
+            ...mcpOverrides,
+          },
           ephemeral: false,
           deferGoalContinuation: true,
         }),
@@ -702,6 +704,7 @@ export class Codex extends EventEmitter implements AgentBackend {
   }
   async thread(options: AgentThreadOptions) {
     await this.validate(options.profile);
+    const mcpOverrides = await this.mcpOverrides(options.cwd);
     this.toolHandler = options.toolHandler;
     this.userInputHandler = options.onUserInput;
     const params = {
@@ -711,7 +714,11 @@ export class Codex extends EventEmitter implements AgentBackend {
       approvalPolicy: 'never',
       sandbox: options.writable ? 'workspace-write' : 'read-only',
       developerInstructions: options.instructions,
-      config: { model_reasoning_effort: options.profile.effort, 'features.multi_agent': false },
+      config: {
+        model_reasoning_effort: options.profile.effort,
+        'features.multi_agent': false,
+        ...mcpOverrides,
+      },
       ...(options.tools?.length ? { dynamicTools: options.tools } : {}),
     };
     const result = options.threadId
