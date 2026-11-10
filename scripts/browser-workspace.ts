@@ -16,6 +16,7 @@ import { openPage, openSection, openTask } from './browser-pages.ts';
 import { choosePreference } from './browser-preferences.ts';
 import { legacyCompletionGap } from '../src/shared/task-history.ts';
 import { checkReferenceStates } from './browser-reference-states.ts';
+import { completionNotice } from '../src/server/delivery-runtime.ts';
 
 export async function checkWorkspace() {
   const store = new Store(':memory:');
@@ -373,6 +374,20 @@ export async function checkWorkspace() {
     );
     await openPage(page, 'work');
     await checkReferenceStates(page, store, store.task(task.id), artifacts);
+    const notice = await completionNotice(
+      { ...store.task(task.id), stage: 'done' },
+      store.repo(repo.id),
+      { source: process.cwd() },
+    );
+    const delivery = store.addMessage(project.id, 'assistant', notice.content);
+    store.updateMessage(delivery.id, { descriptor: notice.descriptor });
+    await openPage(page, 'home');
+    await choosePreference(page, 'language', 'zh-CN');
+    const notification = page.locator(`#message-${delivery.id} .message-content`);
+    await notification.getByText(`已交付「${task.title}」。`, { exact: false }).waitFor();
+    await choosePreference(page, 'language', 'en');
+    await notification.getByText(`Delivered “${task.title}”.`, { exact: false }).waitFor();
+    assert.doesNotMatch(await notification.innerText(), /preview|running application|体验环境/);
     assert.deepEqual(errors, []);
     console.log(
       'Client workspace: feedback, verified delivery links, no environment controls, responsive history passed.',

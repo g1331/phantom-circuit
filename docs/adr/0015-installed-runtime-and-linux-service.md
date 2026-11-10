@@ -13,3 +13,17 @@ Staging completes before the selected release changes. Installation neither star
 Service interruptions are not user pauses. Recovery must continue a successor that was itself interrupted, preserving one successor per interrupted Run and respecting explicit user pauses. The browser renews its local session and refreshes state after reconnection rather than replaying mutations.
 
 Windows keeps its existing foreground and development launchers. Linux service support does not introduce public network listening, a desktop installer, automatic updates, or database rollback.
+
+Delivery notices capture runtime identity once when the Engine starts. An installed runtime
+uses its release manifest's source path and clean commit; a checkout uses its clean startup
+revision. A later checkout change leaves that identity unchanged. The remote-confirmed merge
+commit is bound to the reviewed task head so squash deliveries can be compared with the
+running revision. Missing, dirty or unavailable evidence keeps update inclusion unknown.
+Other repository deliveries carry no application-update notice. The notice and its evidence
+remain attached to the original delivery message; synchronization never rewrites old messages.
+
+A pending self-update offers service commands only when the running Linux process, data
+directory, release layout and owned systemd unit identify the existing service, and its source
+still exposes the service CLI. The source must first be updated to the delivered revision.
+These instructions require an explicit user action. Generating a notice never stages a release,
+changes the selected release, stops a process or restarts the host.

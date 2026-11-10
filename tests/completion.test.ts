@@ -407,8 +407,19 @@ test('Project recovery delivers the completion message once after Issue synchron
     f.projectFailure(false);
     await engine.sync();
     assert.equal(f.messages().length, 1);
+    const delivered = f.messages()[0];
+    assert.ok(delivered.descriptor?.code.startsWith('delivery_'));
+    assert.doesNotMatch(delivered.content, /启动.*体验环境/);
     await engine.sync();
     assert.equal(f.messages().length, 1);
+    assert.deepEqual(f.messages()[0], delivered, 'reconciliation never rewrites an old delivery');
+    const restarted = f.engine();
+    try {
+      await restarted.sync();
+      assert.deepEqual(f.messages(), [delivered], 'a successor host does not redeliver');
+    } finally {
+      await restarted.stop();
+    }
     assert.equal(f.writes(), 1);
   } finally {
     await engine.stop();

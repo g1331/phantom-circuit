@@ -9,6 +9,11 @@ import { hasOwner } from '../shared/team.ts';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runtimePath } from './runtime-paths.ts';
+import {
+  captureDeliveryRuntime,
+  completionNotice,
+  type DeliveryRuntime,
+} from './delivery-runtime.ts';
 import { z } from 'zod';
 import { Store, Fault, now, redact, type OwnerSource } from './store.ts';
 import { Codex, CodexTurnError, type ToolSpec } from './codex.ts';
@@ -331,6 +336,7 @@ export class Engine {
   private started = false;
   /** Explicit factories are test adapters; production chooses from Run.agentKind. */
   private readonly injectedFactory?: AgentFactory;
+  private readonly deliveryRuntime: Promise<DeliveryRuntime>;
   constructor(
     readonly store: Store,
     readonly github: GitHub,
@@ -342,6 +348,10 @@ export class Engine {
     this.injectedFactory = createAgent;
     this.stallMs = options.stallMs ?? 20 * 60_000;
     this.loopRepeats = options.loopRepeats ?? 5;
+    this.deliveryRuntime = captureDeliveryRuntime().catch((error: unknown) => {
+      this.store.event('runtime', `运行版本证据不可用：${redact(String(error))}`);
+      return { source: runtimePath() };
+    });
   }
   /**
    * Read the repository's conventions from its trunk and record them as the team's repository
@@ -3438,13 +3448,15 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
   }
   private async deliverCompletion(task: Task) {
     await this.github.syncStatus(task);
+    const notice = await completionNotice(
+      task,
+      this.store.repo(task.repoId),
+      await this.deliveryRuntime,
+    );
     this.store.transaction(() => {
       if (!this.store.task(task.id).completionDeliveryPending) return;
-      this.store.addMessage(
-        task.projectId,
-        'assistant',
-        `已完成「${task.title}」，实现已合并。${task.prUrl ?? ''}\n你可以启动该仓库的体验环境，继续告诉我使用反馈。`,
-      );
+      const message = this.store.addMessage(task.projectId, 'assistant', notice.content);
+      this.store.updateMessage(message.id, { descriptor: notice.descriptor });
       this.store.updateTask(task.id, { completionDeliveryPending: false });
       this.store.changes.emit('delivery', task.repoId);
     });
