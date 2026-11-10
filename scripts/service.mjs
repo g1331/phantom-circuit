@@ -166,7 +166,6 @@ export async function stageRelease(options, source = sourceRoot) {
       'scripts',
       'tests',
       'prompts',
-      '.agents/skills',
       'package.json',
       'package-lock.json',
       'tsconfig.json',

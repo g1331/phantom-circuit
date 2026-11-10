@@ -17,7 +17,6 @@
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
     "format": "prettier --write src tests scripts *.json *.md",
-    "skills:install": "tsx scripts/install-skills.ts",
     "probe": "tsx scripts/probe.ts",
     "report": "tsx scripts/report.ts",
     "test:browser": "tsx scripts/browser-check.ts"

@@ -33,7 +33,7 @@ try {
   assert.equal(store.list('task').length, 0);
   assert.ok(store.project(project.id).pmThreadId);
   console.log(
-    'Actual project PM prompt + pinned skill context + registered host tools + persisted conversation: passed. No GitHub writes.',
+    'Actual project PM prompt + registered host tools + persisted conversation: passed. No GitHub writes.',
   );
 } finally {
   await engine.stop();

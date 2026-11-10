@@ -36,7 +36,7 @@ Override the log level with `npm run dev -- --log-level=debug` or set `$env:PHAN
 
 To develop against separate, initially empty data, use `npm run dev -- --data-dir=.phantom/dev` (or the same option with `debug`/`start`). This selects a separate database and managed workspaces without adopting existing checkout-local data. The normal default remains `%USERPROFILE%\.phantom`. Development and debug modes run the real Engine, so permissions granted in the selected data directory still govern repository actions.
 
-During discussion, the PM can persist glossary/ADR drafts locally using the upstream document formats. Accepted documents accompany the corresponding implementation as immutable snapshots; `revise_task` can explicitly replace accepted snapshots before delivery. A requirement normally produces one Task, including its documentation. Discussion alone never authorizes implementation. PM contexts refresh from managed default-branch views.
+During discussion, the PM can persist glossary/ADR drafts locally using the target repository's document conventions. Accepted documents accompany the corresponding implementation as immutable snapshots; `revise_task` can explicitly replace accepted snapshots before delivery. A requirement normally produces one Task, including its documentation. Discussion alone never authorizes implementation. PM contexts refresh from managed default-branch views.
 
 ## Controls
 
@@ -55,7 +55,7 @@ Codex MCP discovery uses the same feature and memory isolation settings as app-s
 - New Projects inherit the software's default Agent (OMP). A Project can select OMP or Codex, and each role can inherit its global model or pin a local assignment. OMP models are initialized once from its `default`, `slow` and `advisor` roles. Existing Projects retain explicit Codex assignments. Runs fix their resolved configuration; changing settings does not rewrite history or silently substitute models.
 - Normal Tasks receive one combined primary review. Complex work, rework or primary escalation requires a second, different model. Current tests, required reviews and remote revision/check evidence govern automatic merge; no additional PM merge-approval turn is needed.
 - Each task uses a managed branch and worktree. The original checkout is not used for development. Dev leaves implementation files for host-owned staging, commit and formal validation. A durable finalization checkpoint lets interrupted host work resume without another Dev session. Known Git/process/environment failures pause without consuming product rework attempts; actual test/review failures still require corrections. Reviews bind both base and head revisions. The host verifies configured tests and GitHub checks before requesting squash merge; branch protection is not bypassed.
-- PM owns technical decisions. Product ambiguity and unavailable external authority remain user decisions. Skill confirmation points are adapted to this delegation in `prompts/`.
+- PM owns technical decisions. Product ambiguity and unavailable external authority remain user decisions.
 
 ### Team instructions and learning
 
@@ -87,15 +87,9 @@ Incidents explicitly linked to those historical Tasks are also interpreted indiv
 
 Set the repository's startup command, port and validation commands in its configuration (or ask the PM). `{port}` is replaced in the startup command; `PORT` is also passed to that child process. The preview uses a separate worktree at the merged default branch. Builds/installations run locally; processes have output logs and bounded HTTP readiness checks. A busy port or unsuccessful start is shown explicitly. There is no automatic production deployment.
 
-## Engineering skills
+## Agent instructions
 
-The 14 bundled Matt Pocock skills and referenced files are pinned in `.agents/skills/manifest.json`. Project adaptations in `prompts/` use a combined independent review and risk-based escalation; upstream skill files are preserved. Role prompts list the relevant skills as a catalog (name, description, path) that agents read on demand; only merge-conflict guidance is inlined, and only when a conflict exists. The host owns scheduling and external effects. To restore the exact bundled revision:
-
-```powershell
-npm run skills:install
-```
-
-Source: https://github.com/mattpocock/skills at `3cca18b368ae95cdbdebbff572ccafa662551015`. Retain upstream attribution and the downloaded license when redistributing.
+Role prompts define task scope, host tools, permissions and delivery contracts. Engineering methods follow the target repository's conventions and explicitly adopted team instructions. The host owns scheduling, fixed-revision verification and external effects.
 
 ## Verification
 
@@ -113,7 +107,7 @@ The maintenance browser checks additionally serve the real `dist/` build on fixt
 
 `npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 
-`npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt, skill catalog and registered host tools, using a temporary project without repositories or GitHub writes.
+`npx tsx scripts/pm-smoke.ts` makes one metered PM call with the real role prompt and registered host tools, using a temporary project without repositories or GitHub writes.
 
 Tests use real temporary Git repositories, commits, worktrees and test commands, with model/GitHub boundaries simulated for lifecycle scenarios. Passing them does not prove a real GitHub merge under your account's branch protection. Actual remote lifecycle acceptance requires a repository explicitly connected and authorized by its owner.
 

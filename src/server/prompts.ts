@@ -2,39 +2,9 @@ import { readFile, readdir } from 'node:fs/promises';
 import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
 import type { Role, Task, TeamInstructionsVersion } from '../shared/types.ts';
 import { runtimePath } from './runtime-paths.ts';
-export const SKILL_REVISION = '3cca18b368ae95cdbdebbff572ccafa662551015';
-const root = runtimePath('.agents', 'skills');
-/**
- * Skills are an optional method library, not a workflow. Each role sees a catalog (name, purpose,
- * absolute path) and reads a body only when the Task calls for it; host policy decides the process.
- * `implement` is omitted: its commit and review steps contradict host-owned finalization.
- */
-const catalog: Record<Role, string[]> = {
-  pm: ['domain-modeling'],
-  dev: ['tdd', 'codebase-design', 'diagnosing-bugs'],
-  review: ['codebase-design'],
-  oncall: ['diagnosing-bugs'],
-};
-async function skill(name: string) {
-  const file = join(root, name, 'SKILL.md');
-  const body = await readFile(file, 'utf8');
-  const description = /^description:\s*"?(.*?)"?\s*$/m.exec(body)?.[1] ?? '';
-  return { file, body, description };
-}
-export async function instructions(
-  role: Role,
-  options: { conflict?: boolean; team?: TeamInstructionsVersion } = {},
-) {
+export async function instructions(role: Role, options: { team?: TeamInstructionsVersion } = {}) {
   const base = await readFile(runtimePath('prompts', `${role}.md`), 'utf8');
-  const entries = await Promise.all(catalog[role].map(skill));
-  const list = catalog[role]
-    .map((name, i) => `- ${name} — ${entries[i].description} — ${entries[i].file}`)
-    .join('\n');
-  // A live merge conflict is the one case where the method is always needed, so it is inlined.
-  const merge = options.conflict
-    ? `\n\n## Skill: resolving-merge-conflicts\n${(await skill('resolving-merge-conflicts')).body}`
-    : '';
-  return `${base}\n\n## Skill library (pinned ${SKILL_REVISION})\nOptional methods, not a mandatory workflow. Pick what fits this Task and read the full SKILL.md with your file-reading tool before applying it. The host rules above override any skill step about committing, pushing, pull requests, code review commands or subagents.\n${list}${merge}${teamInstructionsPrompt(options.team)}`;
+  return `${base}${teamInstructionsPrompt(options.team)}`;
 }
 /** Append working text only; the host remains the authority for every capability. */
 export function teamInstructionsPrompt(team?: TeamInstructionsVersion) {
