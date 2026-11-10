@@ -112,7 +112,7 @@ function TaskOverview({
         <p className="task-section-label">{t('task.progress')}</p>
         <h2>{work?.teamHold ? t(`work.hold.${work.teamHold}`) : t(`task.progress.${status}`)}</h2>
         <p className="muted task-next-step">
-          {work?.teamHold ? <WorkHold work={work} /> : t(`task.next.${next}`)}
+          {work?.teamHold ? <WorkHold work={work} showStatus={false} /> : t(`task.next.${next}`)}
         </p>
         {requests.length > 0 && (
           <div className="task-decisions">

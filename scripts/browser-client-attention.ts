@@ -198,7 +198,7 @@ export async function checkClientAttention({
   console.log('Client attention: synthetic question/internal hold/user pause matrix passed.');
 }
 
-async function main() {
+export async function checkAttentionBrowser() {
   const root = await mkdtemp(resolve(tmpdir(), 'attention-'));
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? root);
   await mkdir(artifacts, { recursive: true });
@@ -272,4 +272,4 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
-  await main();
+  await checkAttentionBrowser();

@@ -291,7 +291,7 @@ export async function checkWorkspace() {
       blocked: 'The team is checking a fixture failure',
     });
     await page.reload();
-    await page.getByRole('heading', { name: '等待团队处理阻塞', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '团队受阻', exact: true }).waitFor();
     assert.equal(
       await page.getByRole('heading', { name: '有个决定需要你', exact: true }).count(),
       0,
@@ -304,7 +304,11 @@ export async function checkWorkspace() {
       evidence: 'Synthetic product choice',
     });
     store.transaction(() =>
-      store.put('incident', incident.id, { ...incident, status: 'waiting_user' }),
+      store.put('incident', incident.id, {
+        ...incident,
+        status: 'waiting_user',
+        descriptor: { code: 'incident_waiting_user' },
+      }),
     );
     await page.reload();
     await page.getByRole('heading', { name: '有个决定需要你', exact: true }).waitFor();
@@ -377,11 +381,11 @@ export async function checkWorkspace() {
     const notice = await completionNotice(
       { ...store.task(task.id), stage: 'done' },
       store.repo(repo.id),
-      { source: process.cwd() },
+      { kind: 'checkout', source: process.cwd() },
     );
     const delivery = store.addMessage(project.id, 'assistant', notice.content);
     store.updateMessage(delivery.id, { descriptor: notice.descriptor });
-    await openPage(page, 'home');
+    await page.goto(`${origin}/#/p/${project.id}`);
     await choosePreference(page, 'language', 'zh-CN');
     const notification = page.locator(`#message-${delivery.id} .message-content`);
     await notification.getByText(`已交付「${task.title}」。`, { exact: false }).waitFor();
@@ -390,7 +394,7 @@ export async function checkWorkspace() {
     assert.doesNotMatch(await notification.innerText(), /preview|running application|体验环境/);
     assert.deepEqual(errors, []);
     console.log(
-      'Client workspace: feedback, verified delivery links, no environment controls, responsive history passed.',
+      'Client workspace: verified previews, feedback, bilingual delivery and history passed.',
     );
   } finally {
     await browser.close();
