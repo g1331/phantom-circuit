@@ -34,6 +34,7 @@ export interface PullState {
   merged?: boolean;
   /** Listing endpoints only; set exactly when the PR has been merged. */
   merged_at?: string | null;
+  merge_commit_sha?: string | null;
   /** Single-PR endpoint only. */
   mergeable?: boolean | null;
   /** Single-PR endpoint only. */
@@ -1067,7 +1068,23 @@ export class GitHub {
       `repos/${this.store.repo(task.repoId).github}/pulls/${task.pr}`,
     );
     const prState = pullDisplayState(pr);
-    if (this.store.task(task.id).prState !== prState) this.store.updateTask(task.id, { prState });
+    const current = this.store.task(task.id);
+    const deliveryRevision =
+      isMerged(pr) &&
+      pr.number === task.pr &&
+      pr.head.sha === task.head &&
+      typeof pr.merge_commit_sha === 'string' &&
+      /^[a-f0-9]{40}$/i.test(pr.merge_commit_sha)
+        ? { head: pr.head.sha, commit: pr.merge_commit_sha }
+        : undefined;
+    if (
+      current.prState !== prState ||
+      (deliveryRevision && current.deliveryRevision?.commit !== deliveryRevision.commit)
+    )
+      this.store.updateTask(task.id, {
+        prState,
+        ...(deliveryRevision ? { deliveryRevision } : {}),
+      });
     return pr;
   }
   async reviewComment(task: Task, review: ReviewResult) {

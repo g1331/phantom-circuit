@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { Store, Fault, redact } from './store.ts';
 import { Workspaces } from './workspaces.ts';
-import { shellCommand, terminate } from './process.ts';
+import { command, shellCommand, terminate } from './process.ts';
 
 export class Previews {
   private children = new Map<string, ChildProcess>();
@@ -71,6 +71,25 @@ export class Previews {
         const result = await shellCommand(text, path, signal);
         if (result.code !== 0) throw new Fault(`体验准备失败：${result.stderr || result.stdout}`);
       }
+      const revision = await this.workspaces.git(path, ['rev-parse', 'HEAD'], signal);
+      const taskHeads: string[] = [];
+      const delivered = this.store
+        .list('task')
+        .filter((task) => task.repoId === repoId && task.stage === 'done' && task.head);
+      for (const task of delivered) {
+        const head = task.head!;
+        const commit = task.deliveryRevision?.head === head ? task.deliveryRevision.commit : head;
+        const ancestry = await command(
+          'git',
+          ['merge-base', '--is-ancestor', commit, revision],
+          path,
+          undefined,
+          120000,
+          false,
+          signal,
+        );
+        if (ancestry.code === 0) taskHeads.push(head);
+      }
       signal.throwIfAborted();
       const cmd = repo.commands.start.replaceAll('{port}', String(repo.commands.port));
       const child =
@@ -117,7 +136,9 @@ export class Previews {
             signal: AbortSignal.any([signal, AbortSignal.timeout(1000)]),
           });
           if (r.status < 500) {
-            this.store.patchRepo(repoId, { preview: { status: 'running', url, pid: child.pid } });
+            this.store.patchRepo(repoId, {
+              preview: { status: 'running', url, pid: child.pid, revision, taskHeads },
+            });
             return { url };
           }
         } catch {

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ArrowRight, Check, ExternalLink, MessageSquarePlus, Pause, Play } from 'lucide-react';
 import type { Project, Snapshot } from '../shared/types.ts';
 import { maxReworks, workGroup, type TeamView } from '../shared/team.ts';
-import { api } from './api.ts';
+import { deliveryPreview } from '../shared/delivery-preview.ts';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
 import { useWhen } from './work-list.tsx';
@@ -168,7 +168,8 @@ export function Brief({
           </h3>
           <ul>
             {fresh.map((work) => {
-              const repo = repos.find((r) => r.id === tasks.get(work.taskId)?.repoId);
+              const task = tasks.get(work.taskId)!;
+              const previewUrl = deliveryPreview(task, repos, window.location.origin);
               return (
                 <li key={work.taskId} className="brief-delivery">
                   <a href={href(work.taskId)}>
@@ -176,19 +177,10 @@ export function Brief({
                     <span>{t('work.deliveredAt', { time: when(settled(work)) })}</span>
                   </a>
                   <span className="brief-actions">
-                    {repo?.preview?.status === 'running' && repo.preview.url ? (
-                      <a href={repo.preview.url} target="_blank" rel="noreferrer">
+                    {previewUrl && (
+                      <a href={previewUrl} target="_blank" rel="noreferrer">
                         {t('brief.preview')} <ExternalLink size={12} />
                       </a>
-                    ) : (
-                      repo && (
-                        <button
-                          disabled={busy || repo.preview?.status === 'starting'}
-                          onClick={() => void act(() => api(`/repos/${repo.id}/preview/start`, {}))}
-                        >
-                          <Play size={12} /> {t('brief.startPreview')}
-                        </button>
-                      )
                     )}
                     <button
                       onClick={() => onFeedback(t('brief.feedbackDraft', { title: work.title }))}

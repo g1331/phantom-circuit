@@ -16,10 +16,21 @@ The product is now built from addressable pages. Hash routes make every page lin
   - **specification:** what was asked, each feedback round and the document changes, long text clamped to a screen until opened;
   - **process:** the usage summary, one line per model run and one line per host event, with commands behind their own switch.
 - **Team.** A roster rather than a log: the liaison and each active member, with their work and state. Each member's history is condensed to one line per finished turn, with its outcome and duration.
-- **Project.** One page instead of a modal, in three sections: an overview (repositories, preview, capacity and claim order, allowance, recent activity), the domain documents one line each, and the run log for diagnosis.
+- **Project.** One page instead of a modal, in three sections: an overview (repositories, capacity and claim order, allowance, recent activity), the domain documents one line each, and the run log for diagnosis.
 - **Settings.** The global runtime settings and the project's model settings stay dialogs: they are occasional configuration, not a place where the user works.
 
 On a phone the same pages sit behind a bottom bar: conversation, brief, work and team. The brief and the receipts are designed for 390 px first.
+
+Delivery previews are result links beside completed work. Everyday pages and repository
+settings omit environment start, stop, port and process controls. Removing these controls
+leaves existing services, commands and configuration intact; the team's existing preview
+API remains available. When launched, a preview records its checkout revision and completed
+task heads whose remote-confirmed merge commits are ancestors of that revision. The merge
+commit is bound to the reviewed head, including squash merges; direct head ancestry is also
+accepted when no merge commit was recorded. A delivery link requires the same project,
+repository and fixed task head, a running preview and its recorded HTTP address. Missing
+legacy or merge-revision evidence omits the link. The application's own origin is
+excluded. Feedback and historical records remain available with or without a preview.
 
 Rejected:
 - **A session-centred home like the surveyed products.** It turns the client into an operator.

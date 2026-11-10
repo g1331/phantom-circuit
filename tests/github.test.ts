@@ -158,6 +158,39 @@ function issueFixture() {
   };
 }
 
+test('remote squash revision is retained only for the pinned merged delivery', async () => {
+  const f = issueFixture();
+  const head = 'a'.repeat(40);
+  const commit = 'b'.repeat(40);
+  const remote = {
+    number: 7,
+    html_url: 'https://github.com/example/repo/pull/7',
+    state: 'closed',
+    merged: true,
+    merge_commit_sha: commit,
+    head: { sha: head },
+    base: { sha: 'base' },
+    body: '',
+  };
+  class Remote extends GitHub {
+    override async gh() {
+      return { stdout: JSON.stringify(remote), stderr: '', code: 0 };
+    }
+  }
+  const github = new Remote(f.store);
+  try {
+    f.store.updateTask(f.task().id, { pr: 7, head });
+    await github.pull(f.task());
+    assert.deepEqual(f.task().deliveryRevision, { head, commit });
+    remote.head.sha = 'c'.repeat(40);
+    remote.merge_commit_sha = 'd'.repeat(40);
+    await github.pull(f.task());
+    assert.deepEqual(f.task().deliveryRevision, { head, commit }, 'drift cannot rebind evidence');
+  } finally {
+    f.store.close();
+  }
+});
+
 test('Issue completion checks only managed criteria, closes and persists the canonical body', async () => {
   const f = issueFixture();
   try {

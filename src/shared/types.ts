@@ -113,6 +113,9 @@ export interface Repo {
     url?: string;
     pid?: number;
     error?: string;
+    revision?: string;
+    /** Completed task heads verified as ancestors of this preview checkout. */
+    taskHeads?: string[];
   };
 }
 export interface ImageAttachment {
@@ -203,6 +206,8 @@ export interface Task {
   pr?: number;
   prUrl?: string;
   prState?: 'open' | 'closed' | 'draft' | 'merged';
+  /** Remote-confirmed merge commit bound to the reviewed delivery head. */
+  deliveryRevision?: { head: string; commit: string };
   head?: string;
   base?: string;
   integratedBase?: string;

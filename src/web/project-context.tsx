@@ -1,12 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import {
   ArrowUpRight,
-  ExternalLink,
   FileText,
   FolderGit2,
   GitBranch,
-  Pause,
-  Play,
   Plus,
   RotateCw,
   Settings2,
@@ -214,41 +211,6 @@ export function ProjectContext({
                   </label>
                 </div>
                 {r.blocked && <p className="inline-warning">{r.blocked}</p>}
-                <div className="preview-row">
-                  {r.preview?.status === 'running' ? (
-                    <>
-                      <a
-                        href={r.preview.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="preview-link"
-                      >
-                        {t('ui.openPreview')} <ExternalLink size={13} />
-                      </a>
-                      <button
-                        className="icon-button"
-                        aria-label={t('repos.stopPreview', { name: r.name })}
-                        onClick={() => void act(() => api(`/repos/${r.id}/preview/stop`, {}))}
-                      >
-                        <Pause size={14} />
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      className="text-button"
-                      disabled={busy || r.preview?.status === 'starting'}
-                      onClick={() => void act(() => api(`/repos/${r.id}/preview/start`, {}))}
-                    >
-                      <Play size={13} />
-                      {r.preview?.status === 'starting'
-                        ? t('ui.preparingPreview')
-                        : t('ui.startLocalPreview')}
-                    </button>
-                  )}
-                  {r.preview?.error && (
-                    <span className="preview-error">{host(r.preview.error)}</span>
-                  )}
-                </div>
               </div>
             );
           })

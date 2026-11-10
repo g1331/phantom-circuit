@@ -116,7 +116,7 @@ export function TaskPage({
       />
       {section === 'overview' &&
         (task.stage === 'done' ? (
-          <TaskExperience task={task} state={state} busy={busy} act={act} onDraft={onDraft} />
+          <TaskExperience task={task} state={state} onDraft={onDraft} />
         ) : (
           <div className="task-collaborate">
             <p className="muted">{t('task.adjustHint')}</p>
