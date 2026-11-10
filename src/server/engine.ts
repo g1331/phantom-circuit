@@ -2845,7 +2845,6 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           cwd: task.worktree!,
           profile,
           instructions: await instructions('dev', {
-            conflict: !!conflict,
             team: this.store.runTeamInstructions(run),
           }),
           threadId: conflict ? undefined : run.resumeThreadId,

@@ -1,8 +1,8 @@
 # Phantom Circuit engineering
 
-Use the pinned Matt Pocock skills in `.agents/skills/`. Preserve user changes, inspect before changing, and verify observable behavior. Do not change the upstream skill files as application configuration; project adaptations live in `prompts/` and the host tool boundaries.
+Preserve user changes, inspect before changing, and verify observable behavior. Keep orchestration low-intrusion: host prompts define roles, task context, permissions and delivery contracts; engineering methods follow the target repository's conventions and explicitly adopted team instructions.
 
-## Agent skills
+## Engineering references
 
 - Issue tracker: target projects use GitHub through the host broker; see `docs/agents/issue-tracker.md`.
 - Domain docs: root `CONTEXT.md` is vocabulary only; `docs/adr/` records consequential decisions. Read relevant ADRs before changing behavior.

@@ -135,7 +135,7 @@ try {
   assert.equal((await state()).runs.length, 0, 'Smoke must never make model calls');
   await stop('SIGTERM');
   console.log(
-    'VERIFIED: production release, foreign CWD, prompts/skills/UI assets, HTTP writes, graceful restart, two crash restarts, persisted project; no model or GitHub calls.',
+    'VERIFIED: production release, foreign CWD, prompts/UI assets, HTTP writes, graceful restart, two crash restarts, persisted project; no model or GitHub calls.',
   );
 } finally {
   if (child) await stop('SIGKILL');
