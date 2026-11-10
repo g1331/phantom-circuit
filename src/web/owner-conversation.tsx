@@ -18,7 +18,7 @@ export function OwnerConversation({
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const { t, time } = useLocale();
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState({ content: '' });
   const lines = (state.ownerMessages ?? []).filter((m) => m.taskId === task.id);
   const open = hasOwner(task);
   if (!open && !lines.length) return null;
@@ -58,23 +58,23 @@ export function OwnerConversation({
           className="owner-compose"
           onSubmit={(e) => {
             e.preventDefault();
-            const content = draft.trim();
+            const content = draft.content.trim();
             if (!content) return;
             void act(async () => {
               await api(`/tasks/${task.id}/owner-messages`, { content });
-              setDraft('');
+              setDraft((current) => (current === draft ? { content: '' } : current));
             });
           }}
         >
           <textarea
-            value={draft}
+            value={draft.content}
             rows={2}
             maxLength={8000}
             aria-label={t('owner.placeholder')}
             placeholder={t('owner.placeholder')}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => setDraft({ content: e.target.value })}
           />
-          <button className="primary-button" disabled={busy || !draft.trim()}>
+          <button className="primary-button" disabled={busy || !draft.content.trim()}>
             <Send size={14} /> {t('owner.send')}
           </button>
         </form>

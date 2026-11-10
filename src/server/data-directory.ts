@@ -20,6 +20,7 @@ import type { Dirent, Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { command, systemTool } from './process.ts';
+import type { Store } from './store.ts';
 
 /**
  * The host used to keep its data beside the checkout.  New hosts keep it in the
@@ -43,6 +44,7 @@ export interface MigrationMarker {
   stageDir?: string;
   sourceFingerprint?: string;
   sourceSignature?: SourceSignature;
+  consistencyEvidence?: { version: 1; digest: string };
   workspaceRoot?: string;
   legacyWorkspaceRoot?: string;
   preservedWorkspaces?: PreservedWorkspace[];
@@ -148,18 +150,26 @@ const attachmentExtensions: Record<string, string> = {
   'image/jpeg': 'jpeg',
   'image/webp': 'webp',
 };
-const knownKinds = new Set([
-  'activity',
-  'provider',
-  'project',
-  'repo',
-  'task',
-  'run',
-  'message',
-  'operation',
-  'settings',
-  'document',
-]);
+const knownKinds = {
+  event: true,
+  activity: true,
+  provider: true,
+  project: true,
+  repo: true,
+  task: true,
+  run: true,
+  message: true,
+  ownerMessage: true,
+  operation: true,
+  incident: true,
+  clarification: true,
+  recovery: true,
+  allowance: true,
+  settings: true,
+  document: true,
+  teamInstructions: true,
+  suggestion: true,
+} satisfies Record<Parameters<Store['put']>[0], true>;
 const ignoredDirectoryEntries = new Set([
   INSTANCE_LOCK_NAME,
   MIGRATION_LOCK_NAME,
@@ -275,6 +285,16 @@ async function readMarker(path: string): Promise<MigrationMarker | undefined> {
       typeof value.targetDir !== 'string'
     )
       throw new Error('迁移 marker 格式未知');
+    if ('consistencyEvidence' in value) {
+      const evidence = value.consistencyEvidence;
+      if (
+        !evidence ||
+        evidence.version !== 1 ||
+        typeof evidence.digest !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(evidence.digest)
+      )
+        throw new Error('迁移一致性证据格式未知或损坏');
+    }
     return value;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
@@ -529,55 +549,113 @@ async function directoryState(path: string): Promise<DirectoryState> {
 async function loadReferences(path: string): Promise<References> {
   const db = new DatabaseSync(path, { readOnly: true, timeout: 5000 });
   try {
-    const rows = db
-      .prepare('SELECT kind,id,body FROM documents ORDER BY rowid')
-      .all() as JsonDocument[];
-    for (const row of rows) {
-      if (!knownKinds.has(row.kind)) throw new Error(`数据库包含未知实体类型：${row.kind}`);
-      if (typeof row.id !== 'string' || typeof row.body !== 'string')
-        throw new Error('数据库实体格式未知');
-      try {
-        JSON.parse(row.body);
-      } catch {
-        throw new Error(`数据库实体 JSON 无法解析：${row.kind}/${row.id}`);
-      }
-    }
-    const byKind = (kind: string) =>
-      rows.filter((row) => row.kind === kind).map((row) => JSON.parse(row.body) as never);
-    return {
-      projects: byKind('project') as ProjectDocument[],
-      providers: byKind('provider') as ProviderDocument[],
-      messages: byKind('message') as MessageDocument[],
-      repos: byKind('repo') as RepoDocument[],
-      tasks: byKind('task') as TaskDocument[],
-    };
+    return databaseReferences(db);
   } finally {
     db.close();
   }
 }
 
-async function canonicalDatabase(path: string, temporaryRoot: string) {
-  const output = join(temporaryRoot, `${randomUUID()}.sqlite`);
-  const source = new DatabaseSync(path, { readOnly: true, timeout: 5000 });
-  try {
-    await backup(source, output);
-  } finally {
-    source.close();
-  }
-  try {
-    const db = new DatabaseSync(output, { readOnly: true, timeout: 5000 });
+function databaseReferences(db: DatabaseSync): References {
+  const rows = db
+    .prepare('SELECT kind,id,body FROM documents ORDER BY rowid')
+    .all() as JsonDocument[];
+  for (const row of rows) {
+    if (!Object.hasOwn(knownKinds, row.kind))
+      throw new Error(`数据库包含未知实体类型：${row.kind}`);
+    if (typeof row.id !== 'string' || typeof row.body !== 'string')
+      throw new Error('数据库实体格式未知');
     try {
-      const rows = db.prepare('SELECT kind,id,body FROM documents ORDER BY kind,id').all();
-      return JSON.stringify(rows);
-    } finally {
-      db.close();
+      JSON.parse(row.body);
+    } catch {
+      throw new Error(`数据库实体 JSON 无法解析：${row.kind}/${row.id}`);
     }
+  }
+  const byKind = (kind: string) =>
+    rows.filter((row) => row.kind === kind).map((row) => JSON.parse(row.body) as never);
+  return {
+    projects: byKind('project') as ProjectDocument[],
+    providers: byKind('provider') as ProviderDocument[],
+    messages: byKind('message') as MessageDocument[],
+    repos: byKind('repo') as RepoDocument[],
+    tasks: byKind('task') as TaskDocument[],
+  };
+}
+
+function canonicalDatabase(db: DatabaseSync) {
+  return JSON.stringify(db.prepare('SELECT kind,id,body FROM documents ORDER BY kind,id').all());
+}
+
+function sqliteValue(value: import('node:sqlite').SQLOutputValue) {
+  if (value === null) return ['null'];
+  if (typeof value === 'bigint') return ['integer', value.toString()];
+  if (typeof value === 'number') {
+    const bytes = Buffer.alloc(8);
+    bytes.writeDoubleBE(value);
+    return ['real', bytes.toString('hex')];
+  }
+  if (typeof value === 'string') return ['text', value];
+  return ['blob', Buffer.from(value).toString('hex')];
+}
+
+function sqlIdentifier(name: string) {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+function canonicalFullDatabase(db: DatabaseSync) {
+  const schema = db
+    .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name COLLATE BINARY')
+    .all();
+  const tables = db.prepare('PRAGMA table_list').all();
+  const content: [string, string[], string[]][] = [];
+  for (const table of tables) {
+    if (table.schema !== 'main' || table.name === 'sqlite_schema') continue;
+    if (table.type !== 'table') throw new Error(`数据库表格式未知：${table.name}`);
+    const name = String(table.name);
+    const columns = db.prepare(`PRAGMA table_xinfo(${sqlIdentifier(name)})`).all();
+    const names = columns.map((column) => String(column.name));
+    const selections = names.map(sqlIdentifier);
+    if (table.wr === 0) {
+      const rowid = ['rowid', '_rowid_', 'oid'].find(
+        (alias) => !names.some((column) => column.toLowerCase() === alias),
+      );
+      if (!rowid) throw new Error(`数据库行标识格式未知：${name}`);
+      selections.unshift(sqlIdentifier(rowid));
+    }
+    // Encode TEXT bytes in SQLite so even non-UTF-8 text retains its exact identity.
+    const encoded = selections.map(
+      (column, index) =>
+        `CASE WHEN typeof(${column})='text' THEN hex(CAST(${column} AS BLOB))` +
+        ` ELSE ${column} END AS c${index}`,
+    );
+    const statement = db.prepare(`SELECT ${encoded.join(',')} FROM ${sqlIdentifier(name)}`);
+    statement.setReadBigInts(true);
+    const rows = statement
+      .all()
+      .map((row) => JSON.stringify(selections.map((_, index) => sqliteValue(row[`c${index}`]))));
+    content.push([name, names, rows.sort()]);
+  }
+  content.sort((left, right) => {
+    const a = left[0];
+    const b = right[0];
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return JSON.stringify([
+    'sqlite-state-v1',
+    schema,
+    db.prepare('PRAGMA user_version').get(),
+    db.prepare('PRAGMA application_id').get(),
+    db.prepare('PRAGMA encoding').get(),
+    content,
+  ]);
+}
+
+function fullDatabaseSnapshot(path: string) {
+  const db = new DatabaseSync(path, { readOnly: true, timeout: 5000 });
+  try {
+    db.exec('BEGIN');
+    return canonicalFullDatabase(db);
   } finally {
-    await Promise.all([
-      unlink(output).catch(() => {}),
-      unlink(`${output}-wal`).catch(() => {}),
-      unlink(`${output}-shm`).catch(() => {}),
-    ]);
+    db.close();
   }
 }
 
@@ -587,17 +665,18 @@ async function hashFile(path: string) {
   return hash.digest('hex');
 }
 
-async function hashTree(path: string): Promise<[string, string][]> {
+async function hashTree(path: string, directories?: string[]): Promise<[string, string][]> {
   const info = await readStats(path);
   if (!info) return [];
   if (!info.isDirectory()) return [[path, await hashFile(path)]];
+  directories?.push(path);
   const output: [string, string][] = [];
   for (const entry of (await readdir(path, { withFileTypes: true })).sort((a, b) =>
     a.name.localeCompare(b.name),
   )) {
     const child = join(path, entry.name);
     if (entry.isSymbolicLink()) throw new Error(`迁移拒绝符号链接：${child}`);
-    output.push(...(await hashTree(child)));
+    output.push(...(await hashTree(child, directories)));
   }
   return output;
 }
@@ -654,32 +733,66 @@ async function referencedFiles(directory: string, refs: References) {
   return paths;
 }
 
-async function fingerprint(directory: string, temporaryRoot: string) {
+async function contentSnapshot(directory: string, fullState: boolean) {
   const dbPath = join(directory, DATABASE_FILE_NAME);
   if (!(await exists(dbPath))) {
     const config = join(directory, CONFIG_FILE_NAME);
-    if (!(await exists(config))) return undefined;
-    return createHash('sha256')
-      .update(await readFile(config))
+    const configHash = (await exists(config)) ? await hashFile(config) : undefined;
+    return {
+      fingerprint: configHash,
+      consistencyEvidence: fullState
+        ? {
+            version: 1 as const,
+            digest: createHash('sha256')
+              .update(JSON.stringify(['authority-v1', null, configHash ?? null]))
+              .digest('hex'),
+          }
+        : undefined,
+    };
+  }
+  const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 5000 });
+  try {
+    // A read transaction pins rows and reference discovery to the same committed state.
+    db.exec('BEGIN');
+    const refs = databaseReferences(db);
+    const canonical = canonicalDatabase(db);
+    const fullCanonical = fullState ? canonicalFullDatabase(db) : undefined;
+    const files = await referencedFiles(directory, refs);
+    const fileHashes: [string, string][] = [];
+    const directories: string[] = [];
+    for (const path of files) {
+      if (path === dbPath) continue;
+      const info = await readStats(path);
+      if (!info) continue;
+      if (info.isDirectory()) fileHashes.push(...(await hashTree(path, directories)));
+      else fileHashes.push([path, await hashFile(path)]);
+    }
+    // Keep the deployed v1 ordering, path separators and JSON byte encoding unchanged.
+    const legacyFiles = fileHashes.map(([path, hash]) => [relative(directory, path), hash]);
+    const fingerprint = createHash('sha256')
+      .update(canonical)
+      .update(JSON.stringify(legacyFiles))
       .digest('hex');
+    const portablePath = (path: string) => relative(directory, path).split(sep).join('/');
+    const fullFiles = [
+      ...fileHashes.map(([path, hash]) => JSON.stringify(['file', portablePath(path), hash])),
+      ...directories.map((path) => JSON.stringify(['directory', portablePath(path)])),
+    ];
+    return {
+      fingerprint,
+      databaseState: fullCanonical,
+      consistencyEvidence: fullState
+        ? {
+            version: 1 as const,
+            digest: createHash('sha256')
+              .update(JSON.stringify(['authority-v1', fullCanonical, fullFiles.sort()]))
+              .digest('hex'),
+          }
+        : undefined,
+    };
+  } finally {
+    db.close();
   }
-  const refs = await loadReferences(dbPath);
-  const files = await referencedFiles(directory, refs);
-  const fileHashes: [string, string][] = [];
-  for (const path of files) {
-    if (path === dbPath) continue;
-    const info = await readStats(path);
-    if (!info) continue;
-    if (info.isDirectory()) fileHashes.push(...(await hashTree(path)));
-    else fileHashes.push([path, await hashFile(path)]);
-  }
-  const canonical = await canonicalDatabase(dbPath, temporaryRoot);
-  const digest = createHash('sha256');
-  digest.update(canonical);
-  digest.update(
-    JSON.stringify(fileHashes.map(([path, hash]) => [relative(directory, path), hash])),
-  );
-  return digest.digest('hex');
 }
 
 async function signatureTree(
@@ -732,20 +845,26 @@ function signaturesEqual(left: SourceSignature | undefined, right: SourceSignatu
 interface AuthoritySnapshot {
   fingerprint?: string;
   signature?: SourceSignature;
+  consistencyEvidence?: MigrationMarker['consistencyEvidence'];
+  databaseState?: string;
 }
 
-async function authoritySnapshot(
-  directory: string,
-  temporaryRoot: string,
-): Promise<AuthoritySnapshot> {
+async function authoritySnapshot(directory: string, fullState = true): Promise<AuthoritySnapshot> {
   return {
-    fingerprint: await fingerprint(directory, temporaryRoot),
+    ...(await contentSnapshot(directory, fullState)),
     signature: await sourceSignature(directory),
   };
 }
 
 function authoritySnapshotsEqual(left: AuthoritySnapshot, right: AuthoritySnapshot) {
-  return left.fingerprint === right.fingerprint && signaturesEqual(left.signature, right.signature);
+  return authorityContentsEqual(left, right) && signaturesEqual(left.signature, right.signature);
+}
+
+function authorityContentsEqual(left: AuthoritySnapshot, right: AuthoritySnapshot) {
+  return (
+    left.fingerprint === right.fingerprint &&
+    left.consistencyEvidence?.digest === right.consistencyEvidence?.digest
+  );
 }
 
 async function copyOne(source: string, destination: string) {
@@ -774,11 +893,12 @@ async function copyVerifiedDatabaseSnapshot(sourceSnapshot: string, destination:
   try {
     await copyOne(sourceSnapshot, destination);
     await verifyDatabase(destination);
-    const [sourceCanonical, destinationCanonical] = await Promise.all([
-      canonicalDatabase(sourceSnapshot, dirname(destination)),
-      canonicalDatabase(destination, dirname(destination)),
-    ]);
-    if (sourceCanonical !== destinationCanonical)
+    const sourceCanonical = fullDatabaseSnapshot(sourceSnapshot);
+    const destinationCanonical = fullDatabaseSnapshot(destination);
+    if (
+      sourceCanonical !== destinationCanonical ||
+      (await hashFile(sourceSnapshot)) !== (await hashFile(destination))
+    )
       throw new Error(`SQLite rollback 备份与在线快照不一致：${destination}`);
   } finally {
     await removeSQLiteSidecars(destination);
@@ -795,13 +915,10 @@ async function snapshotDatabase(source: string, destination: string) {
   } finally {
     db.close();
   }
-  try {
-    await verifyDatabase(snapshot);
-    await copyVerifiedDatabaseSnapshot(snapshot, destination);
-  } finally {
-    await removeSQLiteSidecars(snapshot);
-    await unlink(snapshot).catch(() => {});
-  }
+  await verifyDatabase(snapshot);
+  await copyVerifiedDatabaseSnapshot(snapshot, destination);
+  await removeSQLiteSidecars(snapshot);
+  await unlink(snapshot);
 }
 
 async function removeSQLiteSidecars(path: string) {
@@ -1020,7 +1137,7 @@ async function migrateLegacy(
   await durableJson(join(stage, MIGRATION_MARKER_NAME), started);
   let sourceBefore: AuthoritySnapshot | undefined;
   try {
-    sourceBefore = await authoritySnapshot(source, dirname(stage));
+    sourceBefore = await authoritySnapshot(source);
     const config = await readConfig(join(source, CONFIG_FILE_NAME));
     if (config) await writeFile(join(stage, CONFIG_FILE_NAME), config.raw, { flag: 'wx' });
     const sourceDb = join(source, DATABASE_FILE_NAME);
@@ -1039,11 +1156,12 @@ async function migrateLegacy(
       await protectPrivateDirectory(join(stage, 'projects'));
       await protectPrivateDirectory(join(stage, 'agents'));
       await afterSourceSnapshot?.();
-      const sourceAfter = await authoritySnapshot(source, dirname(stage));
-      const stageFingerprint = await fingerprint(stage, dirname(stage));
+      const sourceAfter = await authoritySnapshot(source);
+      const stageSnapshot = await authoritySnapshot(stage);
+      const stageFingerprint = stageSnapshot.fingerprint;
       if (
         !authoritySnapshotsEqual(sourceBefore, sourceAfter) ||
-        stageFingerprint !== sourceBefore.fingerprint
+        !authorityContentsEqual(stageSnapshot, sourceBefore)
       )
         throw new Error(
           `旧版数据在迁移期间发生变化，或 staging 与源快照不一致，已保留源目录并停止迁移（before=${sourceBefore.fingerprint ?? 'none'}, after=${sourceAfter.fingerprint ?? 'none'}, stage=${stageFingerprint ?? 'none'}, signaturesEqual=${signaturesEqual(sourceBefore.signature, sourceAfter.signature)}）`,
@@ -1062,6 +1180,7 @@ async function migrateLegacy(
         completedAt: timestamp(now),
         sourceFingerprint: sourceBefore.fingerprint,
         sourceSignature: sourceBefore.signature,
+        consistencyEvidence: sourceBefore.consistencyEvidence,
         workspaceRoot: workspacePlan.workspaceRoot,
         legacyWorkspaceRoot: workspacePlan.legacyWorkspaceRoot,
         preservedWorkspaces: workspacePlan.preserved,
@@ -1078,6 +1197,7 @@ async function migrateLegacy(
       completedAt: timestamp(now),
       sourceFingerprint: sourceBefore.fingerprint,
       sourceSignature: sourceBefore.signature,
+      consistencyEvidence: sourceBefore.consistencyEvidence,
       workspaceRoot: join(target, 'workspaces'),
       preservedWorkspaces: [],
       taskRoots: {},
@@ -1089,11 +1209,12 @@ async function migrateLegacy(
       },
     };
     await afterSourceSnapshot?.();
-    const sourceAfter = await authoritySnapshot(source, dirname(stage));
-    const stageFingerprint = await fingerprint(stage, dirname(stage));
+    const sourceAfter = await authoritySnapshot(source);
+    const stageSnapshot = await authoritySnapshot(stage);
+    const stageFingerprint = stageSnapshot.fingerprint;
     if (
       !authoritySnapshotsEqual(sourceBefore, sourceAfter) ||
-      stageFingerprint !== sourceBefore.fingerprint
+      !authorityContentsEqual(stageSnapshot, sourceBefore)
     )
       throw new Error(
         `旧版数据在迁移期间发生变化，或 staging 与源快照不一致，已保留源目录并停止迁移（before=${sourceBefore.fingerprint ?? 'none'}, after=${sourceAfter.fingerprint ?? 'none'}, stage=${stageFingerprint ?? 'none'}, signaturesEqual=${signaturesEqual(sourceBefore.signature, sourceAfter.signature)}）`,
@@ -1106,7 +1227,11 @@ async function migrateLegacy(
       ...started,
       status: 'blocked',
       ...(sourceBefore
-        ? { sourceFingerprint: sourceBefore.fingerprint, sourceSignature: sourceBefore.signature }
+        ? {
+            sourceFingerprint: sourceBefore.fingerprint,
+            sourceSignature: sourceBefore.signature,
+            consistencyEvidence: sourceBefore.consistencyEvidence,
+          }
         : {}),
       reason: error instanceof Error ? error.message : String(error),
     };
@@ -1188,10 +1313,24 @@ async function verifyRecordedSource(
   if (!state.authoritative) return marker;
   const sourceOwnership = await acquireLegacyLock(source, probeLegacy);
   try {
-    const currentSnapshot = await authoritySnapshot(source, dirname(target));
-    if (signaturesEqual(marker.sourceSignature, currentSnapshot.signature)) return marker;
-    if (marker.sourceFingerprint !== currentSnapshot.fingerprint) {
-      const reason = `旧版数据目录在迁移完成后发生变化，拒绝继续使用新目录（recorded=${marker.sourceFingerprint ?? 'none'}, current=${currentSnapshot.fingerprint ?? 'none'}）`;
+    const currentSnapshot = await authoritySnapshot(source, !!marker.consistencyEvidence);
+    if (
+      !marker.consistencyEvidence &&
+      signaturesEqual(marker.sourceSignature, currentSnapshot.signature)
+    )
+      return marker;
+    if (
+      marker.sourceFingerprint !== currentSnapshot.fingerprint ||
+      (marker.consistencyEvidence &&
+        marker.consistencyEvidence.digest !== currentSnapshot.consistencyEvidence?.digest)
+    ) {
+      const reason = marker.consistencyEvidence
+        ? '旧版数据目录在迁移完成后发生变化，拒绝继续使用新目录' +
+          `（完整状态 recorded=${marker.consistencyEvidence.digest}, ` +
+          `current=${currentSnapshot.consistencyEvidence?.digest ?? 'none'}）`
+        : '旧版数据目录在迁移完成后发生变化，拒绝继续使用新目录' +
+          `（recorded=${marker.sourceFingerprint ?? 'none'}, ` +
+          `current=${currentSnapshot.fingerprint ?? 'none'}）`;
       const blocked: MigrationMarker = { ...marker, status: 'blocked', reason };
       await durableJson(join(target, MIGRATION_MARKER_NAME), blocked);
       throw new Error(reason);
@@ -1260,7 +1399,10 @@ async function adoptExistingTarget(
   source: string,
   now: () => string,
 ): Promise<MigrationMarker> {
-  const sourceSnapshot = await authoritySnapshot(source, dirname(target));
+  const sourceSnapshot = await authoritySnapshot(source);
+  const targetSnapshot = await authoritySnapshot(target);
+  if (!authorityContentsEqual(sourceSnapshot, targetSnapshot))
+    throw new Error('旧版与新数据目录内容不一致，拒绝采用');
   const workspace = await existingWorkspaceMapping(target, source);
   let databaseBackup: string | undefined;
   const targetDb = join(target, DATABASE_FILE_NAME);
@@ -1269,12 +1411,14 @@ async function adoptExistingTarget(
     const backupPath = join(target, 'backups', backupName);
     // Snapshot the already-present target exactly once, then verify the material rollback file.
     await snapshotDatabase(targetDb, backupPath);
+    if (fullDatabaseSnapshot(backupPath) !== sourceSnapshot.databaseState)
+      throw new Error('已有新目录 rollback 与源完整状态不一致，已保留备份并停止采用');
     databaseBackup = join('backups', backupName);
   }
-  const targetAfterFingerprint = await fingerprint(target, dirname(target));
-  if (targetAfterFingerprint !== sourceSnapshot.fingerprint)
+  const targetAfter = await authoritySnapshot(target);
+  if (!authoritySnapshotsEqual(targetSnapshot, targetAfter))
     throw new Error('已有新目录在采用期间发生变化，已保留 rollback 备份并停止采用');
-  const afterSnapshot = await authoritySnapshot(source, dirname(target));
+  const afterSnapshot = await authoritySnapshot(source);
   if (!authoritySnapshotsEqual(sourceSnapshot, afterSnapshot))
     throw new Error('旧版数据在采用已有新目录期间发生变化，已保留源目录并停止采用');
   const marker: MigrationMarker = {
@@ -1284,6 +1428,7 @@ async function adoptExistingTarget(
     targetDir: target,
     sourceFingerprint: sourceSnapshot.fingerprint,
     sourceSignature: sourceSnapshot.signature,
+    consistencyEvidence: sourceSnapshot.consistencyEvidence,
     workspaceRoot: workspace.workspaceRoot,
     legacyWorkspaceRoot: workspace.legacyWorkspaceRoot,
     preservedWorkspaces: workspace.preservedWorkspaces,
@@ -1328,7 +1473,19 @@ export async function resolveDataDirectory(
   if (samePath(source, target)) {
     const ownership = await acquireLock(join(target, INSTANCE_LOCK_NAME), '数据目录');
     try {
-      const marker = await ensureMarker(target, undefined, now);
+      let marker = await ensureMarker(target, undefined, now);
+      if (
+        marker.consistencyEvidence &&
+        marker.sourceDir &&
+        !samePath(resolve(marker.sourceDir), target)
+      )
+        marker = await verifyRecordedSource(
+          target,
+          resolve(marker.sourceDir),
+          marker,
+          options.probeLegacy ?? true,
+          now,
+        );
       return {
         dataDir: target,
         ...workspaceFields(marker, target),
@@ -1426,11 +1583,12 @@ export async function resolveDataDirectory(
         };
       }
 
-      const sourceSnapshot = await authoritySnapshot(source, dirname(target));
-      const targetFingerprint = await fingerprint(target, dirname(target));
+      const sourceSnapshot = await authoritySnapshot(source);
+      const targetSnapshot = await authoritySnapshot(target);
+      const targetFingerprint = targetSnapshot.fingerprint;
       if (
         sourceSnapshot.fingerprint !== undefined &&
-        sourceSnapshot.fingerprint === targetFingerprint
+        authorityContentsEqual(sourceSnapshot, targetSnapshot)
       ) {
         const complete = await adoptExistingTarget(target, source, now);
         keepOwnership = true;

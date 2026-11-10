@@ -15,8 +15,18 @@ export async function checkOwnerConversation(
   // Paused, so the fixture engine never schedules it; the owner still answers questions.
   store.updateTask(task.id, { worktree: resolve('.'), stage: 'reviewing' });
   const sent: unknown[] = [];
+  let release!: () => void;
+  let entered!: () => void;
+  const requested = new Promise<void>((done) => {
+    entered = done;
+  });
+  const pending = new Promise<void>((done) => {
+    release = done;
+  });
   await page.route('**/owner-messages', async (route) => {
     sent.push(route.request().postDataJSON());
+    entered();
+    await pending;
     await route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
   });
   await openTask(page, task.title);
@@ -24,14 +34,31 @@ export async function checkOwnerConversation(
     .locator('.task-page')
     .getByRole('region', { name: '和负责人对话', exact: true });
   await section.waitFor();
+  await page.locator('.task-controls > summary').click();
   const ask = section.getByRole('button', { name: '提问', exact: true });
   assert.equal(await ask.isDisabled(), true, 'nothing to send yet');
   await section.getByLabel('问问负责人这项工作的情况', { exact: true }).fill('现在卡在哪里？');
   await ask.click();
+  await requested;
+  const draft = section.locator('textarea');
+  await draft.fill('');
+  await draft.fill('现在卡在哪里？');
+  const accepted = page.waitForResponse((response) => response.url().endsWith('/owner-messages'));
+  release();
+  await accepted;
+  await page.waitForFunction(
+    () =>
+      document.querySelector<HTMLButtonElement>('.task-controls .danger-button')?.disabled ===
+      false,
+  );
+  assert.equal(await draft.inputValue(), '现在卡在哪里？', 'retyped text is a new draft');
+  await draft.fill('  这条问题发送后清空  ');
+  await ask.click();
   await page.waitForFunction(
     () => !(document.querySelector('.owner-compose textarea') as HTMLTextAreaElement).value,
   );
-  assert.deepEqual(sent, [{ content: '现在卡在哪里？' }]);
+  assert.deepEqual(sent, [{ content: '现在卡在哪里？' }, { content: '这条问题发送后清空' }]);
+  await page.locator('.task-controls > summary').click();
   await page.unroute('**/owner-messages');
   const question = store.addOwnerMessage(task.id, '现在卡在哪里？');
   await section.getByText('负责人稍后回答。', { exact: true }).waitFor();

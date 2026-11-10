@@ -16,7 +16,12 @@ type Entry = { at: string; order: number } & ({ message: Message } | { activity:
 type Item =
   { kind: 'message'; message: Message } | { kind: 'process'; runId: string; entries: Entry[] };
 
-function presentation(messages: Message[], activities: PMActivity[], runs: Run[]): Item[] {
+function presentation(
+  messages: Message[],
+  activities: PMActivity[],
+  runs: Run[],
+  positions?: Map<string, number>,
+): Item[] {
   const runIds = new Set(runs.filter((run) => run.role === 'pm').map((run) => run.id));
   const entries: Entry[] = [
     ...messages.map((message) => ({
@@ -29,7 +34,15 @@ function presentation(messages: Message[], activities: PMActivity[], runs: Run[]
       order: activity.timelineOrder ?? 0,
       activity,
     })),
-  ].sort((a, b) => a.at.localeCompare(b.at) || a.order - b.order);
+  ].sort((a, b) => {
+    const aId = 'message' in a ? a.message.id : a.activity.id;
+    const bId = 'message' in b ? b.message.id : b.activity.id;
+    return (
+      a.at.localeCompare(b.at) ||
+      a.order - b.order ||
+      (positions?.get(aId) ?? 0) - (positions?.get(bId) ?? 0)
+    );
+  });
   const final = new Map<string, string>();
   for (const entry of entries) {
     if ('message' in entry && entry.message.role === 'assistant' && entry.message.runId)
@@ -80,6 +93,7 @@ export function ConversationFlow({
   renderMessage,
   disclosures,
   following,
+  positions,
 }: {
   messages: Message[];
   activities: PMActivity[];
@@ -88,14 +102,15 @@ export function ConversationFlow({
   renderMessage: (message: Message) => ReactNode;
   disclosures: Map<string, boolean>;
   following: RefObject<boolean>;
+  positions?: Map<string, number>;
 }) {
   const liveRuns = useRef(new Set<string>());
   for (const run of runs) {
     if (run.status === 'running' || run.status === 'waiting') liveRuns.current.add(run.id);
   }
   const items = useMemo(
-    () => presentation(messages, activities, runs),
-    [messages, activities, runs],
+    () => presentation(messages, activities, runs, positions),
+    [messages, activities, runs, positions],
   );
   const { t } = useLocale();
   // A liaison turn bound to a Task that answers no user message (a Dev's technical question) is the
@@ -168,16 +183,24 @@ export function useReadingAnchor(
   following: RefObject<boolean>,
   identity: string,
 ) {
+  const restoreAfterCommit = useRef<() => void>(() => {});
+  useLayoutEffect(() => {
+    restoreAfterCommit.current();
+  });
   useLayoutEffect(() => {
     const element = scroll.current;
     const body = content.current;
     if (!element || !body) return;
     let anchors: { element: HTMLElement; offset: number }[] = [];
+    let restoredTop: number | undefined;
     const capture = () => {
       if (following.current) {
         anchors = [];
+        restoredTop = undefined;
         return;
       }
+      if (restoredTop !== undefined && Math.abs(element.scrollTop - restoredTop) < 1) return;
+      restoredTop = undefined;
       const top = element.getBoundingClientRect().top;
       anchors = [...body.querySelectorAll<HTMLElement>('.message[id], .pm-process[id]')]
         .filter(
@@ -192,17 +215,21 @@ export function useReadingAnchor(
       const anchor = anchors.find(
         (anchor) => anchor.element.isConnected && anchor.element.getClientRects().length,
       );
-      if (anchor)
+      if (anchor) {
         element.scrollTop +=
           anchor.element.getBoundingClientRect().top -
           element.getBoundingClientRect().top -
           anchor.offset;
+        restoredTop = element.scrollTop;
+      }
     };
+    restoreAfterCommit.current = restore;
     element.addEventListener('scroll', capture, { passive: true });
     const observer = new ResizeObserver(restore);
     observer.observe(body);
     capture();
     return () => {
+      restoreAfterCommit.current = () => {};
       observer.disconnect();
       element.removeEventListener('scroll', capture);
     };

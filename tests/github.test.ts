@@ -158,6 +158,127 @@ function issueFixture() {
   };
 }
 
+test('checks reads every check-run and status page before readiness', async () => {
+  for (const hidden of ['failure', 'in_progress', 'status-failure', 'success', 'unreadable']) {
+    const f = issueFixture();
+    const requested: string[] = [];
+    class Checks extends GitHub {
+      override async api<T = any>(endpoint: string): Promise<T> {
+        requested.push(endpoint);
+        const later = endpoint.includes('page=2');
+        if (hidden === 'unreadable' && later) throw new Error('page unavailable');
+        if (endpoint.includes('check-runs'))
+          return {
+            total_count: 101,
+            check_runs: later
+              ? [
+                  {
+                    name: 'last-check',
+                    status: hidden === 'in_progress' ? 'in_progress' : 'completed',
+                    conclusion:
+                      hidden === 'in_progress'
+                        ? null
+                        : hidden === 'status-failure'
+                          ? 'success'
+                          : hidden,
+                  },
+                ]
+              : Array.from({ length: 100 }, (_, i) => ({
+                  name: `check-${i}`,
+                  status: 'completed',
+                  conclusion: 'success',
+                })),
+          } as T;
+        return {
+          total_count: 101,
+          statuses: later
+            ? [
+                {
+                  context: 'last-status',
+                  state: hidden === 'status-failure' ? 'failure' : 'success',
+                },
+              ]
+            : Array.from({ length: 100 }, (_, i) => ({ context: `status-${i}`, state: 'success' })),
+        } as T;
+      }
+    }
+    try {
+      const github = new Checks(f.store);
+      if (hidden === 'unreadable') {
+        await assert.rejects(github.checks(f.task()), /page unavailable/);
+      } else {
+        assert.equal((await github.checks(f.task())).ready, hidden === 'success', hidden);
+        assert.ok(
+          requested.some(
+            (endpoint) => endpoint.includes('check-runs') && endpoint.includes('page=2'),
+          ),
+        );
+        assert.ok(
+          requested.some(
+            (endpoint) => endpoint.includes('/status?') && endpoint.includes('page=2'),
+          ),
+        );
+      }
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test('checks refuses a short response that cannot account for the advertised total', async () => {
+  const f = issueFixture();
+  class Incomplete extends GitHub {
+    override async api<T = any>(endpoint: string): Promise<T> {
+      return (
+        endpoint.includes('check-runs')
+          ? {
+              total_count: 101,
+              check_runs: [{ name: 'only-check', status: 'completed', conclusion: 'success' }],
+            }
+          : { total_count: 0, statuses: [] }
+      ) as T;
+    }
+  }
+  try {
+    await assert.rejects(new Incomplete(f.store).checks(f.task()), /未完整|不完整/);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('remote squash revision is retained only for the pinned merged delivery', async () => {
+  const f = issueFixture();
+  const head = 'a'.repeat(40);
+  const commit = 'b'.repeat(40);
+  const remote = {
+    number: 7,
+    html_url: 'https://github.com/example/repo/pull/7',
+    state: 'closed',
+    merged: true,
+    merge_commit_sha: commit,
+    head: { sha: head },
+    base: { sha: 'base' },
+    body: '',
+  };
+  class Remote extends GitHub {
+    override async gh() {
+      return { stdout: JSON.stringify(remote), stderr: '', code: 0 };
+    }
+  }
+  const github = new Remote(f.store);
+  try {
+    f.store.updateTask(f.task().id, { pr: 7, head });
+    await github.pull(f.task());
+    assert.deepEqual(f.task().deliveryRevision, { head, commit });
+    remote.head.sha = 'c'.repeat(40);
+    remote.merge_commit_sha = 'd'.repeat(40);
+    await github.pull(f.task());
+    assert.deepEqual(f.task().deliveryRevision, { head, commit }, 'drift cannot rebind evidence');
+  } finally {
+    f.store.close();
+  }
+});
+
 test('Issue completion checks only managed criteria, closes and persists the canonical body', async () => {
   const f = issueFixture();
   try {

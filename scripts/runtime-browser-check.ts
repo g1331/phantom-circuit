@@ -155,8 +155,19 @@ export async function checkRuntimeUI() {
           : request.postDataJSON();
     let result: unknown = {};
     if (path === '/session') result = { csrf: 'fixture' };
-    else if (path === '/state') result = snapshot;
-    else if (path === '/events') {
+    else if (path === '/state') result = { ...snapshot, messages: [], activities: [] };
+    else if (path.endsWith('/messages') && request.method() === 'GET') {
+      for (const message of snapshot.messages) store.put('message', message.id, message);
+      for (const activity of snapshot.activities) store.put('activity', activity.id, activity);
+      const query = new URL(request.url()).searchParams;
+      const before = query.get('before');
+      const after = query.get('after');
+      const ids = query.get('ids');
+      result = store.conversationPage(
+        path.split('/')[2],
+        ids ? { ids: ids.split(',') } : after ? { after } : { before: before ?? undefined },
+      );
+    } else if (path === '/events') {
       await route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
       return;
     } else if (path.endsWith('/scheduling'))
@@ -288,11 +299,25 @@ export async function checkRuntimeUI() {
       recursive: true,
     });
     await page.goto('http://127.0.0.1:4330');
+    const unconfiguredModel = page.locator('.pm-model-trigger');
+    await unconfiguredModel.waitFor();
+    assert.equal((await unconfiguredModel.innerText()).trim(), 'Not configured');
+    assert.equal(await unconfiguredModel.getAttribute('title'), 'Not configured');
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Technical records' })
+      .click();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
     await page
       .getByText('The service is temporarily unavailable; try again later', { exact: true })
       .waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
     await choosePreference(page, 'language', 'zh-CN');
+    assert.equal((await unconfiguredModel.innerText()).trim(), '未配置');
+    assert.equal(await unconfiguredModel.getAttribute('title'), '未配置');
     await page.getByText('服务暂时不可用，请稍后重试', { exact: true }).waitFor();
     await page.getByText('当前资源状态不允许此操作', { exact: true }).waitFor();
     await page.getByText('Interrupted fixture', { exact: true }).waitFor();
@@ -324,6 +349,10 @@ export async function checkRuntimeUI() {
     await clarification.getByRole('button', { name: 'Submit available answers' }).click();
     await clarification.getByText('Answered', { exact: true }).waitFor();
     assert.equal(snapshot.clarifications![0].answers?.[1].value, 'Keep 用户内容');
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
     const recovery = page.getByRole('region', { name: 'Interrupted work' });
     await recovery.getByRole('button', { name: 'Resume', exact: true }).first().click();
     await recovery.locator('.action-record').nth(1).waitFor({ state: 'hidden' });
@@ -337,6 +366,10 @@ export async function checkRuntimeUI() {
     });
     snapshot.clarifications![0].status = 'open';
     await page.reload();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Interrupted work' })
+      .click();
     await recovery.getByRole('button', { name: 'Resume all recoverable work' }).click();
     await recovery.waitFor({ state: 'hidden' });
     assert.equal(
@@ -345,6 +378,10 @@ export async function checkRuntimeUI() {
     );
     await clarification.getByRole('button', { name: 'Cancel', exact: true }).click();
     await clarification.getByText('Cancelled', { exact: true }).waitFor();
+    await page
+      .locator('.project-actions > details > summary')
+      .filter({ hasText: 'Technical records' })
+      .click();
     const incidents = page.getByRole('region', { name: 'Incidents' });
     await incidents.getByLabel('Resolution guidance').fill('Use the retained evidence');
     await incidents.getByRole('button', { name: 'Wait for user' }).click();

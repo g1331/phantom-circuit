@@ -64,7 +64,13 @@ export function ChatMessage({
           host(m.content, m.descriptor)
         ) : (
           <MarkdownContent
-            content={m.runId && isRunning(delivery ?? '') && streamText ? streamText : m.content}
+            content={
+              m.runId && isRunning(delivery ?? '') && streamText
+                ? streamText
+                : m.descriptor
+                  ? host(m.content, m.descriptor)
+                  : m.content
+            }
           />
         )}
       </div>

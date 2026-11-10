@@ -175,7 +175,9 @@ export async function checkMaintenance() {
     await page.unroute('**/assets/settings-panel-*.js');
     await page.getByLabel('Global Dev limit').fill('9');
     const settingsInput = await page.getByLabel('Global Dev limit').elementHandle();
-    const refreshed = page.waitForResponse((response) => response.url().endsWith('/api/state'));
+    const refreshed = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/state',
+    );
     store.transaction(() =>
       store.put('project', project.id, {
         ...store.project(project.id),
@@ -268,7 +270,9 @@ export async function checkMaintenance() {
     });
     const detailScroll = await dialog.evaluate((element) => element.scrollTop);
     assert.ok(detailScroll > 0, 'the work page scrolls');
-    const update = page.waitForResponse((response) => response.url().endsWith('/api/state'));
+    const update = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/state',
+    );
     store.updateTask(history.id, {
       feedback: [
         'External delivery: https://github.com/example/history/pull/7',
@@ -363,6 +367,15 @@ export async function checkMaintenance() {
     // Classify each Incident independently, even when several belong to the same Task.
     await openPage(page, 'home');
     let currentIncidents = 0;
+    const openTechnicalActions = async () => {
+      const summary = page
+        .locator('.project-actions > details > summary')
+        .filter({ hasText: 'Technical records' });
+      await summary.waitFor();
+      if (!(await summary.evaluate((node) => (node.parentElement as HTMLDetailsElement).open)))
+        await summary.click();
+      await summary.locator('xpath=..').locator(':scope > .fold-body').waitFor();
+    };
     const incidentCases = [
       {
         phase: 'finalize',
@@ -415,6 +428,7 @@ export async function checkMaintenance() {
         evidence: `Original evidence ${index}`,
       });
       if (!sample.historical) currentIncidents++;
+      if (currentIncidents) await openTechnicalActions();
       await page.waitForFunction(
         (count) => document.querySelectorAll('.project-actions .action-record').length === count,
         currentIncidents,
@@ -441,6 +455,7 @@ export async function checkMaintenance() {
     }
     const orphan = store.createIncident({ projectId: project.id, phase: 'sync', message: reason });
     currentIncidents++;
+    await openTechnicalActions();
     await page.waitForFunction(
       (count) => document.querySelectorAll('.project-actions .action-record').length === count,
       currentIncidents,
@@ -460,6 +475,7 @@ export async function checkMaintenance() {
     });
     await page.getByRole('button', { name: otherProject.name, exact: true }).click();
     await page.getByRole('heading', { name: otherProject.name, exact: true }).waitFor();
+    await openTechnicalActions();
     await page.waitForFunction(
       () => document.querySelectorAll('.project-actions .action-record').length === 1,
     );
@@ -472,6 +488,7 @@ export async function checkMaintenance() {
     assert.deepEqual(store.get('incident', orphan.id), orphan);
     await page.getByRole('button', { name: 'Background refresh happened', exact: true }).click();
     await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
+    await openTechnicalActions();
     assert.equal(await page.locator('.project-actions').count(), 1);
     assert.equal(await page.locator('.project-actions .action-record').count(), currentIncidents);
     await page.getByLabel('Message to PM').fill('Draft after project switch');

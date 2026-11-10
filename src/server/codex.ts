@@ -286,6 +286,7 @@ export class Codex extends EventEmitter implements AgentBackend {
   private customProvider = false;
   private modelProvider = 'openai';
   private activeTurns = new Map<string, string>();
+  private turnStops = new Set<(error: Error) => void>();
   private activeProfiles = new Map<string, Profile>();
   private turnUsages = new Map<string, AgentUsage>();
   private completedTurnUsages = new Map<string, AgentUsage>();
@@ -750,6 +751,7 @@ export class Codex extends EventEmitter implements AgentBackend {
       let output = '';
       let turnId: string | undefined;
       let done = false;
+      let interruptionRequested = false;
       const timer = setTimeout(() => {
         void interrupt();
         finish(new Error('Agent 超过单次运行时限（45 分钟）'));
@@ -760,6 +762,7 @@ export class Codex extends EventEmitter implements AgentBackend {
         clearTimeout(timer);
         this.off('notification', notification);
         this.off('failure', failure);
+        this.turnStops.delete(failure);
         signal?.removeEventListener('abort', abort);
         this.finishStreams();
         this.activeTurns.delete(threadId);
@@ -778,7 +781,19 @@ export class Codex extends EventEmitter implements AgentBackend {
         }
       };
       const interrupt = async () => {
+        interruptionRequested = true;
         if (turnId) await this.request('turn/interrupt', { threadId, turnId }).catch(() => {});
+      };
+      const started = (id: string) => {
+        if (turnId) return;
+        turnId = id;
+        if (done) {
+          if (interruptionRequested) void interrupt();
+          return;
+        }
+        this.activeTurns.set(threadId, id);
+        onTurn?.(id);
+        if (this.pendingAborts.delete(threadId)) void interrupt();
       };
       const abort = () => {
         void interrupt();
@@ -789,9 +804,7 @@ export class Codex extends EventEmitter implements AgentBackend {
         if (p.threadId !== threadId) return;
         if (turnId && (p.turnId ?? p.turn?.id) && (p.turnId ?? p.turn?.id) !== turnId) return;
         if (method === 'turn/started') {
-          turnId = p.turn.id;
-          this.activeTurns.set(threadId, turnId!);
-          onTurn?.(turnId!);
+          started(p.turn.id);
         }
         if (method === 'item/agentMessage/delta') output += p.delta;
         if (method === 'item/completed' && p.item.type === 'agentMessage')
@@ -809,6 +822,7 @@ export class Codex extends EventEmitter implements AgentBackend {
       };
       this.on('notification', notification);
       this.on('failure', failure);
+      this.turnStops.add(failure);
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) {
         abort();
@@ -825,11 +839,7 @@ export class Codex extends EventEmitter implements AgentBackend {
         ...(outputSchema ? { outputSchema } : {}),
       })
         .then((r) => {
-          if (done) return;
-          turnId = r.turn.id;
-          this.activeTurns.set(threadId, turnId!);
-          onTurn?.(turnId!);
-          if (this.pendingAborts.delete(threadId)) void interrupt();
+          started(r.turn.id);
         })
         .catch(finish);
     });
@@ -1131,6 +1141,7 @@ export class Codex extends EventEmitter implements AgentBackend {
   async stop() {
     this.finishStreams();
     const stopped = new Error('Codex 已停止');
+    for (const stopTurn of this.turnStops) stopTurn(stopped);
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(stopped);

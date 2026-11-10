@@ -30,7 +30,12 @@ export type HostMessageCode =
   | 'upload_limit_exceeded'
   | 'project_not_found'
   | 'cross_project'
-  | 'invalid_price';
+  | 'invalid_price'
+  | 'delivery_completed'
+  | 'delivery_self_current'
+  | 'delivery_self_pending'
+  | 'delivery_self_pending_service'
+  | 'delivery_self_unknown';
 
 export type HostMessageParams = Record<string, string | number | boolean | null | undefined> & {
   status?: number;
@@ -76,6 +81,14 @@ const templates: Record<HostLocale, Partial<Record<HostMessageCode, string>>> = 
     project_not_found: '项目不存在',
     cross_project: '跨项目操作被拒绝',
     invalid_price: '模型价格必须是非负十进制数',
+    delivery_completed: '已交付「{title}」。\n{reference}{preview}',
+    delivery_self_current: '已交付「{title}」。当前应用已包含这次更新。\n{reference}{preview}',
+    delivery_self_pending:
+      '「{title}」的代码已完成。当前应用尚未包含这次更新。\n{reference}{preview}{update}',
+    delivery_self_pending_service:
+      '「{title}」的代码已完成。当前应用尚未包含这次更新。\n{reference}\n\n将 {source} 更新到这次交付版本后，通过现有服务入口更新：\n{update}',
+    delivery_self_unknown:
+      '「{title}」的代码已完成。当前应用是否已包含这次更新尚未确认。\n{reference}{preview}',
   },
   en: {
     bad_request: 'Invalid request',
@@ -100,6 +113,21 @@ const templates: Record<HostLocale, Partial<Record<HostMessageCode, string>>> = 
     project_not_found: 'Project not found',
     cross_project: 'Cross-project operation denied',
     invalid_price: 'Model prices must be non-negative decimal values',
+    delivery_completed: 'Delivered “{title}”.\n{reference}{preview}',
+    delivery_self_current:
+      'Delivered “{title}”. The running application includes this update.\n{reference}{preview}',
+    delivery_self_pending:
+      'Code for “{title}” is complete. ' +
+      'The running application does not yet include this update.\n' +
+      '{reference}{preview}{update}',
+    delivery_self_pending_service:
+      'Code for “{title}” is complete. ' +
+      'The running application does not yet include this update.\n' +
+      '{reference}\n\nAfter updating {source} to this delivery revision, ' +
+      'update through the existing service entry point:\n{update}',
+    delivery_self_unknown:
+      'Code for “{title}” is complete. ' +
+      'Whether the running application includes this update is unconfirmed.\n{reference}{preview}',
   },
 };
 

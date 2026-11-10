@@ -1,11 +1,36 @@
-import { useState } from 'react';
-import type { Snapshot } from '../shared/types.ts';
+import { useEffect, useState } from 'react';
+import type { ConversationPage, Snapshot } from '../shared/types.ts';
 import { Fold } from './fold.tsx';
 import { teamInstructionKeys } from '../shared/team-instructions.ts';
 import { api } from './api.ts';
 import { ErrorText } from './error-text.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
+
+function MessageEvidence({ projectId, messageId }: { projectId: string; messageId: string }) {
+  const [content, setContent] = useState('');
+  const [error, setError] = useState<Error>();
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<ConversationPage>(
+      `/projects/${projectId}/messages?ids=${encodeURIComponent(messageId)}`,
+      undefined,
+      'GET',
+      controller.signal,
+    )
+      .then((page) => {
+        if (controller.signal.aborted) return;
+        const entry = page.entries[0];
+        if (entry?.kind === 'message') setContent(entry.value.content);
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted)
+          setError(error instanceof Error ? error : new Error(String(error)));
+      });
+    return () => controller.abort();
+  }, [projectId, messageId]);
+  return error ? <ErrorText error={error} /> : content ? <p>{content}</p> : null;
+}
 
 export function InstructionSuggestions({
   state,
@@ -81,14 +106,15 @@ export function InstructionSuggestions({
                     const [kind, ...parts] = id.split(':');
                     const key = parts.join(':');
                     const detail =
-                      kind === 'message'
-                        ? state.messages.find((m) => m.id === key)?.content
-                        : kind === 'incident'
-                          ? state.incidents?.find((i) => i.id === key)?.message
-                          : undefined;
+                      kind === 'incident'
+                        ? state.incidents?.find((i) => i.id === key)?.message
+                        : undefined;
                     return (
                       <li key={id}>
                         <small>{id}</small>
+                        {kind === 'message' && (
+                          <MessageEvidence projectId={projectId} messageId={key} />
+                        )}
                         {detail && <p>{detail}</p>}
                       </li>
                     );

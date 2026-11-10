@@ -55,6 +55,23 @@
   min-width: 0;
   margin: 0 auto;
 }
+.history-control {
+  display: flex;
+  justify-content: center;
+  min-height: 36px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.history-control button {
+  color: var(--muted);
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+.history-control button:hover {
+  background: var(--accent-bg);
+  color: var(--text);
+}
 .latest-message {
   position: absolute;
   z-index: 2;

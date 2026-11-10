@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { ArrowRight, Check, ExternalLink, MessageSquarePlus, Pause, Play } from 'lucide-react';
 import type { Project, Snapshot } from '../shared/types.ts';
 import { maxReworks, workGroup, type TeamView } from '../shared/team.ts';
-import { api } from './api.ts';
+import { deliveryPreview } from '../shared/delivery-preview.ts';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
 import { useWhen } from './work-list.tsx';
+import { WorkHold } from './work-hold.tsx';
 
 const seenKey = (projectId: string) => `phantom.seen.${projectId}`;
 
@@ -54,6 +55,7 @@ export function Brief({
   const repos = state.repos.filter((repo) => repo.projectId === project.id);
   const moving = view.work.filter((w) => workGroup(w) === 'moving');
   const queued = view.work.filter((w) => workGroup(w) === 'queued').length;
+  const userPaused = view.work.filter((w) => workGroup(w) === 'paused');
   // The team view lists finished work newest first.
   const delivered = view.work.filter((w) => workGroup(w) === 'delivered');
   const settled = (w: (typeof delivered)[number]) => w.settledAt ?? w.updatedAt;
@@ -66,7 +68,12 @@ export function Brief({
   const hasSuggestions =
     state.suggestions?.some((s) => s.projectId === project.id && s.status === 'pending') ?? false;
   const empty =
-    !hasSuggestions && !view.waiting.length && !moving.length && !queued && !delivered.length;
+    !hasSuggestions &&
+    !view.waiting.length &&
+    !moving.length &&
+    !queued &&
+    !delivered.length &&
+    !userPaused.length;
   return (
     <section className="brief" aria-label={t('brief.title')}>
       <header className="brief-header">
@@ -85,19 +92,12 @@ export function Brief({
 
       {empty && <p className="brief-empty">{t('brief.empty')}</p>}
 
-      {(view.waiting.length > 0 || hasSuggestions) && (
+      {view.waiting.length > 0 && (
         <section className="brief-group brief-needs">
           <h3>
-            {t('brief.needsYou')} <span>{view.waiting.length + (hasSuggestions ? 1 : 0)}</span>
+            {t('brief.needsYou')} <span>{view.waiting.length}</span>
           </h3>
           <ul>
-            {hasSuggestions && (
-              <li className="brief-request">
-                <a href={routeHref({ page: 'project', projectId: project.id })}>
-                  {t('suggestions.waiting')}
-                </a>
-              </li>
-            )}
             {view.waiting.map((request) => (
               <li key={request.id} className={`brief-request kind-${request.kind}`}>
                 <span className="brief-kind">{t(`team.request.${request.kind}`)}</span>
@@ -108,7 +108,12 @@ export function Brief({
                     {t('team.open')} <ArrowRight size={12} />
                   </a>
                 ) : (
-                  <span className="brief-hint">{t('brief.inConversation')}</span>
+                  <a
+                    className="brief-link"
+                    href={routeHref({ page: 'home', projectId: project.id, view: request.id })}
+                  >
+                    {t('brief.inConversation')} <ArrowRight size={12} />
+                  </a>
                 )}
               </li>
             ))}
@@ -129,10 +134,14 @@ export function Brief({
                   <a className="brief-work" href={href(work.taskId)}>
                     <strong>{work.title}</strong>
                     <span className="brief-work-line">
-                      <span className={`brief-step step-${work.step}`}>
-                        {t(`team.step.${work.step}`)}
-                      </span>
-                      {member && (
+                      {work.teamHold ? (
+                        <WorkHold work={work} />
+                      ) : (
+                        <span className={`brief-step step-${work.step}`}>
+                          {t(`team.step.${work.step}`)}
+                        </span>
+                      )}
+                      {member && !work.teamHold && (
                         <span>
                           {t(`team.role.${member.role}`)} · {t(`team.doing.${member.activity}`)}
                         </span>
@@ -158,6 +167,23 @@ export function Brief({
         </section>
       )}
 
+      {userPaused.length > 0 && (
+        <section className="brief-group">
+          <h3>
+            {t('work.pausedByYou')} <span>{userPaused.length}</span>
+          </h3>
+          <ul>
+            {userPaused.map((work) => (
+              <li key={work.taskId}>
+                <a className="brief-work" href={href(work.taskId)}>
+                  <strong>{work.title}</strong>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {fresh.length > 0 ? (
         <section className="brief-group brief-delivered">
           <h3>
@@ -168,7 +194,8 @@ export function Brief({
           </h3>
           <ul>
             {fresh.map((work) => {
-              const repo = repos.find((r) => r.id === tasks.get(work.taskId)?.repoId);
+              const task = tasks.get(work.taskId)!;
+              const previewUrl = deliveryPreview(task, repos, window.location.origin);
               return (
                 <li key={work.taskId} className="brief-delivery">
                   <a href={href(work.taskId)}>
@@ -176,19 +203,10 @@ export function Brief({
                     <span>{t('work.deliveredAt', { time: when(settled(work)) })}</span>
                   </a>
                   <span className="brief-actions">
-                    {repo?.preview?.status === 'running' && repo.preview.url ? (
-                      <a href={repo.preview.url} target="_blank" rel="noreferrer">
+                    {previewUrl && (
+                      <a href={previewUrl} target="_blank" rel="noreferrer">
                         {t('brief.preview')} <ExternalLink size={12} />
                       </a>
-                    ) : (
-                      repo && (
-                        <button
-                          disabled={busy || repo.preview?.status === 'starting'}
-                          onClick={() => void act(() => api(`/repos/${repo.id}/preview/start`, {}))}
-                        >
-                          <Play size={12} /> {t('brief.startPreview')}
-                        </button>
-                      )
                     )}
                     <button
                       onClick={() => onFeedback(t('brief.feedbackDraft', { title: work.title }))}
@@ -215,6 +233,11 @@ export function Brief({
         )
       )}
 
+      {hasSuggestions && (
+        <a className="brief-more" href={routeHref({ page: 'project', projectId: project.id })}>
+          {t('suggestions.waiting')}
+        </a>
+      )}
       <a className="brief-more brief-all" href={routeHref({ page: 'work', projectId: project.id })}>
         {t('brief.allWork')} <ArrowRight size={12} />
       </a>

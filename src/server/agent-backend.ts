@@ -370,9 +370,11 @@ export function assertEffectiveProfile(
   profile: AgentProfile,
 ): void {
   const expectedProvider = profileProvider(profile);
-  const requestedModel = profile.model.includes('/')
-    ? profile.model.split('/').at(-1)!
-    : profile.model;
+  const provider = expectedProvider ?? state.model?.provider;
+  const requestedModel =
+    provider && profile.model.startsWith(`${provider}/`)
+      ? profile.model.slice(provider.length + 1)
+      : profile.model;
   if (!state.model || typeof state.model.id !== 'string' || state.model.id.length === 0)
     throw new Error(`实际模型未返回，无法验证请求：${profile.model}`);
   if (state.model.id !== requestedModel && state.model.id !== profile.model)

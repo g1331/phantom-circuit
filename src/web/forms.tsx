@@ -135,11 +135,10 @@ export function CommandsForm({
         void submit({
           authorized: f.get('authorized') === 'on',
           commands: {
+            ...repo.commands,
             install: String(f.get('install')),
             build: String(f.get('build')),
             test: String(f.get('test')),
-            start: String(f.get('start')),
-            port: Number(f.get('port')),
           },
           requiredChecks: String(f.get('checks'))
             .split(',')
@@ -148,14 +147,13 @@ export function CommandsForm({
         });
       }}
     >
-      {(['install', 'build', 'test', 'start'] as const).map((k) => (
+      {(['install', 'build', 'test'] as const).map((k) => (
         <label key={k}>
           {
             {
               install: t('ui.installDependencies'),
               build: t('ui.build'),
               test: t('ui.acceptanceTestsRequiredForDelivery'),
-              start: t('ui.previewStartCommand'),
             }[k]
           }
           <input
@@ -166,16 +164,11 @@ export function CommandsForm({
                 install: t('ui.installExample'),
                 build: t('ui.buildExample'),
                 test: t('ui.forExampleNpmTest'),
-                start: 'npm run dev -- --port {port}',
               }[k]
             }
           />
         </label>
       ))}
-      <label>
-        {t('ui.previewPort')}{' '}
-        <input name="port" type="number" min={1024} max={65535} defaultValue={repo.commands.port} />
-      </label>
       <label>
         {t('ui.requiredGithubChecks')}{' '}
         <input

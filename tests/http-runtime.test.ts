@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Store } from '../src/server/store.ts';
+import { Store, initializeOmpProfiles } from '../src/server/store.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Previews } from '../src/server/preview.ts';
 import { Codex } from '../src/server/codex.ts';
 import { createApp } from '../src/server/app.ts';
+import type { AgentKind, ConversationPage } from '../src/shared/types.ts';
 
 class RuntimeCodex extends Codex {
   override async start() {}
@@ -55,10 +56,18 @@ class RuntimeCodex extends Codex {
   }
 }
 
-async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
+async function fixture(
+  t: { after: (fn: () => Promise<void>) => void },
+  options: { defaultAgent?: AgentKind } = {},
+) {
   await mkdir(join('.phantom', 'test'), { recursive: true });
   const root = await mkdtemp(join('.phantom', 'test', 'http-runtime-'));
   const store = new Store(join(root, 'state.sqlite'));
+  if (options.defaultAgent) {
+    const ompProfiles = initializeOmpProfiles();
+    ompProfiles.pm = { providerId: 'fixture-provider', model: 'runtime-model', effort: 'low' };
+    store.saveSettings({ ...store.settings(), defaultAgent: options.defaultAgent, ompProfiles });
+  }
   const workspaces = new Workspaces(root, store);
   const engine = new Engine(store, new GitHub(store), workspaces, root);
   const app = createApp(
@@ -94,6 +103,263 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
     });
   return { app, store, request };
 }
+
+test('HTTP request parsing failures retain their client error status', async (t) => {
+  const { store, request } = await fixture(t);
+  for (const [payload, contentType, status] of [
+    ['{', 'application/json', 400],
+    [JSON.stringify({ name: 'a'.repeat(256 * 1024) }), 'application/json', 413],
+    ['<project/>', 'application/xml', 415],
+  ] as const) {
+    const response = await request('POST', '/projects', payload, { 'content-type': contentType });
+    assert.equal(response.statusCode, status);
+    assert.notEqual(response.json().code, 'internal_error');
+  }
+  assert.equal(store.list('project').length, 0);
+});
+
+test('invalid secondary Codex providers leave compound project settings unchanged', async (t) => {
+  const { store, request } = await fixture(t, { defaultAgent: 'codex' });
+  const project = store.createProject('Atomic assignments', '');
+  const before = store.project(project.id);
+  const profiles = structuredClone(project.profiles);
+  profiles.pm = { providerId: 'codex', model: 'runtime-model', effort: 'low' };
+  const response = await request('PATCH', `/projects/${project.id}/runtime`, {
+    agentSelection: { mode: 'override', agent: 'omp' },
+    profiles,
+    ompProfiles: project.ompProfiles,
+    recoveryPolicy: 'manual',
+    secondaryReviewProfiles: {
+      codex: { providerId: 'missing-provider', model: 'runtime-model', effort: 'low' },
+    },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.json().error, /Provider/);
+  assert.deepEqual(store.project(project.id), before);
+});
+
+test('global secondary Codex providers are checked locally while OMP IDs remain native', async (t) => {
+  const { store, request } = await fixture(t, { defaultAgent: 'codex' });
+  const before = store.settings();
+  const rejected = await request('PATCH', '/settings', {
+    ...before,
+    secondaryReviewProfiles: {
+      ...before.secondaryReviewProfiles,
+      codex: { providerId: 'missing-provider', model: 'runtime-model', effort: 'low' },
+    },
+  });
+  assert.equal(rejected.statusCode, 409);
+  assert.deepEqual(store.settings(), before);
+  const legacyRejected = await request('PATCH', '/settings', {
+    ...before,
+    secondaryReviewProfile: {
+      providerId: 'missing-provider',
+      model: 'runtime-model',
+      effort: 'low',
+    },
+  });
+  assert.equal(legacyRejected.statusCode, 409);
+  assert.deepEqual(store.settings(), before);
+  const accepted = await request('PATCH', '/settings', {
+    ...before,
+    secondaryReviewProfiles: {
+      omp: { providerId: 'native-omp-provider', model: 'native-model', effort: 'low' },
+      codex: { providerId: 'codex', model: 'runtime-model', effort: 'low' },
+    },
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(store.settings().secondaryReviewProfiles?.omp?.providerId, 'native-omp-provider');
+});
+
+test('backend switches validate auxiliary profiles atomically', async (t) => {
+  const { store, request } = await fixture(t, { defaultAgent: 'codex' });
+  const project = store.createProject('Backend switch', '');
+  const native = { providerId: 'native-omp-only', model: 'native-model', effort: 'low' };
+  const codex = { providerId: 'codex', model: 'runtime-model', effort: 'low' };
+  const url = `/projects/${project.id}/runtime`;
+  const prepare = async () => {
+    const response = await request('PATCH', url, {
+      agentSelection: { mode: 'override', agent: 'omp' },
+      secondaryReviewProfiles: { omp: native },
+      secondaryReviewProfile: native,
+      recoveryPolicy: 'automatic',
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(
+      store.resolveEffectiveProfile(project.id, 'review', { secondaryReview: true }).profile,
+      native,
+    );
+  };
+  await prepare();
+  const before = store.project(project.id);
+  const rejected = await request('PATCH', url, {
+    agentSelection: { mode: 'override', agent: 'codex' },
+    recoveryPolicy: 'manual',
+    profiles: { ...before.profiles, pm: codex },
+  });
+  assert.equal(rejected.statusCode, 409);
+  assert.deepEqual(store.project(project.id), before);
+  assert.throws(
+    () => store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' }),
+    /Provider/,
+  );
+  assert.deepEqual(store.project(project.id), before);
+
+  for (const auxiliary of [
+    { secondaryReviewProfile: codex },
+    { secondaryReviewProfile: null },
+    { secondaryReviewProfiles: { codex } },
+  ]) {
+    await prepare();
+    const response = await request('PATCH', url, {
+      agentSelection: { mode: 'override', agent: 'codex' },
+      recoveryPolicy: 'manual',
+      ...auxiliary,
+    });
+    assert.equal(response.statusCode, 200);
+    const effective = store.resolveEffectiveProfile(project.id, 'review', {
+      secondaryReview: true,
+    });
+    assert.equal(effective.agentKind, 'codex');
+    assert.equal(effective.profile.providerId, 'codex');
+    assert.equal(store.project(project.id).recoveryPolicy, 'manual');
+    // A shadowed native legacy profile must not block unrelated runtime changes.
+    const unrelated = await request('PATCH', url, { recoveryPolicy: 'automatic' });
+    assert.equal(unrelated.statusCode, 200);
+  }
+  const shadowed = store.project(project.id);
+  const exposed = await request('PATCH', url, { secondaryReviewProfiles: {} });
+  assert.equal(exposed.statusCode, 409);
+  assert.deepEqual(store.project(project.id), shadowed);
+  const cleared = await request('PATCH', url, {
+    secondaryReviewProfiles: {},
+    secondaryReviewProfile: null,
+  });
+  assert.equal(cleared.statusCode, 200);
+  assert.equal(
+    store.resolveEffectiveProfile(project.id, 'review', { secondaryReview: true }).profile
+      .providerId,
+    'codex',
+  );
+});
+
+test('global backend changes check inherited auxiliary profiles', async (t) => {
+  const { store, request } = await fixture(t, { defaultAgent: 'codex' });
+  store.saveSettings({ ...store.settings(), defaultAgent: 'omp' });
+  const project = store.createProject('Inherited auxiliary', '');
+  const pinned = store.createProject('Pinned OMP auxiliary', '');
+  const native = { providerId: 'native-omp-only', model: 'native-model', effort: 'low' };
+  const codex = { providerId: 'codex', model: 'runtime-model', effort: 'low' };
+  for (const [id, selection] of [
+    [project.id, { mode: 'inherit' }],
+    [pinned.id, { mode: 'override', agent: 'omp' }],
+  ] as const) {
+    const response = await request('PATCH', `/projects/${id}/runtime`, {
+      agentSelection: selection,
+      secondaryReviewProfiles: { omp: native },
+      secondaryReviewProfile: native,
+    });
+    assert.equal(response.statusCode, 200);
+  }
+  const before = store.settings();
+  const projectBefore = store.project(project.id);
+  const pinnedBefore = store.project(pinned.id);
+  const rejected = await request('PATCH', '/settings', { ...before, defaultAgent: 'codex' });
+  assert.equal(rejected.statusCode, 409);
+  assert.deepEqual(store.settings(), before);
+  assert.deepEqual(store.project(project.id), projectBefore);
+  assert.deepEqual(store.project(pinned.id), pinnedBefore);
+  assert.throws(() => store.saveSettings({ ...before, defaultAgent: 'codex' }), /Provider/);
+  assert.deepEqual(store.settings(), before);
+
+  const accepted = await request('PATCH', '/settings', {
+    ...before,
+    defaultAgent: 'codex',
+    secondaryReviewProfile: native,
+    secondaryReviewProfiles: { ...before.secondaryReviewProfiles, codex },
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.deepEqual(store.resolveEffectiveProfile(project.id, 'review', { secondaryReview: true }), {
+    agentKind: 'codex',
+    profile: codex,
+  });
+  assert.deepEqual(store.resolveEffectiveProfile(pinned.id, 'review', { secondaryReview: true }), {
+    agentKind: 'omp',
+    profile: native,
+  });
+});
+
+test('HTTP PM history is bounded on initial state, refresh and cursor pages', async (t) => {
+  const { store, request } = await fixture(t);
+  const project = store.createProject('Bounded history', '');
+  const other = store.createProject('Other history', '');
+  const foreign = store.addMessage(other.id, 'user', 'private');
+  const expected: string[] = [];
+  for (let index = 0; index < 1003; index++) {
+    const message = store.addMessage(project.id, 'user', `full body ${index}`);
+    store.updateMessage(message.id, { createdAt: '2026-01-01T00:00:00.000Z' });
+    expected.push(message.id);
+  }
+  const get = async (query = '') => {
+    const response = await request('GET', `/projects/${project.id}/messages${query}`);
+    assert.equal(response.statusCode, 200);
+    return response.json<ConversationPage>();
+  };
+  const state = await request('GET', '/state?messages=none');
+  assert.equal(state.statusCode, 200);
+  assert.deepEqual(state.json().messages, []);
+  assert.deepEqual(state.json().activities, []);
+  const first = await get();
+  assert.deepEqual(
+    first.entries.map((entry) => entry.cursor),
+    expected.slice(-50),
+  );
+  assert.equal(first.hasBefore, true);
+  assert.equal(first.hasAfter, false);
+  const cursor = first.entries[0]!.cursor;
+  const arrival = store.addMessage(project.id, 'assistant', 'New reply');
+  let page = first;
+  const history = page.entries.map((entry) => entry.cursor);
+  while (page.hasBefore) {
+    page = await get(`?before=${page.entries[0]!.cursor}`);
+    assert.ok(page.entries.length <= 50);
+    history.unshift(...page.entries.map((entry) => entry.cursor));
+  }
+  assert.deepEqual(history, expected);
+  assert.deepEqual(
+    (await get(`?after=${expected.at(-1)}`)).entries.map((entry) => entry.cursor),
+    [arrival.id],
+  );
+  store.updateMessage(expected[10]!, { content: 'updated queued message', status: 'completed' });
+  const refreshedIds = await get(`?ids=${expected.slice(0, 50).join(',')}`);
+  const changed = refreshedIds.entries[10]!;
+  assert.equal(changed.kind, 'message');
+  if (changed.kind === 'message') {
+    assert.equal(changed.value.content, 'updated queued message');
+    assert.equal(changed.value.status, 'completed');
+  }
+  const cross = await request('GET', `/projects/${other.id}/messages?before=${cursor}`);
+  assert.equal(cross.statusCode, 403);
+  const crossIds = await request('GET', `/projects/${project.id}/messages?ids=${foreign.id}`);
+  assert.equal(crossIds.statusCode, 403);
+  const unauthenticated = await request('GET', `/projects/${project.id}/messages`, undefined, {
+    cookie: '',
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+  const invalid = await request(
+    'GET',
+    `/projects/${project.id}/messages?before=${cursor}&after=${cursor}`,
+  );
+  assert.equal(invalid.statusCode, 400);
+  const oversized = await request(
+    'GET',
+    `/projects/${project.id}/messages?ids=${Array(51).fill(cursor).join(',')}`,
+  );
+  assert.equal(oversized.statusCode, 400);
+  const refreshed = await request('GET', '/state?messages=none');
+  assert.equal(refreshed.body.includes('full body'), false);
+  assert.equal(store.list('message').length, 1005);
+});
 
 test('HTTP review answers stay Project-scoped, persist partial answers and never auto-resume an independent pause', async (t) => {
   const { store, request } = await fixture(t);

@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
+import { createServer as createHTTPServer } from 'node:http';
 import { chromium } from 'playwright';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
@@ -15,6 +16,7 @@ import { openPage, openSection, openTask } from './browser-pages.ts';
 import { choosePreference } from './browser-preferences.ts';
 import { legacyCompletionGap } from '../src/shared/task-history.ts';
 import { checkReferenceStates } from './browser-reference-states.ts';
+import { completionNotice } from '../src/server/delivery-runtime.ts';
 
 export async function checkWorkspace() {
   const store = new Store(':memory:');
@@ -76,6 +78,12 @@ export async function checkWorkspace() {
   });
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
+  const previewServer = createHTTPServer((_request, response) => response.end('Delivered result'));
+  await new Promise<void>((done) => previewServer.listen(0, '127.0.0.1', done));
+  const previewAddress = previewServer.address();
+  if (!previewAddress || typeof previewAddress === 'string')
+    throw new Error('Missing preview port');
+  const previewUrl = `http://127.0.0.1:${previewAddress.port}/`;
   const browser = await chromium.launch({
     headless: true,
     channel: process.platform === 'win32' ? 'msedge' : undefined,
@@ -104,6 +112,7 @@ export async function checkWorkspace() {
     page.on('pageerror', (error) => errors.push(error.message));
     let messages = 0;
     await page.route('**/api/projects/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
       messages++;
       await route.fulfill({ json: {} });
     });
@@ -134,15 +143,16 @@ export async function checkWorkspace() {
     await page.goBack();
     await page.locator('.task-workspace').waitFor();
     store.finishRun(live.id, 'completed');
-    store.updateTask(task.id, { stage: 'done', completionDeliveryPending: false });
+    store.updateTask(task.id, {
+      stage: 'done',
+      completionDeliveryPending: false,
+      head: 'workspace-delivery-head',
+    });
     await page.reload();
     await page.getByRole('heading', { name: '体验与反馈', exact: true }).waitFor();
     const experience = page.locator('.task-experience');
-    await experience.getByRole('link', { name: '配置项目预览', exact: true }).waitFor();
-    assert.equal(
-      await experience.getByRole('button', { name: '体验项目当前版本', exact: true }).count(),
-      0,
-    );
+    assert.equal(await experience.getByRole('link').count(), 0);
+    assert.equal(await experience.getByRole('button').count(), 1, 'feedback remains available');
     store.transaction(() =>
       store.put('repo', repo.id, {
         ...store.repo(repo.id),
@@ -158,9 +168,8 @@ export async function checkWorkspace() {
       );
       await route.fulfill({ json: {} });
     });
-    await experience.getByRole('button', { name: '体验项目当前版本', exact: true }).click();
-    await experience.getByRole('button', { name: '正在准备项目预览…', exact: true }).waitFor();
-    assert.equal(starts, 1);
+    assert.equal(await experience.getByRole('link').count(), 0);
+    assert.equal(starts, 0, 'opening a delivery never starts a service');
     store.transaction(() =>
       store.put('repo', repo.id, {
         ...store.repo(repo.id),
@@ -168,21 +177,29 @@ export async function checkWorkspace() {
       }),
     );
     await page.reload();
-    await experience.getByText('Fixture port unavailable', { exact: false }).waitFor();
-    await experience.getByRole('button', { name: '重试项目预览', exact: true }).waitFor();
+    assert.equal(await experience.getByRole('link').count(), 0);
+    assert.equal(await experience.getByText('Fixture port unavailable').count(), 0);
     store.transaction(() =>
       store.put('repo', repo.id, {
         ...store.repo(repo.id),
-        preview: { status: 'running', url: 'http://127.0.0.1:4310' },
+        preview: {
+          status: 'running',
+          url: previewUrl,
+          revision: 'workspace-preview-revision',
+          taskHeads: ['workspace-delivery-head'],
+        },
       }),
     );
     await page.reload();
     assert.equal(
-      await experience
-        .getByRole('link', { name: '体验项目当前版本', exact: true })
-        .getAttribute('href'),
-      'http://127.0.0.1:4310',
+      await experience.getByRole('link', { name: '打开预览', exact: true }).getAttribute('href'),
+      previewUrl,
     );
+    const opened = context.waitForEvent('page');
+    await experience.getByRole('link', { name: '打开预览', exact: true }).click();
+    const resultPage = await opened;
+    await resultPage.getByText('Delivered result', { exact: true }).waitFor();
+    await resultPage.close();
     await experience.getByRole('button', { name: '提反馈', exact: true }).click();
     assert.ok((await draft.inputValue()).includes(task.title));
     assert.equal(
@@ -204,7 +221,9 @@ export async function checkWorkspace() {
     );
     assert.equal(messages, 0);
     await page.goBack();
-    for (const state of ['delivered', 'checking'] as const) {
+    for (const state of ['delivered', 'delivered-no-preview', 'checking'] as const) {
+      if (state === 'delivered-no-preview')
+        store.patchRepo(repo.id, { preview: { status: 'stopped' } });
       if (state === 'checking') {
         store.updateTask(task.id, { stage: 'developing' });
         store.run('dev', project.id, 'frontend', store.task(task.id));
@@ -215,7 +234,7 @@ export async function checkWorkspace() {
         await choosePreference(page, 'language', locale);
         for (const theme of ['dark', 'light'] as const) {
           await choosePreference(page, 'theme', theme);
-          for (const width of [1440, 390]) {
+          for (const width of [1280, 390]) {
             await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
             await page.locator('.task-page').evaluate((el) => {
               el.scrollTop = 0;
@@ -242,6 +261,12 @@ export async function checkWorkspace() {
       }
     }
     await choosePreference(page, 'language', 'zh-CN');
+    await openPage(page, 'project');
+    assert.equal(await page.locator('.preview-row').count(), 0);
+    assert.equal(await page.getByRole('button', { name: /启动.*体验|停止.*体验/ }).count(), 0);
+    assert.equal(await (await fetch(previewUrl)).text(), 'Delivered result');
+    assert.equal(starts, 0, 'day-to-day navigation leaves the existing service alone');
+    await openTask(page, task.title);
     await openSection(page, 'task.tab.process');
     await page.locator('.task-process .event-record').first().waitFor();
     assert.equal(
@@ -267,7 +292,7 @@ export async function checkWorkspace() {
       blocked: 'The team is checking a fixture failure',
     });
     await page.reload();
-    await page.getByRole('heading', { name: '等待团队处理阻塞', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '团队受阻', exact: true }).waitFor();
     assert.equal(
       await page.getByRole('heading', { name: '有个决定需要你', exact: true }).count(),
       0,
@@ -280,7 +305,11 @@ export async function checkWorkspace() {
       evidence: 'Synthetic product choice',
     });
     store.transaction(() =>
-      store.put('incident', incident.id, { ...incident, status: 'waiting_user' }),
+      store.put('incident', incident.id, {
+        ...incident,
+        status: 'waiting_user',
+        descriptor: { code: 'incident_waiting_user' },
+      }),
     );
     await page.reload();
     await page.getByRole('heading', { name: '有个决定需要你', exact: true }).waitFor();
@@ -350,13 +379,30 @@ export async function checkWorkspace() {
     );
     await openPage(page, 'work');
     await checkReferenceStates(page, store, store.task(task.id), artifacts);
+    const notice = await completionNotice(
+      { ...store.task(task.id), stage: 'done' },
+      store.repo(repo.id),
+      { kind: 'checkout', source: process.cwd() },
+    );
+    const delivery = store.addMessage(project.id, 'assistant', notice.content);
+    store.updateMessage(delivery.id, { descriptor: notice.descriptor });
+    await page.goto(`${origin}/#/p/${project.id}`);
+    await choosePreference(page, 'language', 'zh-CN');
+    const notification = page.locator(`#message-${delivery.id} .message-content`);
+    await notification.getByText(`已交付「${task.title}」。`, { exact: false }).waitFor();
+    await choosePreference(page, 'language', 'en');
+    await notification.getByText(`Delivered “${task.title}”.`, { exact: false }).waitFor();
+    assert.doesNotMatch(await notification.innerText(), /preview|running application|体验环境/);
     assert.deepEqual(errors, []);
     console.log(
-      'Client workspace: discussion, feedback and rollback intents; preview lifecycle; complete long-history responsive matrix passed.',
+      'Client workspace: verified previews, feedback, bilingual delivery and history passed.',
     );
   } finally {
     await browser.close();
     await app.close();
+    await new Promise<void>((done, fail) =>
+      previewServer.close((error) => (error ? fail(error) : done())),
+    );
     store.close();
   }
 }

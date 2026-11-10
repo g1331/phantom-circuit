@@ -217,45 +217,59 @@ export class Providers {
       const profiles: Settings['profiles'] =
         settings?.profiles ?? settingsSchema.shape.profiles.parse(input);
       if (projectId !== undefined) this.store.project(projectId);
-      const warnings: string[] = [];
       const previous =
         projectId === undefined
           ? this.store.settings().profiles
           : this.store.project(projectId).profiles;
-      for (const [role, profile] of Object.entries(profiles)) {
-        const provider = this.get(profile.providerId);
-        if (provider.kind === 'codex' && profile.customModel)
-          throw new Fault(`${role}: 官方 Provider 必须从模型列表选择`, 409);
-        if (this.profileKey(profile) === this.profileKey(previous[role as keyof typeof previous]))
-          continue;
-        const cached = this.discoveries.get(provider.id);
-        const discovery =
-          cached && Date.now() - cached.at < this.freshnessMs ? cached.value : undefined;
-        const model = discovery?.ok
-          ? discovery.models.find((m) => m.id === profile.model)
-          : undefined;
-        if (provider.kind === 'custom') {
-          if (!model && !profile.customModel)
-            throw new Fault(
-              `${role}: ${discovery?.ok ? '模型不在发现列表中' : (discovery?.error ?? '请刷新模型列表')}；请明确选择“自定义模型 ID”`,
-              409,
-            );
-        }
-        if (provider.kind === 'codex' && discovery?.ok && !model)
-          throw new Fault(`${role}: 模型不可用：${profile.model}`, 409);
-        if (model?.reasoningEfforts && !model.reasoningEfforts.includes(profile.effort))
-          throw new Fault(`${role}: 模型不支持推理档位 ${profile.effort}`, 409);
-        const checkedAt = this.verified.get(this.profileKey(profile)) ?? 0;
-        if (Date.now() - checkedAt >= this.freshnessMs)
-          warnings.push(
-            `${role}: ${provider.name} / ${profile.model} 未完成运行时验证；${discovery && !discovery.ok ? discovery.error + '；' : ''}此配置将在首次 Run 验证上游兼容性`,
-          );
-      }
+      const warnings = this.validateAssignments(profiles, previous);
       const saved = settings
         ? this.store.saveSettings(settings)
         : this.store.saveProjectProfiles(projectId!, profiles);
       return { ...saved, warnings };
     });
+  }
+  saveProjectRuntime(projectId: string, patch: Parameters<Store['saveProjectRuntimeConfig']>[1]) {
+    return this.serial(async () => {
+      const project = this.store.project(projectId);
+      const warnings = patch.profiles
+        ? this.validateAssignments(patch.profiles, project.profiles)
+        : [];
+      const saved = this.store.saveProjectRuntimeConfig(projectId, patch);
+      return warnings.length ? { ...saved, warnings } : saved;
+    });
+  }
+  private validateAssignments(profiles: Settings['profiles'], previous: Settings['profiles']) {
+    const warnings: string[] = [];
+    for (const [role, profile] of Object.entries(profiles)) {
+      const provider = this.get(profile.providerId);
+      if (provider.kind === 'codex' && profile.customModel)
+        throw new Fault(`${role}: 官方 Provider 必须从模型列表选择`, 409);
+      if (this.profileKey(profile) === this.profileKey(previous[role as keyof typeof previous]))
+        continue;
+      const cached = this.discoveries.get(provider.id);
+      const discovery =
+        cached && Date.now() - cached.at < this.freshnessMs ? cached.value : undefined;
+      const model = discovery?.ok
+        ? discovery.models.find((m) => m.id === profile.model)
+        : undefined;
+      if (provider.kind === 'custom') {
+        if (!model && !profile.customModel)
+          throw new Fault(
+            `${role}: ${discovery?.ok ? '模型不在发现列表中' : (discovery?.error ?? '请刷新模型列表')}；请明确选择“自定义模型 ID”`,
+            409,
+          );
+      }
+      if (provider.kind === 'codex' && discovery?.ok && !model)
+        throw new Fault(`${role}: 模型不可用：${profile.model}`, 409);
+      if (model?.reasoningEfforts && !model.reasoningEfforts.includes(profile.effort))
+        throw new Fault(`${role}: 模型不支持推理档位 ${profile.effort}`, 409);
+      const checkedAt = this.verified.get(this.profileKey(profile)) ?? 0;
+      if (Date.now() - checkedAt >= this.freshnessMs)
+        warnings.push(
+          `${role}: ${provider.name} / ${profile.model} 未完成运行时验证；${discovery && !discovery.ok ? discovery.error + '；' : ''}此配置将在首次 Run 验证上游兼容性`,
+        );
+    }
+    return warnings;
   }
   private profileKey(profile: Profile) {
     return JSON.stringify([

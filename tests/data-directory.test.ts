@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import {
   mkdir,
+  cp,
   mkdtemp,
   readFile,
   readdir,
@@ -11,6 +13,7 @@ import {
   symlink,
   unlink,
   writeFile,
+  stat,
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -53,6 +56,397 @@ async function mkdirLegacy(path: string) {
   await mkdir(path, { recursive: true });
   return path;
 }
+
+function changeDatabase(directory: string, sql: string) {
+  const db = new DatabaseSync(join(directory, 'phantom.sqlite'));
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
+}
+
+async function migrationMarker(directory: string) {
+  return JSON.parse(await readFile(join(directory, 'migration.json'), 'utf8'));
+}
+
+async function resolveAndRelease(options: Parameters<typeof resolveDataDirectory>[0]) {
+  const lease = await resolveDataDirectory(options);
+  await lease.release();
+}
+
+test('migration accepts the complete public Store entity catalog', async () => {
+  const f = await fixture();
+  try {
+    const store = new Store(join(f.legacy, 'phantom.sqlite'));
+    const incident = store.createIncident({
+      projectId: f.project.id,
+      phase: 'sync',
+      message: 'Migration retains a legitimate incident',
+    });
+    store.close();
+    changeDatabase(
+      f.legacy,
+      ['ownerMessage', 'clarification', 'recovery', 'allowance', 'teamInstructions', 'suggestion']
+        .map(
+          (kind) => `INSERT INTO documents VALUES ('${kind}','catalog-${kind}','{"id":"catalog"}')`,
+        )
+        .join(';'),
+    );
+    const lease = await resolveDataDirectory({
+      legacyDir: f.legacy,
+      dataDir: f.dataDir,
+      probeLegacy: false,
+    });
+    await lease.release();
+    const migrated = new Store(join(f.dataDir, 'phantom.sqlite'));
+    try {
+      assert.deepEqual(migrated.get('incident', incident.id), incident);
+      assert.equal(migrated.list('ownerMessage').length, 1);
+      assert.equal(migrated.list('clarification').length, 1);
+      assert.equal(migrated.list('recovery').length, 1);
+      assert.equal(migrated.list('allowance').length, 1);
+      assert.equal(migrated.list('teamInstructions').length, 1);
+      assert.equal(migrated.list('suggestion').length, 1);
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+const fullStateDrifts = {
+  events: `INSERT INTO events(body) VALUES ('{"message":"source history"}')`,
+  meta: `INSERT INTO meta(key,value) VALUES ('migration-cursor','changed')`,
+  rowid: 'UPDATE documents SET rowid=rowid+100',
+  sequence: `UPDATE sqlite_sequence SET seq=seq+100 WHERE name='events'`,
+  schema: 'CREATE INDEX migration_history ON events(body)',
+  userVersion: 'PRAGMA user_version=7',
+};
+
+for (const [name, sql] of Object.entries(fullStateDrifts)) {
+  test(`adoption rejects ${name} drift with identical document values`, async () => {
+    const f = await fixture();
+    try {
+      await mkdir(f.home, { recursive: true });
+      await cp(f.legacy, f.dataDir, { recursive: true });
+      changeDatabase(f.dataDir, sql);
+      const before = await readFile(join(f.dataDir, 'phantom.sqlite'));
+      await assert.rejects(() =>
+        resolveAndRelease({
+          legacyDir: f.legacy,
+          dataDir: f.dataDir,
+          probeLegacy: false,
+        }),
+      );
+      assert.deepEqual(await readFile(join(f.dataDir, 'phantom.sqlite')), before);
+    } finally {
+      await cleanup(f.root);
+    }
+  });
+
+  test(`new evidence rejects later source ${name} drift`, async () => {
+    const f = await fixture();
+    try {
+      const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+      const lease = await resolveDataDirectory(options);
+      await lease.release();
+      const before = await migrationMarker(f.dataDir);
+      changeDatabase(f.legacy, sql);
+      await assert.rejects(() => resolveAndRelease(options));
+      const blocked = await migrationMarker(f.dataDir);
+      assert.equal(blocked.status, 'blocked');
+      assert.deepEqual(blocked.consistencyEvidence, before.consistencyEvidence);
+      assert.ok(blocked.rollback.databaseBackup);
+    } finally {
+      await cleanup(f.root);
+    }
+  });
+}
+
+test('same-path startup verifies a new marker recorded source in another directory', async () => {
+  const f = await fixture();
+  try {
+    const lease = await resolveDataDirectory({
+      legacyDir: f.legacy,
+      dataDir: f.dataDir,
+      probeLegacy: false,
+    });
+    await lease.release();
+    changeDatabase(f.legacy, fullStateDrifts.events);
+    await assert.rejects(() =>
+      resolveAndRelease({
+        legacyDir: f.dataDir,
+        dataDir: f.dataDir,
+        probeLegacy: false,
+      }),
+    );
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+test('new evidence permits target progress and retains legacy hash bytes', async () => {
+  const f = await fixture();
+  try {
+    const db = new DatabaseSync(join(f.legacy, 'phantom.sqlite'), { readOnly: true });
+    let canonical: string;
+    try {
+      canonical = JSON.stringify(
+        db.prepare('SELECT kind,id,body FROM documents ORDER BY kind,id').all(),
+      );
+    } finally {
+      db.close();
+    }
+    const paths = [
+      'config.json',
+      join('projects', f.project.id, 'session.json'),
+      join('messages', f.project.id, f.message.id, 'attachment-one.png'),
+    ];
+    const hashes: [string, string][] = [];
+    for (const path of paths) {
+      hashes.push([
+        path,
+        createHash('sha256')
+          .update(await readFile(join(f.legacy, path)))
+          .digest('hex'),
+      ]);
+    }
+    const expectedLegacyHash = createHash('sha256')
+      .update(canonical)
+      .update(JSON.stringify(hashes))
+      .digest('hex');
+    const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+    const lease = await resolveDataDirectory(options);
+    assert.equal(lease.migration.sourceFingerprint, expectedLegacyHash);
+    await lease.release();
+    const before = await migrationMarker(f.dataDir);
+    assert.ok(before.consistencyEvidence);
+    changeDatabase(f.dataDir, fullStateDrifts.events + ';' + fullStateDrifts.meta);
+    const restarted = await resolveDataDirectory(options);
+    await restarted.release();
+    const after = await migrationMarker(f.dataDir);
+    assert.deepEqual(after.consistencyEvidence, before.consistencyEvidence);
+    assert.equal(after.sourceFingerprint, expectedLegacyHash);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+test('legacy markers retain old checks without inventing a full historical baseline', async () => {
+  const f = await fixture();
+  try {
+    const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+    const lease = await resolveDataDirectory(options);
+    await lease.release();
+    const marker = await migrationMarker(f.dataDir);
+    delete marker.consistencyEvidence;
+    delete marker.sourceSignature;
+    await writeFile(join(f.dataDir, 'migration.json'), JSON.stringify(marker));
+    changeDatabase(f.legacy, fullStateDrifts.events + ';' + fullStateDrifts.meta);
+    const restarted = await resolveDataDirectory(options);
+    await restarted.release();
+    const after = await migrationMarker(f.dataDir);
+    assert.equal(after.status, 'complete');
+    assert.equal('consistencyEvidence' in after, false);
+    assert.equal(after.sourceFingerprint, marker.sourceFingerprint);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+for (const evidence of [
+  null,
+  {},
+  { version: 99, digest: 'a'.repeat(64) },
+  { version: 1, digest: 'damaged' },
+]) {
+  test(`invalid new evidence fails explicitly: ${JSON.stringify(evidence)}`, async () => {
+    const f = await fixture();
+    try {
+      const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+      const lease = await resolveDataDirectory(options);
+      await lease.release();
+      const marker = await migrationMarker(f.dataDir);
+      marker.consistencyEvidence = evidence;
+      await writeFile(join(f.dataDir, 'migration.json'), JSON.stringify(marker));
+      await assert.rejects(() => resolveAndRelease(options), /证据/);
+    } finally {
+      await cleanup(f.root);
+    }
+  });
+}
+
+test('equal recorded signatures never bypass new full-state evidence', async () => {
+  const f = await fixture();
+  let reader: DatabaseSync | undefined;
+  try {
+    const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+    await resolveAndRelease(options);
+    changeDatabase(f.legacy, fullStateDrifts.meta);
+    reader = new DatabaseSync(join(f.legacy, 'phantom.sqlite'), { readOnly: true });
+    reader.prepare('SELECT * FROM documents').all();
+    const marker = await migrationMarker(f.dataDir);
+    for (const entry of marker.sourceSignature.files) {
+      const current = await stat(join(f.legacy, entry.path));
+      entry.size = current.size;
+      entry.mtimeMs = current.mtimeMs;
+      if ('ctimeMs' in entry) entry.ctimeMs = current.ctimeMs;
+    }
+    await writeFile(join(f.dataDir, 'migration.json'), JSON.stringify(marker));
+    await assert.rejects(() => resolveAndRelease(options));
+  } finally {
+    reader?.close();
+    await cleanup(f.root);
+  }
+});
+
+test('copy and rollback retain full SQL state, value types and document identity', async () => {
+  const f = await fixture();
+  const queries = [
+    'SELECT rowid,kind,id,body FROM documents ORDER BY rowid',
+    'SELECT id,body FROM events ORDER BY id',
+    'SELECT key,value FROM meta ORDER BY key',
+    'SELECT name,seq FROM sqlite_sequence ORDER BY name',
+    'SELECT * FROM typed_state ORDER BY key',
+    'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name',
+  ];
+  const state = (path: string) => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      return queries.map((query) => {
+        const statement = db.prepare(query);
+        statement.setReadBigInts(true);
+        return statement.all();
+      });
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    changeDatabase(
+      f.legacy,
+      `CREATE TABLE typed_state(key TEXT PRIMARY KEY,value) WITHOUT ROWID;
+       INSERT INTO typed_state VALUES ('integer',9223372036854775807);
+       INSERT INTO typed_state VALUES ('real',1.25);
+       INSERT INTO typed_state VALUES ('text','1.25');
+       INSERT INTO typed_state VALUES ('blob',X'00FF12');
+       INSERT INTO typed_state VALUES ('null',NULL);
+       INSERT INTO events(body) VALUES ('{"message":"retained history"}');
+       INSERT INTO meta VALUES ('migration-cursor','durable');
+       UPDATE sqlite_sequence SET seq=500 WHERE name='events';
+       UPDATE documents SET rowid=rowid+100;`,
+    );
+    const expected = state(join(f.legacy, 'phantom.sqlite'));
+    const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+    const lease = await resolveDataDirectory(options);
+    const backup = lease.migration.rollback?.databaseBackup;
+    await lease.release();
+    assert.ok(backup);
+    assert.deepEqual(state(join(f.dataDir, 'phantom.sqlite')), expected);
+    assert.deepEqual(state(join(f.dataDir, backup)), expected);
+    changeDatabase(f.legacy, 'VACUUM');
+    await resolveAndRelease(options);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+for (const drift of ['events', 'meta'] as const) {
+  test(`copy detects ${drift} drift and keeps rollback evidence on failure`, async () => {
+    const f = await fixture();
+    try {
+      await assert.rejects(() =>
+        resolveAndRelease({
+          legacyDir: f.legacy,
+          dataDir: f.dataDir,
+          probeLegacy: false,
+          afterSourceSnapshot: async () => changeDatabase(f.legacy, fullStateDrifts[drift]),
+        }),
+      );
+      const stage = (await readdir(f.home)).find((name) => name.startsWith('.phantom.migration-'));
+      assert.ok(stage);
+      const marker = await migrationMarker(join(f.home, stage));
+      assert.equal(marker.status, 'blocked');
+      assert.ok(marker.consistencyEvidence);
+      assert.equal((await readdir(join(f.home, stage, 'backups'))).length, 1);
+      await assert.rejects(() => readFile(join(f.dataDir, 'migration.json')));
+    } finally {
+      await cleanup(f.root);
+    }
+  });
+}
+
+test('new evidence also protects referenced files and empty project directories', async () => {
+  const f = await fixture();
+  try {
+    const options = { legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false };
+    await resolveAndRelease(options);
+    await mkdir(join(f.legacy, 'projects', f.project.id, 'new-empty-directory'));
+    await assert.rejects(() => resolveAndRelease(options));
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+test('documents-only legacy schema and config-only sources retain supported formats', async () => {
+  for (const database of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), 'phantom-migration-old-schema-'));
+    const legacy = join(root, 'legacy');
+    const target = join(root, 'target');
+    try {
+      await mkdir(legacy);
+      await writeFile(join(legacy, 'config.json'), '{"port":4391}\n');
+      if (database) {
+        changeDatabase(
+          legacy,
+          `CREATE TABLE documents(kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,
+             PRIMARY KEY(kind,id));
+           INSERT INTO documents VALUES ('project','legacy-project','{"id":"legacy-project"}');`,
+        );
+      }
+      const options = { legacyDir: legacy, dataDir: target, probeLegacy: false };
+      await resolveAndRelease(options);
+      assert.ok((await migrationMarker(target)).consistencyEvidence);
+      await resolveAndRelease(options);
+    } finally {
+      await cleanup(root);
+    }
+  }
+});
+
+test('genuinely unsupported document kinds remain explicit failures', async () => {
+  const f = await fixture();
+  try {
+    changeDatabase(f.legacy, `INSERT INTO documents VALUES ('future-kind','future','{}')`);
+    await assert.rejects(
+      () => resolveAndRelease({ legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false }),
+      /数据库包含未知实体类型：future-kind/,
+    );
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+test('full evidence distinguishes SQLite text bytes that decode to the same string', async () => {
+  const f = await fixture();
+  try {
+    changeDatabase(
+      f.legacy,
+      `CREATE TABLE text_bytes(value TEXT);
+       INSERT INTO text_bytes VALUES (CAST(X'80' AS TEXT));`,
+    );
+    await mkdir(f.home, { recursive: true });
+    await cp(f.legacy, f.dataDir, { recursive: true });
+    changeDatabase(f.dataDir, `UPDATE text_bytes SET value=CAST(X'81' AS TEXT)`);
+    await assert.rejects(() =>
+      resolveAndRelease({ legacyDir: f.legacy, dataDir: f.dataDir, probeLegacy: false }),
+    );
+  } finally {
+    await cleanup(f.root);
+  }
+});
 
 async function cleanup(root: string) {
   if (process.platform === 'win32')
@@ -442,6 +836,7 @@ test('an existing target with the same source is adopted with source metadata an
     assert.equal(lease.migrated, false);
     assert.ok(lease.migration.sourceFingerprint);
     assert.ok(lease.migration.sourceSignature?.files.length);
+    assert.ok((await migrationMarker(f.dataDir)).consistencyEvidence);
     const databaseBackup = lease.migration.rollback?.databaseBackup;
     assert.ok(databaseBackup);
     const rollbackDb = new DatabaseSync(join(f.dataDir, databaseBackup!), { readOnly: true });

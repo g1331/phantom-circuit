@@ -113,6 +113,9 @@ export interface Repo {
     url?: string;
     pid?: number;
     error?: string;
+    revision?: string;
+    /** Completed task heads verified as ancestors of this preview checkout. */
+    taskHeads?: string[];
   };
 }
 export interface ImageAttachment {
@@ -203,6 +206,8 @@ export interface Task {
   pr?: number;
   prUrl?: string;
   prState?: 'open' | 'closed' | 'draft' | 'merged';
+  /** Remote-confirmed merge commit bound to the reviewed delivery head. */
+  deliveryRevision?: { head: string; commit: string };
   head?: string;
   base?: string;
   integratedBase?: string;
@@ -567,7 +572,7 @@ export interface Reconciliation {
   actor: 'user' | 'pm';
   /** The operation attempt the remote verification was performed against. */
   observedOperation: OperationAttempt;
-  /** The task revision (repository, branch, head, base) the remote verification was about. */
+  /** PR repository/branch/head/base, or Issue repository and canonical creation content. */
   taskRevision: string;
   evidence: string;
   at: string;
@@ -588,6 +593,8 @@ export interface Operation {
    * authorization binds to.
    */
   attempt?: number;
+  /** Content binding saved before a create-issue attempt; legacy operations have no binding. */
+  taskRevision?: string;
   /**
    * Durable, single-use authorization recorded only after an explicit host coordination step
    * re-read the remote state and proved this operation created no remote object. Automatic
@@ -597,6 +604,19 @@ export interface Operation {
    */
   reconciliation?: Reconciliation;
 }
+export type ConversationEntry = { cursor: string } & (
+  { kind: 'message'; value: Message } | { kind: 'activity'; value: PMActivity }
+);
+export interface ConversationPage {
+  entries: ConversationEntry[];
+  hasBefore: boolean;
+  hasAfter: boolean;
+}
+export type ConversationQuery =
+  | { before?: string; after?: never; ids?: never }
+  | { after: string; before?: never; ids?: never }
+  | { ids: string[]; before?: never; after?: never };
+
 export interface Snapshot {
   teamInstructions?: TeamInstructionsVersion[];
   suggestions?: InstructionSuggestion[];

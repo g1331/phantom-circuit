@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { ArrowLeft, Pause, Play, Undo2, UserRoundPlus } from 'lucide-react';
 import type { Message, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
-import { incidentAttention } from '../shared/task-history.ts';
 import { api } from './api.ts';
 import { DeferredTaskDetail } from './deferred-panels.tsx';
 import { Fold, PageTabs } from './fold.tsx';
@@ -70,15 +69,6 @@ export function TaskPage({
   // A fresh developer only helps unfinished work that already has code and nobody on it now.
   const canReassign = !!task.worktree && !['done', 'cancelled'].includes(task.stage) && !devWorking;
   const stuck = canReassign && (work.rounds >= maxReworks || work.attention === 'blocked');
-  const needsDecision = view.waiting.some(
-    (request) =>
-      request.taskId === task.id &&
-      request.kind !== 'blocked' &&
-      (request.kind !== 'decision' ||
-        state.incidents?.some(
-          (incident) => incident.id === request.id && incidentAttention(incident, task).actionable,
-        )),
-  );
   const reassign = (
     <button
       className={stuck ? 'primary-button' : 'secondary-button'}
@@ -93,15 +83,11 @@ export function TaskPage({
       {back}
       <header className="page-header task-header">
         <h1>{task.title}</h1>
-        <p className={`task-status group-${group}`}>
+        <p className={`task-status group-${group}`} data-hold={work.teamHold}>
           <span className="task-status-group">
-            {t(
-              group === 'needs_you' && !needsDecision
-                ? 'task.progress.teamHandling'
-                : `work.group.${group}`,
-            )}
+            {work.teamHold ? t(`work.hold.${work.teamHold}`) : t(`work.group.${group}`)}
           </span>
-          {group === 'moving' && <span>{t(`team.step.${work.step}`)}</span>}
+          {group === 'moving' && !work.teamHold && <span>{t(`team.step.${work.step}`)}</span>}
         </p>
       </header>
       <PageTabs
@@ -116,7 +102,7 @@ export function TaskPage({
       />
       {section === 'overview' &&
         (task.stage === 'done' ? (
-          <TaskExperience task={task} state={state} busy={busy} act={act} onDraft={onDraft} />
+          <TaskExperience task={task} state={state} onDraft={onDraft} />
         ) : (
           <div className="task-collaborate">
             <p className="muted">{t('task.adjustHint')}</p>

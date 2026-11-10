@@ -26,6 +26,8 @@ import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
 import type {
   InstructionSuggestion,
+  ConversationPage,
+  ConversationQuery,
   TeamInstructionSections,
   TeamInstructionsVersion,
   AccountAllowance,
@@ -246,7 +248,12 @@ export class Store {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS conversation_timeline ON documents (
+        json_extract(body, '$.projectId'),
+        COALESCE(json_extract(body, '$.createdAt'), json_extract(body, '$.startedAt')),
+        COALESCE(json_extract(body, '$.timelineOrder'), 0)
+      ) WHERE kind IN ('message', 'activity');`);
     this.transaction(() => {
       if (!this.db.prepare("SELECT value FROM meta WHERE key='priority-contract-v1'").get()) {
         // Legacy claimNext used list('task') ORDER BY rowid for exact ties.
@@ -556,9 +563,13 @@ export class Store {
     const previous = this.settings();
     settings = normalizeSettings(settingsSchema.parse(settings) as Settings);
     this.validateProfiles(settings.profiles, 'codex');
+    if (settings.secondaryReviewProfiles?.codex)
+      this.validateCodexProvider(settings.secondaryReviewProfiles.codex, 'secondaryReview.codex');
     // OMP profile provider IDs are resolved by OMP and are deliberately not required to exist in
     // the local Provider table. Validate the shape, but never ask Providers for credentials here.
     profileSetSchema.parse(settings.ompProfiles);
+    for (const project of this.list('project'))
+      this.validateEffectiveSecondaryReview(project, settings);
     this.transaction(() => {
       this.put('settings', 'global', settings);
       this.invalidateInheritedThreads(previous, settings);
@@ -569,16 +580,33 @@ export class Store {
   private validateProfiles(profiles: Settings['profiles'], agent: AgentKind = 'codex') {
     profileSetSchema.parse(profiles);
     if (agent === 'omp') return;
-    for (const [role, profile] of Object.entries(profiles)) {
-      if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
-        throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
-    }
+    for (const [role, profile] of Object.entries(profiles))
+      this.validateCodexProvider(profile, role);
+  }
+  private validateCodexProvider(profile: Profile, role: string) {
+    if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
+      throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
   }
 
   private effectiveAgent(project: Project, settings = this.settings()): AgentKind {
     return project.agentSelection?.mode === 'override'
       ? project.agentSelection.agent
       : (settings.defaultAgent ?? 'codex');
+  }
+
+  private secondaryReviewProfile(project: Project, agent: AgentKind, settings: Settings) {
+    return (
+      project.secondaryReviewProfiles?.[agent] ??
+      settings.secondaryReviewProfiles?.[agent] ??
+      project.secondaryReviewProfile ??
+      settings.secondaryReviewProfile
+    );
+  }
+
+  private validateEffectiveSecondaryReview(project: Project, settings = this.settings()) {
+    const agent = this.effectiveAgent(project, settings);
+    const profile = this.secondaryReviewProfile(project, agent, settings);
+    if (agent === 'codex' && profile) this.validateCodexProvider(profile, 'secondaryReview');
   }
 
   private invalidateInheritedThreads(previous: Settings, next: Settings) {
@@ -719,6 +747,10 @@ export class Store {
   }
 
   saveProjectAgentSelection(projectId: string, selection: AgentSelection) {
+    return this.saveProjectRuntimeConfig(projectId, { agentSelection: selection });
+  }
+
+  private applyProjectAgentSelection(projectId: string, selection: AgentSelection) {
     if (selection.mode === 'override' && !['omp', 'codex'].includes(selection.agent))
       throw new Fault('Agent 类型无效');
     return this.transaction(() => {
@@ -784,19 +816,33 @@ export class Store {
         Project,
         | 'agentSelection'
         | 'profileModes'
-        | 'secondaryReviewProfile'
+        | 'profiles'
+        | 'ompProfiles'
         | 'secondaryReviewProfiles'
         | 'recoveryPolicy'
       >
-    >,
+    > & { secondaryReviewProfile?: Profile | null },
   ) {
-    let project = this.project(projectId);
-    if (patch.agentSelection)
-      project = this.saveProjectAgentSelection(projectId, patch.agentSelection);
-    if (patch.profileModes) project = this.saveProjectProfileModes(projectId, patch.profileModes);
+    const previous = this.project(projectId);
+    const project = {
+      ...previous,
+      ...patch,
+      secondaryReviewProfile:
+        patch.secondaryReviewProfile === null
+          ? undefined
+          : (patch.secondaryReviewProfile ?? previous.secondaryReviewProfile),
+    };
+    this.validateEffectiveSecondaryReview(project);
+    if (patch.secondaryReviewProfiles?.codex)
+      this.validateCodexProvider(patch.secondaryReviewProfiles.codex, 'secondaryReview.codex');
     return this.transaction(() => {
+      if (patch.profiles) this.saveProjectProfiles(projectId, patch.profiles);
+      if (patch.ompProfiles) this.saveProjectOmpProfiles(projectId, patch.ompProfiles);
+      if (patch.agentSelection) this.applyProjectAgentSelection(projectId, patch.agentSelection);
+      if (patch.profileModes) this.saveProjectProfileModes(projectId, patch.profileModes);
       const current = this.project(projectId);
-      if (patch.secondaryReviewProfile !== undefined)
+      if (patch.secondaryReviewProfile === null) delete current.secondaryReviewProfile;
+      else if (patch.secondaryReviewProfile !== undefined)
         current.secondaryReviewProfile = structuredClone(patch.secondaryReviewProfile);
       if (patch.secondaryReviewProfiles !== undefined)
         current.secondaryReviewProfiles = structuredClone(patch.secondaryReviewProfiles);
@@ -1317,17 +1363,84 @@ export class Store {
         ['open', 'cancelled'].includes(clarification.status),
     );
   }
-  snapshot(): Snapshot {
+  conversationPage(projectId: string, query: ConversationQuery = {}): ConversationPage {
+    this.project(projectId);
+    // Cursor subqueries must share the index without materializing every historical body.
+    const timeline = `WITH timeline AS NOT MATERIALIZED (
+      SELECT kind, id, body, rowid AS position,
+        COALESCE(json_extract(body, '$.createdAt'), json_extract(body, '$.startedAt')) AS at,
+        COALESCE(json_extract(body, '$.timelineOrder'), 0) AS ordinal
+      FROM documents WHERE kind IN ('message', 'activity')
+        AND json_extract(body, '$.projectId') = ?
+    )`;
+    const cursor = query.before ?? query.after;
+    if (query.ids && query.ids.length > 50) throw new Fault('每批最多读取 50 项', 400);
+    const requested = query.ids ?? (cursor ? [cursor] : []);
+    if (
+      requested.length &&
+      this.db
+        .prepare(
+          `SELECT 1 FROM documents
+      WHERE kind IN ('message', 'activity') AND id IN (${requested.map(() => '?').join(',')})
+        AND json_extract(body, '$.projectId') <> ? LIMIT 1`,
+        )
+        .get(...requested, projectId)
+    )
+      throw new Fault('跨项目操作被拒绝', 403);
+    if (
+      cursor &&
+      !this.db.prepare(`${timeline} SELECT id FROM timeline WHERE id = ?`).get(projectId, cursor)
+    )
+      throw new Fault('聊天游标无效', 400);
+    const relation = query.before ? '<' : '>';
+    const condition = query.ids
+      ? `WHERE id IN (${query.ids.map(() => '?').join(',') || 'NULL'})`
+      : cursor
+        ? `WHERE (at, ordinal, position) ${relation}
+          (SELECT at, ordinal, position FROM timeline WHERE id = ?)`
+        : '';
+    const direction = query.after || query.ids ? 'ASC' : 'DESC';
+    const rows = this.db
+      .prepare(
+        `${timeline} SELECT kind, id, body FROM timeline
+      ${condition} ORDER BY at ${direction}, ordinal ${direction}, position ${direction}
+      LIMIT 50`,
+      )
+      .all(projectId, ...(query.ids ?? (cursor ? [cursor] : []))) as {
+      kind: 'message' | 'activity';
+      id: string;
+      body: string;
+    }[];
+    if (direction === 'DESC') rows.reverse();
+    const exists = (id: string | undefined, comparison: '<' | '>') =>
+      !!id &&
+      !!this.db
+        .prepare(
+          `${timeline} SELECT 1 FROM timeline WHERE (at, ordinal, position) ${comparison}
+        (SELECT at, ordinal, position FROM timeline WHERE id = ?) LIMIT 1`,
+        )
+        .get(projectId, id);
+    return {
+      entries: rows.map((row) =>
+        row.kind === 'message'
+          ? { kind: 'message', cursor: row.id, value: JSON.parse(row.body) as Message }
+          : { kind: 'activity', cursor: row.id, value: JSON.parse(row.body) as PMActivity },
+      ),
+      hasBefore: exists(rows[0]?.id, '<'),
+      hasAfter: exists(rows.at(-1)?.id, '>'),
+    };
+  }
+  snapshot(options?: { conversation: 'bounded' }): Snapshot {
     return {
       teamInstructions: this.list('teamInstructions'),
       suggestions: this.list('suggestion'),
-      activities: this.list('activity'),
+      activities: options ? [] : this.list('activity'),
       providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
       tasks: this.list('task'),
       runs: this.list('run'),
-      messages: this.list('message'),
+      messages: options ? [] : this.list('message'),
       events: this.events(),
       settings: this.settings(),
       documents: this.list('document'),
@@ -1946,10 +2059,7 @@ export class Store {
     const secondaryProfile =
       options.secondaryProfile ??
       options.secondaryReviewProfile ??
-      project.secondaryReviewProfiles?.[agentKind] ??
-      settings.secondaryReviewProfiles?.[agentKind] ??
-      project.secondaryReviewProfile ??
-      settings.secondaryReviewProfile;
+      this.secondaryReviewProfile(project, agentKind, settings);
     if (options.secondaryReview && secondaryProfile)
       return {
         agentKind,
@@ -2299,7 +2409,7 @@ export class Store {
       }
       // A later clean Run of the same phase is the evidence that an operational Incident is over.
       const phase = r.role === 'dev' ? 'dev' : r.role === 'review' ? `review:${r.reviewAxis}` : '';
-      if (r.status === 'completed' && phase)
+      if (r.status === 'completed' && phase && !r.ownerMessageId)
         for (const incident of this.list('incident').filter(
           (i) => i.taskId === r.taskId && i.phase === phase && i.status !== 'resolved',
         )) {

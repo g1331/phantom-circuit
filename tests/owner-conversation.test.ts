@@ -16,6 +16,8 @@ const answer = (text = decision) =>
 async function scenario(
   options: {
     live?: boolean;
+    revise?: boolean;
+    beforeRevision?: (signal?: AbortSignal) => Promise<unknown>;
     forkError?: boolean;
     beforeThread?: () => Promise<void>;
     owner?: (prompt: string, signal?: AbortSignal) => Promise<string>;
@@ -25,6 +27,7 @@ async function scenario(
   const { root, store, task, github } = await devFixture('phantom-owner-context-');
   github.publishPR = async () => ({}) as never;
   github.reviewComment = async () => {};
+  github.reviseIssue = async () => {};
   const history = new Map<string, string[]>();
   const forks: AgentReadOnlyForkOptions[] = [];
   const ownerThreads: string[] = [];
@@ -70,12 +73,21 @@ async function scenario(
           : answer(history.get(thread)!.join('\n'));
       }
       if (prompt.includes('PM decision for this owner conversation')) {
+        assert.equal(signal?.aborted, false, 'alignment must keep the waiting owner fork alive');
         assert.ok(liaisonPrompts.length > 0);
         assert.ok(ownerThreads.includes(thread), 'alignment resumes the same independent fork');
         return answer('联络人已决定可以改蓝色。');
       }
       if (prompt.includes('talking directly with the owner')) {
         liaisonPrompts.push(prompt);
+        await options.beforeRevision?.(signal);
+        if (options.revise)
+          await this.options!.toolHandler!('revise_task', {
+            taskId: task.id,
+            spec: 'Make the button blue.',
+            acceptance: ['The button is blue.'],
+            guidance: 'The user asked the owner to change the button color.',
+          });
         return '可以改成蓝色，我已经更新了任务要求。';
       }
       if (this.options!.instructions.includes('Independent Review')) {
@@ -173,12 +185,14 @@ test('owner answers from an independent native branch of the working history whi
 
 test('a direction change reaches PM before the final structured answer on the same fork', async () => {
   const s = await scenario({
+    live: true,
+    revise: true,
     owner: async () =>
       JSON.stringify({ result: { kind: 'needs_alignment', request: '按钮改蓝属于验收变更。' } }),
   });
   try {
     await s.engine.start();
-    await s.tickUntil(s.reviewed, 'review started');
+    await s.tickUntil(s.developing, 'Dev started');
     const question = s.store.addOwnerMessage(s.task.id, '按钮能改成蓝色吗？');
     await s.tickUntil(
       () =>
@@ -192,10 +206,46 @@ test('a direction change reaches PM before the final structured answer on the sa
     assert.match(s.liaisonPrompts[0], /按钮改蓝属于验收变更/);
     assert.match(s.lines().find((m) => m.role === 'owner')!.content, /已决定可以改蓝色/);
     assert.equal(s.forks.length, 1);
+    assert.equal(s.store.task(s.task.id).spec, 'Make the button blue.');
+    assert.equal(s.devInterrupted(), true, 'revision still preempts the real delivery Run');
+    assert.equal(s.store.list('incident').length, 0);
   } finally {
     await s.close();
   }
 });
+
+for (const action of ['pause', 'cancel'] as const)
+  test(`user ${action} still interrupts the owner and PM during direction alignment`, async () => {
+    const s = await scenario({
+      live: true,
+      revise: true,
+      beforeRevision: hang,
+      owner: async () =>
+        JSON.stringify({
+          result: { kind: 'needs_alignment', request: 'Change the button color.' },
+        }),
+    });
+    try {
+      await s.engine.start();
+      await s.tickUntil(s.developing, 'Dev started');
+      const question = s.store.addOwnerMessage(s.task.id, 'Make the button blue.');
+      await s.tickUntil(() => s.liaisonPrompts.length === 1, 'PM aligning with the owner');
+      s.engine.control(s.task.id, action, { source: 'user', reason: 'http_task_control' });
+      await s.engine.stop();
+      assert.equal(s.store.get('ownerMessage', question.id)!.status, 'failed');
+      assert.equal(s.lines().filter((message) => message.role === 'owner').length, 0);
+      assert.equal(s.store.activeRuns().length, 0);
+      assert.equal(s.devInterrupted(), true);
+      if (action === 'cancel') assert.equal(s.store.task(s.task.id).stage, 'cancelled');
+      else {
+        assert.equal(s.store.task(s.task.id).control, 'paused');
+        assert.equal(s.store.task(s.task.id).pausedByUser, true);
+      }
+      assert.equal(s.store.list('incident').length, 0);
+    } finally {
+      await s.close();
+    }
+  });
 
 test('fork or invalid structured output fails only the question, without pausing Dev or creating recovery', async () => {
   for (const options of [{ forkError: true }, { owner: async () => 'not JSON' }]) {
