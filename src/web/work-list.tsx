@@ -19,7 +19,7 @@ import {
   type WorkGroup,
 } from '../shared/team.ts';
 import { useLocale } from './locale/provider.tsx';
-import { incidentAttention } from '../shared/task-history.ts';
+import { incidentAttention, isExternalDelivery, taskDeliveryPR } from '../shared/task-history.ts';
 import { routeHref } from './route.ts';
 import { Empty } from './ui.tsx';
 import { EngineeringReference } from './engineering-reference.tsx';
@@ -79,7 +79,7 @@ function Row({
       (i) => i.taskId === task.id && incidentAttention(i, task).actionable,
     );
   const line = issue
-    ? t('work.deliveredIssue')
+    ? t(request ? 'work.deliveredIssue' : 'work.deliveredTeamIssue')
     : group === 'needs_you'
       ? request || t('team.attention.needs_user')
       : group === 'paused'
@@ -91,7 +91,12 @@ function Row({
             ? t('work.waitingOn', { titles: waitsOn.join('、') })
             : t('work.queuedNext')
           : group === 'delivered'
-            ? t('work.deliveredAt', { time: when(work.settledAt ?? work.updatedAt) })
+            ? [
+                isExternalDelivery(task) ? t('receipt.external') : undefined,
+                t('work.deliveredAt', { time: when(work.settledAt ?? work.updatedAt) }),
+              ]
+                .filter(Boolean)
+                .join(' · ')
             : group === 'cancelled'
               ? t('work.cancelledAt', { time: when(work.settledAt ?? work.updatedAt) })
               : [t(`team.step.${work.step}`), activity].filter(Boolean).join(' · ');
@@ -102,6 +107,7 @@ function Row({
         href={routeHref({ page: 'task', projectId, taskId: work.taskId })}
         aria-current={selected ? 'page' : undefined}
         data-selected={selected || undefined}
+        data-external-pending={work.externalDeliveryPending || undefined}
       >
         <Icon className="work-icon" size={16} aria-hidden="true" />
         <span className="work-main">
@@ -110,7 +116,7 @@ function Row({
             className={`work-line ${issue || work.teamHold === 'blocked' ? 'has-issue' : ''}`}
             title={work.teamHold ? undefined : line}
           >
-            {work.teamHold ? <WorkHold work={work} /> : line}
+            {work.teamHold && group !== 'needs_you' ? <WorkHold work={work} /> : line}
           </span>
         </span>
         <span className="work-meta">
@@ -120,7 +126,9 @@ function Row({
             </span>
           )}
           {repoName && <span className="work-repo">{repoName}</span>}
-          {task.pr ? <EngineeringReference task={task} kind="pr" linked={false} /> : null}
+          {taskDeliveryPR(task) ? (
+            <EngineeringReference task={task} kind="pr" linked={false} />
+          ) : null}
         </span>
         <ArrowRight className="work-go" size={14} aria-hidden="true" />
       </a>

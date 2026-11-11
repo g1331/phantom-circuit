@@ -30,6 +30,7 @@ export const schemas = {
     base: id.optional(),
     pr: z.number().int().positive().optional(),
     retries: counter.int().optional(),
+    completion: z.unknown().optional(),
   }),
   run: scoped.extend({
     taskId: id.optional(),
@@ -144,12 +145,57 @@ const pullEvidence = z.object({
   head: z.object({ sha: id, repo: z.object({ full_name: id }).nullable().optional() }),
   base: z.object({ sha: id, repo: z.object({ full_name: id }).nullable().optional() }),
 });
+const mergedRevision = z.object({
+  repoId: id,
+  repository: id,
+  pr: z.number().int().positive(),
+  head: z.string().regex(/^[a-f0-9]{40}$/i),
+  base: z.string().regex(/^[a-f0-9]{40}$/i),
+  baseRef: id,
+  mergeCommit: z.string().regex(/^[a-f0-9]{40}$/i),
+  mergedAt: z.iso.datetime({ offset: true }),
+  checkedAt: z.iso.datetime({ offset: true }),
+});
+const externalCompletion = z.object({
+  source: z.literal('external'),
+  primary: mergedRevision,
+  closing: mergedRevision,
+  issue: z.number().int().positive(),
+  closedAt: z.iso.datetime({ offset: true }),
+  checkedAt: z.iso.datetime({ offset: true }),
+  relationship: z.object({
+    primaryReferencesIssue: z.literal(true),
+    closingReferencesIssue: z.literal(true),
+    closureEventAt: z.iso.datetime({ offset: true }),
+  }),
+});
 
 export function mergeEvidence(
   task: ReportTask,
   repo: z.infer<typeof schemas.repo> | undefined,
   operations: z.infer<typeof schemas.operation>[],
-): { merged: boolean; at?: number } {
+): { merged: boolean; at?: number; source?: 'external' } {
+  const external = externalCompletion.safeParse(task.completion);
+  if (external.success) {
+    const { primary, closing, issue } = external.data;
+    if (
+      task.stage !== 'done' ||
+      !repo ||
+      repo.projectId !== task.projectId ||
+      primary.repoId !== task.repoId ||
+      closing.repoId !== task.repoId ||
+      primary.repository !== repo.github ||
+      closing.repository !== repo.github ||
+      (task.pr ? primary.pr !== task.pr : primary.pr !== closing.pr) ||
+      issue !== task.issue
+    )
+      return { merged: false };
+    return {
+      merged: true,
+      at: Math.max(Date.parse(primary.mergedAt), Date.parse(closing.mergedAt)),
+      source: 'external',
+    };
+  }
   if (!repo || repo.projectId !== task.projectId || !task.head || !task.base || !task.pr)
     return { merged: false };
   const operation = operations.find((op) => op.id === `merge:${task.id}:${task.head}`);

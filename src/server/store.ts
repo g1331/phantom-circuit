@@ -15,7 +15,12 @@ import {
   settingsSchema,
 } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
-import { taskAttention } from '../shared/task-history.ts';
+import {
+  externalDeliveryHoldReason,
+  externalDevelopmentHeld,
+  externalDeliveryNotice,
+  taskAttention,
+} from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -980,6 +985,7 @@ export class Store {
     }
     const existing = this.list('incident').find(
       (incident) =>
+        !incident.supersededByExternalCompletionAt &&
         incident.projectId === parsed.projectId &&
         incident.phase === parsed.phase &&
         (parsed.runId ? incident.runId === parsed.runId : incident.taskId === parsed.taskId),
@@ -1183,6 +1189,7 @@ export class Store {
         throw new Fault('Review revision 绑定不匹配', 409);
       const existing = this.list('clarification').find((c) => c.review?.runId === runId);
       if (existing) return existing;
+      this.assertTaskExecutable(task.id);
       if (!['running', 'waiting'].includes(run.status))
         throw new Fault('Review Run 已结束，不能接受新判定', 409);
       if (task.control !== 'active' || task.stage !== 'reviewing' || task.reviewClarificationId)
@@ -2182,6 +2189,8 @@ export class Store {
       task = undefined;
     }
     const taskRecord = task as Task | undefined;
+    if (taskRecord && (role === 'dev' || role === 'review' || role === 'oncall'))
+      this.assertTaskExecutable(taskRecord.id);
     if (options.ownerMessageId) {
       if (!taskRecord || role !== 'dev') throw new Fault('负责人对话需要已有工作', 409);
       return this.ownerRun(taskRecord, options.ownerMessageId);
@@ -2626,9 +2635,93 @@ export class Store {
       return run;
     });
   }
+  /** Shared execution gate; observing a remote merge never rewrites engineering history. */
+  assertTaskExecutable(key: string) {
+    const task = this.task(key);
+    if (externalDevelopmentHeld(task)) {
+      const completed = task.completion?.source === 'external';
+      const reason = completed
+        ? '远端交付已经结案，原工程记录保留供查阅'
+        : externalDeliveryHoldReason(task);
+      throw new Fault(reason, 409, {
+        code: completed ? 'external_delivery_completed' : 'external_merge_pending',
+        detail: reason,
+      });
+    }
+  }
+  /** Local-only external settlement. Host merge evidence is neither invented nor modified. */
+  completeExternalTask(
+    key: string,
+    evidence: Omit<
+      Extract<NonNullable<Task['completion']>, { source: 'external' }>,
+      'source' | 'localCheckpoint'
+    >,
+  ) {
+    return this.transaction(() => {
+      const task = this.task(key);
+      if (task.completion?.source === 'external') return task;
+      const repo = this.repo(task.repoId);
+      if (
+        ['done', 'cancelled'].includes(task.stage) ||
+        !repo.authorized ||
+        (task.pr ? task.pr !== evidence.primary.pr : evidence.primary.pr !== evidence.closing.pr) ||
+        task.issue !== evidence.issue ||
+        task.issueState !== 'completed' ||
+        (!!task.pr && task.prState !== 'merged') ||
+        task.prReadFailure ||
+        evidence.primary.repoId !== repo.id ||
+        evidence.primary.repository !== repo.github ||
+        evidence.closing.repoId !== repo.id ||
+        evidence.closing.repository !== repo.github ||
+        evidence.primary.baseRef !== repo.defaultBranch ||
+        evidence.closing.baseRef !== repo.defaultBranch ||
+        task.remoteMerge?.head !== evidence.primary.head ||
+        task.remoteMerge.base !== evidence.primary.base ||
+        task.remoteMerge.mergeCommit !== evidence.primary.mergeCommit ||
+        this.activeRuns().some((run) => run.taskId === key && run.role !== 'pm')
+      )
+        throw new Fault('远端交付证据或运行状态已变化，保留原任务等待团队核对', 409);
+      const at = now();
+      const completed = this.updateTask(key, {
+        stage: 'done',
+        completion: {
+          ...evidence,
+          source: 'external',
+          localCheckpoint: {
+            head: task.head,
+            base: task.base,
+            stage: task.stage,
+            control: task.control,
+            pausedByUser: task.pausedByUser,
+            ownerRunId: task.ownerRunId,
+          },
+        },
+        deliveryRevision: { head: evidence.primary.head, commit: evidence.primary.mergeCommit },
+        externalCompletionPendingReason: undefined,
+        completionDeliveryPending: false,
+        completionSyncedAt: at,
+      });
+      for (const incident of this.list('incident'))
+        if (incident.taskId === key && incident.status !== 'resolved')
+          this.put('incident', incident.id, { ...incident, supersededByExternalCompletionAt: at });
+      for (const recovery of this.list('recovery'))
+        if (recovery.taskId === key)
+          this.put('recovery', recovery.id, { ...recovery, supersededByExternalCompletionAt: at });
+      const notice = externalDeliveryNotice(completed);
+      const message = this.addMessage(task.projectId, 'assistant', notice.content);
+      this.updateMessage(message.id, { descriptor: notice.descriptor });
+      this.event('external-completion', '已核实远端关联交付并结案；保留原本机工程记录', {
+        projectId: task.projectId,
+        taskId: key,
+      });
+      this.changes.emit('delivery', task.repoId);
+      return completed;
+    });
+  }
   control(key: string, action: 'pause' | 'resume' | 'cancel', context?: TaskControlContext) {
     return this.transaction(() => {
       const t = this.task(key);
+      if (action === 'resume') this.assertTaskExecutable(key);
       if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束');
       if (action === 'cancel') this.updateTask(key, { stage: 'cancelled', control: 'paused' });
       else
@@ -2650,6 +2743,7 @@ export class Store {
   ) {
     return this.transaction(() => {
       const previous = this.task(key);
+      if (action === 'resume') this.assertTaskExecutable(key);
       const next = this.updateTask(key, patch);
       if (
         previous.control !== next.control ||
@@ -2679,6 +2773,7 @@ export class Store {
   resumeRecovery(key: string) {
     const item = this.get('recovery', key);
     if (!item) throw new Fault('Recovery item 不存在', 404);
+    if (item.taskId) this.assertTaskExecutable(item.taskId);
     if (item.status === 'resumed') return structuredClone(item);
     if (item.status === 'cancelled') throw new Fault('Recovery item 已取消', 409);
     // This is only a request marker. Worktree/remote reconciliation and successor creation happen
@@ -2742,7 +2837,9 @@ export class Store {
         if (successor) return structuredClone(successor);
         throw new Fault('Recovery successor Run 丢失，拒绝重复创建', 409);
       }
-      const task = options.task ?? (options.taskId ? this.task(options.taskId) : undefined);
+      const taskId = options.task?.id ?? options.taskId ?? item.taskId;
+      const task = taskId ? this.task(taskId) : undefined;
+      if (task && options.role !== 'pm') this.assertTaskExecutable(task.id);
       const run = this.run(options.role, item.projectId, options.profile, task, {
         recoveryItemId: item.id,
         ...(options.secondaryReview ? { secondaryReview: true } : {}),
@@ -2775,6 +2872,7 @@ export class Store {
   finishRecovery(key: string, status: Extract<RecoveryItem['status'], 'cancelled' | 'resumed'>) {
     const item = this.get('recovery', key);
     if (!item) throw new Fault('Recovery item 不存在', 404);
+    if (status === 'resumed' && item.taskId) this.assertTaskExecutable(item.taskId);
     if (item.successorRunId && status === 'cancelled')
       throw new Fault('Recovery item 已创建 successor Run', 409);
     const next = { ...item, status, updatedAt: now() };
@@ -2914,7 +3012,7 @@ export class Store {
         });
       const preserveTask =
         !!task && (task.pausedByUser === true || ['done', 'cancelled'].includes(task.stage));
-      if (task && !preserveTask)
+      if (task && !preserveTask && !externalDevelopmentHeld(task))
         this.updateTaskControl(
           task.id,
           {

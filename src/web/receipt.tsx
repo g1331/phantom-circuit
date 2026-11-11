@@ -9,6 +9,13 @@ import {
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Evidence, ReviewResult, Snapshot, Task } from '../shared/types.ts';
+import {
+  externalDeliveryHold,
+  isExternalDelivery,
+  pendingExternalMerge,
+  taskDeliveryHead,
+  taskDeliveryPR,
+} from '../shared/task-history.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import { Clamp } from './fold.tsx';
 import { useLocale } from './locale/provider.tsx';
@@ -31,8 +38,8 @@ function latestPerCommand(tests: Evidence[], head?: string) {
 /** Reviews still applicable to the work, preferring those at its current revision. */
 function currentReviews(task: Task) {
   const live = task.reviews.filter((r) => !r.supersededByRunId);
-  const atHead = live.filter((r) => r.head === task.head);
-  return atHead.length ? atHead : live;
+  const atHead = live.filter((r) => r.head === taskDeliveryHead(task));
+  return isExternalDelivery(task) || atHead.length ? atHead : live;
 }
 
 function Line({
@@ -66,9 +73,17 @@ function Line({
 export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
   const { t, duration } = useLocale();
   const repo = state.repos.find((r) => r.id === task.repoId);
-  const branch = repo?.defaultBranch ?? 'main';
+  const completion = task.completion?.source === 'external' ? task.completion : undefined;
+  const closing = completion?.closing;
+  const closingUrl = closing && `https://github.com/${closing.repository}/pull/${closing.pr}`;
+  const branch =
+    completion?.primary.baseRef ?? task.remoteMerge?.baseRef ?? repo?.defaultBranch ?? 'main';
   const done = task.stage === 'done';
-  const tests = latestPerCommand(task.tests, task.head);
+  const merged = done || task.prState === 'merged' || pendingExternalMerge(task);
+  const awaitingMerge = externalDeliveryHold(task) && !merged;
+  const head = taskDeliveryHead(task);
+  const mergeHead = done ? head : task.remoteMerge?.head;
+  const tests = latestPerCommand(task.tests, head);
   const failed = tests.filter((e) => e.exitCode !== 0);
   const reviews = currentReviews(task);
   const reviewModel = (r: ReviewResult) =>
@@ -84,10 +99,10 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
         : 'attention';
   return (
     <section className="receipt" aria-label={t('receipt.title')}>
-      <h2>{t('receipt.title')}</h2>
+      <h2>{t(completion ? 'receipt.external' : 'receipt.title')}</h2>
       <ol>
         <Line
-          tone={done ? 'pass' : 'pending'}
+          tone={done && !completion ? 'pass' : 'pending'}
           icon={<ListChecks size={13} />}
           title={t('receipt.acceptance')}
         >
@@ -112,14 +127,16 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
           title={t('receipt.validation')}
         >
           {!tests.length ? (
-            <p className="receipt-note">{t('receipt.validationNone')}</p>
+            <p className="receipt-note">
+              {t(completion ? 'receipt.notRecorded' : 'receipt.validationNone')}
+            </p>
           ) : (
             <>
               <p className="receipt-note">
                 {failed.length
                   ? t('receipt.failed', { count: failed.length })
                   : t('receipt.passed', { count: tests.length })}
-                {task.head && <> · {t('receipt.validationAt', { head: short(task.head) })}</>}
+                {head && <> · {t('receipt.validationAt', { head: short(head) })}</>}
               </p>
               {tests.map((evidence) => (
                 <details
@@ -144,7 +161,9 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
 
         <Line tone={reviewTone} icon={<ScanEye size={13} />} title={t('receipt.review')}>
           {!reviews.length ? (
-            <p className="receipt-note">{t('receipt.reviewNone')}</p>
+            <p className="receipt-note">
+              {t(completion ? 'receipt.notRecorded' : 'receipt.reviewNone')}
+            </p>
           ) : (
             reviews.map((r) => {
               const model = reviewModel(r);
@@ -193,26 +212,47 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
         </Line>
 
         <Line
-          tone={done ? 'merged' : 'pending'}
-          icon={done || task.pendingMerge ? <GitMerge size={13} /> : <CircleDashed size={13} />}
+          tone={merged ? 'merged' : 'pending'}
+          icon={merged || task.pendingMerge ? <GitMerge size={13} /> : <CircleDashed size={13} />}
           title={t('receipt.merge')}
         >
           <p className="receipt-note">
             {done
               ? t('receipt.merged', { branch })
-              : task.stage === 'cancelled'
-                ? t('receipt.cancelled')
-                : task.pendingMerge || task.stage === 'merging'
-                  ? t('receipt.merging', { branch })
-                  : t('receipt.notMerged')}
-            {done && task.head && <> · {short(task.head)}</>}
-            {task.prUrl && (
+              : merged
+                ? t('receipt.remoteMerged')
+                : awaitingMerge
+                  ? t('receipt.mergeUnknown')
+                  : task.stage === 'cancelled'
+                    ? t('receipt.cancelled')
+                    : task.pendingMerge || task.stage === 'merging'
+                      ? t('receipt.merging', { branch })
+                      : t('receipt.notMerged')}
+            {mergeHead && <> · {short(mergeHead)}</>}
+            {taskDeliveryPR(task) && (
               <>
                 {' · '}
                 <EngineeringReference task={task} kind="pr" />
               </>
             )}
           </p>
+          {completion && (
+            <>
+              {completion.localCheckpoint.head && (
+                <p className="receipt-note">
+                  {t('receipt.localCheckpoint', { head: short(completion.localCheckpoint.head) })}
+                </p>
+              )}
+              {completion.closing.pr !== completion.primary.pr && (
+                <p className="receipt-note">
+                  {t('receipt.closingPR')}{' '}
+                  <a className="quiet-link" href={closingUrl} target="_blank" rel="noreferrer">
+                    PR #{completion.closing.pr}
+                  </a>
+                </p>
+              )}
+            </>
+          )}
         </Line>
       </ol>
     </section>

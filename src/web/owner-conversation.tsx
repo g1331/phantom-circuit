@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Send } from 'lucide-react';
 import type { Snapshot, Task } from '../shared/types.ts';
 import { hasOwner } from '../shared/team.ts';
+import { isExternalDelivery } from '../shared/task-history.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
 
@@ -21,11 +22,15 @@ export function OwnerConversation({
   const [draft, setDraft] = useState({ content: '' });
   const lines = (state.ownerMessages ?? []).filter((m) => m.taskId === task.id);
   const open = hasOwner(task);
+  const external = isExternalDelivery(task);
   if (!open && !lines.length) return null;
   return (
-    <section className="owner-conversation" aria-label={t('owner.title')}>
-      <h3>{t('owner.title')}</h3>
-      <p className="muted">{t(open ? 'owner.hint' : 'owner.closed')}</p>
+    <section
+      className="owner-conversation"
+      aria-label={t(external ? 'task.ownerHistory' : 'owner.title')}
+    >
+      <h3>{t(external ? 'task.ownerHistory' : 'owner.title')}</h3>
+      {!external && <p className="muted">{t(open ? 'owner.hint' : 'owner.closed')}</p>}
       {lines.length > 0 && (
         <ol className="owner-lines">
           {lines.map((m) => (

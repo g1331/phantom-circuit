@@ -10,7 +10,15 @@ import {
   GitPullRequestDraft,
 } from 'lucide-react';
 import type { Task } from '../shared/types.ts';
+import { taskDeliveryPR } from '../shared/task-history.ts';
 import { useLocale } from './locale/provider.tsx';
+
+export function deliveryPRUrl(task: Task): string | undefined {
+  const completion = task.completion;
+  return completion?.source === 'external'
+    ? `https://github.com/${completion.primary.repository}/pull/${completion.primary.pr}`
+    : task.prUrl;
+}
 
 /** Completed delivery sync confirms both the merge and completed Issue closure. */
 export function EngineeringReference({
@@ -49,12 +57,13 @@ export function EngineeringReference({
     <>
       <span className={`reference-state reference-${kind} reference-${status}`}>
         <Icon size={13} role="img" aria-label={label} />
-        {kind === 'pr' ? 'PR' : 'Issue'} #{(kind === 'pr' ? task.pr : task.issue) ?? ''}
+        {kind === 'pr' ? 'PR' : 'Issue'} #
+        {(kind === 'pr' ? taskDeliveryPR(task) : task.issue) ?? ''}
       </span>
       {external && <ExternalLink size={12} aria-hidden="true" />}
     </>
   );
-  const href = kind === 'pr' ? task.prUrl : task.issueUrl;
+  const href = kind === 'pr' ? deliveryPRUrl(task) : task.issueUrl;
   return linked && href ? (
     <a className="engineering-reference quiet-link" href={href} target="_blank" rel="noreferrer">
       {content}

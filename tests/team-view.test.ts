@@ -5,6 +5,130 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
 import { teamView, workGroup } from '../src/shared/team.ts';
+import { incidentAttention } from '../src/shared/task-history.ts';
+
+for (const settled of [false, true]) {
+  for (const userDecision of [false, true]) {
+    test(`external ${settled ? 'done' : 'hold'} retains new ${
+      userDecision ? 'user decisions' : 'internal failures'
+    } in team attention`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'phantom-team-external-'));
+      const store = new Store(join(root, 'db.sqlite'));
+      try {
+        const project = store.createProject('External delivery', '');
+        const repo = store.createRepo({
+          projectId: project.id,
+          name: 'r',
+          path: root,
+          github: 'fixture/r',
+          defaultBranch: 'main',
+          authorized: true,
+        });
+        const message = store.addMessage(project.id, 'user', 'Build it', 'implement');
+        const task = store.createTask({
+          projectId: project.id,
+          repoId: repo.id,
+          sourceMessageId: message.id,
+          title: 'Delivered feature',
+          spec: 's',
+          acceptance: ['a'],
+          dependencies: [],
+          kind: 'backend',
+          complexity: 'normal',
+          priority: 0,
+        });
+        const old = store.createIncident({
+          projectId: project.id,
+          taskId: task.id,
+          phase: 'finalize',
+          message: 'Original engineering failure',
+        });
+        store.updateIncident(old.id, { status: 'waiting_user' });
+        const primary = {
+          repoId: repo.id,
+          repository: repo.github,
+          pr: 9,
+          head: 'a'.repeat(40),
+          base: 'b'.repeat(40),
+          baseRef: 'main',
+          mergeCommit: 'c'.repeat(40),
+          mergedAt: '2026-11-10T08:47:41Z',
+          checkedAt: new Date().toISOString(),
+        };
+        store.updateTask(task.id, {
+          stage: 'developing',
+          issue: 1,
+          issueState: 'completed',
+          pr: 9,
+          prState: 'merged',
+          remoteMerge: primary,
+        });
+        if (settled) {
+          store.completeExternalTask(task.id, {
+            primary,
+            closing: primary,
+            issue: 1,
+            closedAt: primary.mergedAt,
+            checkedAt: primary.checkedAt,
+            relationship: {
+              primaryReferencesIssue: true,
+              closingReferencesIssue: true,
+              closureEventAt: primary.mergedAt,
+            },
+          });
+          const historical = store.get('incident', old.id)!;
+          assert.equal(historical.status, 'waiting_user');
+          assert.ok(historical.supersededByExternalCompletionAt);
+          assert.equal(incidentAttention(historical, store.task(task.id)).actionable, false);
+          const delivered = teamView(store.snapshot(), project.id);
+          assert.deepEqual(delivered.waiting, []);
+          assert.equal(workGroup(delivered.work[0]), 'delivered');
+        }
+        const fresh = store.createIncident({
+          projectId: project.id,
+          taskId: task.id,
+          phase: 'validation',
+          message: 'New delivery validation failure',
+          ...(userDecision ? { descriptor: { code: 'incident_waiting_user' } } : {}),
+        });
+        store.updateIncident(fresh.id, { status: 'waiting_user' });
+        const current = store.get('incident', fresh.id)!;
+        assert.equal(current.supersededByExternalCompletionAt, undefined);
+        assert.equal(incidentAttention(current, store.task(task.id)).actionable, true);
+        const view = teamView(store.snapshot(), project.id);
+        assert.equal(
+          view.waiting.some((entry) => entry.id === fresh.id),
+          userDecision,
+        );
+        assert.equal(
+          view.waiting.some((entry) => entry.id === old.id),
+          false,
+        );
+        const work = view.work.find((entry) => entry.taskId === task.id)!;
+        assert.equal(work.attention, userDecision ? 'needs_user' : 'blocked');
+        assert.equal(
+          workGroup(work),
+          userDecision ? 'needs_you' : settled ? 'delivered' : 'moving',
+        );
+        if (!userDecision) {
+          assert.equal(work.teamNext, 'validation');
+          assert.equal(work.teamHold, 'blocked');
+          assert.equal(work.reason, fresh.message);
+        }
+        store.updateIncident(fresh.id, { status: 'resolved' });
+        if (settled) {
+          const finished = teamView(store.snapshot(), project.id);
+          assert.deepEqual(finished.waiting, []);
+          assert.equal(workGroup(finished.work[0]), 'delivered');
+          assert.equal(store.get('incident', old.id)!.status, 'waiting_user');
+        }
+      } finally {
+        store.close();
+        await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      }
+    });
+  }
+}
 
 test('the team view shows who is working on what and what waits on the user', async () => {
   const root = await mkdtemp(join(tmpdir(), 'phantom-team-'));

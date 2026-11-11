@@ -49,7 +49,7 @@ test('a creation whose response was lost is adopted at resume, never created twi
   }
 });
 
-test('an already merged remote delivery is adopted by recovery without a write', async () => {
+test('merged publication with incomplete relations stays held without writes', async () => {
   const f = await fixture();
   try {
     const failed = await blockedOnPublication(f);
@@ -67,7 +67,9 @@ test('an already merged remote delivery is adopted by recovery without a write',
     await f.engine.resume(f.task().id);
     const result = await f.cycle();
     assert.equal(result.pr, 4);
-    assert.equal(result.stage, 'reviewing');
+    assert.equal(result.stage, 'developing');
+    assert.equal(result.prState, 'merged');
+    assert.equal(f.store.claimNext(), undefined);
     assert.equal(f.github.posted.length, 1, 'the existing delivery is adopted, never duplicated');
     assert.equal(f.github.writes, 0);
     assert.equal(f.turns(), 0);

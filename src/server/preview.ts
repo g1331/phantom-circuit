@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { Store, Fault, redact } from './store.ts';
 import { Workspaces } from './workspaces.ts';
 import { command, shellCommand, terminate } from './process.ts';
+import { taskDeliveryHead, taskDeliveryCommits } from '../shared/task-history.ts';
 
 export class Previews {
   private children = new Map<string, ChildProcess>();
@@ -73,22 +74,32 @@ export class Previews {
       }
       const revision = await this.workspaces.git(path, ['rev-parse', 'HEAD'], signal);
       const taskHeads: string[] = [];
+      const deliveryCommits: string[] = [];
       const delivered = this.store
         .list('task')
-        .filter((task) => task.repoId === repoId && task.stage === 'done' && task.head);
-      for (const task of delivered) {
-        const head = task.head!;
-        const commit = task.deliveryRevision?.head === head ? task.deliveryRevision.commit : head;
-        const ancestry = await command(
-          'git',
-          ['merge-base', '--is-ancestor', commit, revision],
-          path,
-          undefined,
-          120000,
-          false,
-          signal,
+        .filter(
+          (task) => task.repoId === repoId && task.stage === 'done' && taskDeliveryHead(task),
         );
-        if (ancestry.code === 0) taskHeads.push(head);
+      for (const task of delivered) {
+        const head = taskDeliveryHead(task)!;
+        const commits = taskDeliveryCommits(task);
+        const ancestry = await Promise.all(
+          commits.map((commit) =>
+            command(
+              'git',
+              ['merge-base', '--is-ancestor', commit, revision],
+              path,
+              undefined,
+              120000,
+              false,
+              signal,
+            ),
+          ),
+        );
+        if (ancestry.every((result) => result.code === 0)) {
+          taskHeads.push(head);
+          deliveryCommits.push(...commits);
+        }
       }
       signal.throwIfAborted();
       const cmd = repo.commands.start.replaceAll('{port}', String(repo.commands.port));
@@ -137,7 +148,14 @@ export class Previews {
           });
           if (r.status < 500) {
             this.store.patchRepo(repoId, {
-              preview: { status: 'running', url, pid: child.pid, revision, taskHeads },
+              preview: {
+                status: 'running',
+                url,
+                pid: child.pid,
+                revision,
+                taskHeads,
+                deliveryCommits,
+              },
             });
             return { url };
           }

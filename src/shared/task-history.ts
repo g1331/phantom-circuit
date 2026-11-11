@@ -1,5 +1,74 @@
 import type { Incident, Task } from './types.ts';
 
+export const externalMergeReason = '远端已合并 · 待团队核对';
+
+export const isExternalDelivery = (task: Task) => task.completion?.source === 'external';
+export const externalDeliveryHold = (task: Task) =>
+  pendingExternalMerge(task) ||
+  (!['done', 'cancelled'].includes(task.stage) &&
+    !!task.issue &&
+    !task.pr &&
+    task.issueState === 'completed');
+export const externalDeliveryHoldReason = (task: Task) =>
+  pendingExternalMerge(task) ? externalMergeReason : 'Issue 已完成关闭 · 待团队核对远端交付';
+export const externalDevelopmentHeld = (task: Task) =>
+  externalDeliveryHold(task) || isExternalDelivery(task);
+
+/** The delivered revision is independent of the original developer's local checkpoint. */
+export function taskDeliveryHead(task: Task): string | undefined {
+  return task.completion?.source === 'external' ? task.completion.primary.head : task.head;
+}
+export function taskDeliveryPR(task: Task): number | undefined {
+  return task.completion?.source === 'external' ? task.completion.primary.pr : task.pr;
+}
+export function taskDeliveryRevision(task: Task) {
+  if (task.completion?.source === 'external')
+    return { head: task.completion.primary.head, commit: task.completion.primary.mergeCommit };
+  return task.deliveryRevision?.head === task.head ? task.deliveryRevision : undefined;
+}
+export function taskDeliveryCommits(task: Task): string[] {
+  if (task.completion?.source === 'external')
+    return [...new Set([task.completion.primary.mergeCommit, task.completion.closing.mergeCommit])];
+  const revision = taskDeliveryRevision(task)?.commit ?? task.head;
+  return revision ? [revision] : [];
+}
+export function taskCompletionAt(task: Task): string | undefined {
+  const completion = task.completion;
+  if (completion?.source === 'host') return completion.completedAt;
+  if (completion?.source === 'external')
+    return [completion.primary.mergedAt, completion.closing.mergedAt]
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+      .at(-1);
+  return undefined;
+}
+
+export function externalDeliveryNotice(task: Task) {
+  if (task.completion?.source !== 'external')
+    throw new Error('External completion evidence required');
+  const { primary, closing, issue } = task.completion;
+  const content =
+    `「${task.title}」已按远端交付结案（PR #${primary.pr}；` +
+    `Issue #${issue} 由 PR #${closing.pr} 关闭）。本机验证与评审保留原记录。`;
+  return {
+    content,
+    descriptor: {
+      code: 'delivery_external_completed',
+      params: { title: task.title, pr: primary.pr, closingPR: closing.pr, issue },
+      detail: content,
+    },
+  };
+}
+
+/** Old merged caches also hold work, even before a full remote observation is available. */
+export function pendingExternalMerge(task: Task): boolean {
+  return (
+    !['done', 'cancelled'].includes(task.stage) &&
+    ((!!task.pr && task.prState === 'merged') ||
+      (task.remoteMerge?.repoId === task.repoId &&
+        (task.remoteMerge.pr === task.pr || (!task.pr && !!task.issue))))
+  );
+}
+
 // Compatibility is deliberately limited to the one historical completion diagnostic.
 // This is an explanation of a settled record, never evidence that authorizes a merge.
 export const legacyCompletionGap =
@@ -44,16 +113,32 @@ export function incidentAttention(incident: Incident, task: Task | undefined) {
     isLegacyCompletionGap(incident.message);
   return {
     historicalReason: historical ? incident.message : undefined,
-    actionable: incident.status !== 'resolved' && !historical,
+    actionable:
+      incident.status !== 'resolved' && !historical && !incident.supersededByExternalCompletionAt,
   };
 }
 
 /** Current attention state; the durable blocker and control remain available for audit. */
 export function taskAttention(task: Task) {
   const historicalReason = historicalCompletionReason(task);
+  const externalMergePending = pendingExternalMerge(task);
+  const externalDeliveryPending = externalDeliveryHold(task);
+  const externalDelivered = isExternalDelivery(task);
   return {
     historicalReason,
-    blocked: historicalReason ? undefined : task.blocked,
-    paused: !historicalReason && task.control === 'paused',
+    externalMergePending,
+    externalDeliveryPending,
+    blocked: externalDelivered
+      ? undefined
+      : externalDeliveryPending
+        ? externalDeliveryHoldReason(task)
+        : historicalReason
+          ? undefined
+          : task.blocked,
+    paused:
+      !externalDelivered &&
+      !externalDeliveryPending &&
+      !historicalReason &&
+      task.control === 'paused',
   };
 }

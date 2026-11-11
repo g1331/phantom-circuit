@@ -598,6 +598,13 @@
 .work-hold.attention-blocked {
   color: var(--danger);
 }
+.task-progress[data-external-pending] h2,
+.task-status.group-moving[data-external-pending] .task-status-group,
+.work-row[data-external-pending] .work-icon,
+.work-row[data-external-pending] .work-line,
+.work-hold.attention-pending {
+  color: var(--warning);
+}
 .work-hold {
   overflow-wrap: anywhere;
 }
