@@ -166,6 +166,57 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
     assert.ok((await mounted()) <= 150, 'mounted messages never exceed 150');
     assert.ok((await retained()) <= 150, 'actual retained React timeline never exceeds 150');
   };
+  const idleChecks: (() => void)[] = [];
+  const checkIdleRefresh = async (id: string, name: string, width: number) => {
+    await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
+    await page.waitForFunction(() => [...document.images].every((image) => image.complete));
+    await page.evaluate(() => document.fonts.ready);
+    const layout = () =>
+      page.locator('.conversation').evaluate(async (element) => {
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        const message = element.querySelector('.message:last-of-type');
+        return {
+          height: element.scrollHeight,
+          top: element.scrollTop,
+          message: message?.getBoundingClientRect().top,
+          control: element.querySelector('.history-control')?.textContent ?? null,
+        };
+      });
+    const samples = [];
+    for (let iteration = 0; iteration < 3; iteration++) {
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => (entered = resolve));
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const pattern = `**/api/projects/${id}/messages`;
+      await page.route(pattern, async (route) => {
+        entered();
+        await gate;
+        await route.continue().catch(() => {});
+      });
+      const before = await layout();
+      store.changes.emit('change');
+      await waiting;
+      const during = await layout();
+      const finished = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === `/api/projects/${id}/messages`,
+      );
+      release();
+      await finished;
+      const after = await layout();
+      await page.unroute(pattern);
+      samples.push({ before, during, after });
+      await writeFile(
+        join(artifacts, `history-idle-${name}-${width}.json`),
+        JSON.stringify(samples, null, 2),
+      );
+      idleChecks.push(() => {
+        assert.deepEqual(during, before, `${name}: background refresh preserves pending layout`);
+        assert.deepEqual(after, before, `${name}: background refresh preserves settled layout`);
+      });
+    }
+  };
   try {
     await visit(project.id);
     await page.locator(`#message-${expected.at(-1)}`).waitFor();
@@ -185,20 +236,91 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
         );
+        if (name === 'short' || name === 'long') await checkIdleRefresh(id!, name, width);
         await page.screenshot({
           path: join(artifacts, `history-${name}-${width}.png`),
           animations: 'disabled',
         });
       }
     }
+    for (const check of idleChecks) check();
     await page.setViewportSize({ width: 1280, height: 900 });
     await visit(project.id);
     const composer = page.locator('.composer textarea');
     await composer.fill('Draft survives history and retry');
+    const latestPattern = `**/api/projects/${project.id}/messages`;
+    await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
+    await page.route(latestPattern, (route) =>
+      route.fulfill({ status: 503, json: { error: 'Synthetic refresh failure' } }),
+    );
+    store.changes.emit('change');
+    await page.getByRole('button', { name: '历史加载失败，重试' }).waitFor();
+    assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+    assert.equal(await retained(), 50, 'refresh failure retains the message window');
+    await page.unroute(latestPattern);
+    const retriedRefresh = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === `/api/projects/${project.id}/messages` &&
+        response.ok(),
+    );
+    await page.getByRole('button', { name: '历史加载失败，重试' }).click();
+    await retriedRefresh;
+    await page.getByRole('button', { name: '加载更早消息' }).waitFor();
+    assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+    let releaseRefresh!: () => void;
+    let refreshEntered!: () => void;
+    let refreshReleased!: () => void;
+    const refreshWaiting = new Promise<void>((resolve) => (refreshEntered = resolve));
+    const refreshGate = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    const refreshDone = new Promise<void>((resolve) => (refreshReleased = resolve));
+    await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
+    await page.route(latestPattern, async (route) => {
+      refreshEntered();
+      await refreshGate;
+      await route.continue().catch(() => {});
+      refreshReleased();
+    });
+    store.changes.emit('change');
+    await refreshWaiting;
+    await page.locator('.conversation').dispatchEvent('wheel', { deltaY: -1000 });
+    await page.locator('.conversation').evaluate((element) => {
+      element.scrollTop = element.scrollHeight / 2;
+    });
+    await page.getByRole('button', { name: '回到最新消息' }).click();
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.conversation')!;
+      return element.scrollHeight - element.scrollTop - element.clientHeight < 65;
+    });
+    const earlierResponse = page.waitForResponse((response) =>
+      response.url().includes(`/projects/${project.id}/messages?before=`),
+    );
+    await page.getByRole('button', { name: '加载更早消息' }).click();
+    await earlierResponse;
+    await page.waitForFunction(
+      () => document.querySelectorAll('.conversation .message').length > 50,
+    );
+    releaseRefresh();
+    await refreshDone;
+    await page.evaluate(async () => {
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+    });
+    assert.ok((await retained()) > 50, 'cancelled refresh never replaces explicit pagination');
+    assert.equal(await page.getByRole('button', { name: '历史加载失败，重试' }).count(), 0);
+    await page.unroute(latestPattern);
+    assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+    await visit(project.id);
+    await composer.fill('Draft survives history and retry');
     let fail = true;
+    let releaseFailure!: () => void;
+    let failureEntered!: () => void;
+    const failureWaiting = new Promise<void>((resolve) => (failureEntered = resolve));
+    const failureGate = new Promise<void>((resolve) => (releaseFailure = resolve));
     await page.route(`**/projects/${project.id}/messages?before=*`, async (route) => {
       if (fail) {
         fail = false;
+        failureEntered();
+        await failureGate;
         await route.fulfill({ status: 503, json: { error: 'Synthetic history failure' } });
       } else await route.continue();
     });
@@ -210,6 +332,9 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
       });
     };
     await top();
+    await failureWaiting;
+    await page.locator('.history-control [role="status"]').waitFor();
+    releaseFailure();
     await page.getByRole('button', { name: '历史加载失败，重试' }).waitFor();
     assert.equal(await composer.inputValue(), 'Draft survives history and retry');
     assert.ok((await mounted()) <= 50);
@@ -404,7 +529,8 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
     );
     console.log(
       'History browser PASS: 1003 complete mixed records, 50-entry HTTP pages, ' +
-        '150-entry retained/mounted bounds, retry/draft, realtime anchor/follow, ' +
+        '150-entry retained/mounted bounds, idle refresh layout, pending clicks, retry/draft, ' +
+        'realtime anchor/follow, ' +
         'project isolation, 1280/390 empty/short/long.',
     );
   } catch (error) {
