@@ -27,6 +27,7 @@ import { Brief } from './brief.tsx';
 import { WorkList } from './work-list.tsx';
 import { TaskPage } from './task-page.tsx';
 import { ProjectNav } from './project-nav.tsx';
+import { Workbench } from './workbench.tsx';
 import './style.css';
 
 function App() {
@@ -209,7 +210,7 @@ function App() {
   if (processDisclosures.current.projectId !== (project?.id ?? '')) {
     processDisclosures.current = { projectId: project?.id ?? '', items: new Map() };
   }
-  const requestId = page === 'home' ? route.view : undefined;
+  const requestId = page === 'conversation' ? route.view : undefined;
   const requestReady =
     !!requestId &&
     [...(state?.clarifications ?? []), ...(state?.incidents ?? [])].some(
@@ -218,7 +219,7 @@ function App() {
   // Explicit navigation owns the initial viewport. Position it before the reading-anchor
   // hook captures this route, so its resize restoration preserves the requested form.
   useLayoutEffect(() => {
-    if (page !== 'home') return;
+    if (page !== 'conversation') return;
     const element = scroll.current;
     if (!element) return;
     clearScrollIntent();
@@ -426,7 +427,7 @@ function App() {
         act={act}
         onTeam={onTeam}
         onFeedback={(draft) => {
-          if (page !== 'home') go({ page: 'home', projectId: project.id });
+          if (page !== 'conversation') go({ page: 'conversation', projectId: project.id });
           composerRef.current?.setDraft(draft, 'feedback');
         }}
       />
@@ -542,9 +543,19 @@ function App() {
           </div>
         ) : (
           <>
+            {(page === 'home' || page === 'input') && (
+              <Workbench
+                key={project.id}
+                state={state}
+                project={project}
+                inputId={route.inputId}
+                busy={busy}
+                onTeam={onTeam}
+              />
+            )}
             {/* Keep drafts and reading position mounted across navigation. */}
-            <div className="home-grid" hidden={page !== 'home'}>
-              <section className="home-main" aria-label={t('nav.home')}>
+            <div className="home-grid" hidden={page !== 'conversation'}>
+              <section className="home-main" aria-label={t('nav.conversation')}>
                 <h1 className="sr-only">{project.name}</h1>
                 <div className="chat-workspace">
                   <div className="conversation-shell">
@@ -758,7 +769,7 @@ function App() {
                     act={act}
                     reload={reload}
                     onDraft={(draft) => {
-                      go({ page: 'home', projectId: project.id });
+                      go({ page: 'conversation', projectId: project.id });
                       composerRef.current?.setDraft(draft.content, draft.intent);
                     }}
                   />

@@ -1,5 +1,6 @@
 import { runtimeEn } from './runtime.ts';
 import { pagesEn } from './pages.ts';
+import { workbenchEn } from './workbench.ts';
 export const en = {
   'reference.open': 'Open',
   'reference.closed': 'Closed',
@@ -16,6 +17,7 @@ export const en = {
   'tasks.historicalIncidents': 'Historical incidents (original records and status)',
   ...runtimeEn,
   ...pagesEn,
+  ...workbenchEn,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': 'Conversation outline',
   'chat.navigation': 'Conversation turns',

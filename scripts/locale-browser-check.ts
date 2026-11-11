@@ -8,7 +8,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 1366, height: 768 });
   await choosePreference(page, 'language', 'zh-CN');
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   const draft = 'Keep this draft 中文内容 **unchanged**';
   await page.getByLabel('给 PM 的消息').fill(draft);
   await choosePreference(page, 'language', 'en');

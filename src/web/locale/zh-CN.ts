@@ -2,6 +2,7 @@ import type { Resource } from './core.ts';
 
 import { runtimeZh } from './runtime.ts';
 import { pagesZh } from './pages.ts';
+import { workbenchZh } from './workbench.ts';
 export const zhCN = {
   'reference.open': '开放',
   'reference.closed': '已关闭',
@@ -17,6 +18,7 @@ export const zhCN = {
   'tasks.historicalIncidents': '历史 Incident（保留原始记录与状态）',
   ...runtimeZh,
   ...pagesZh,
+  ...workbenchZh,
   'images.formats': 'PNG / JPEG / WebP',
   'chat.directory': '对话目录',
   'chat.navigation': '对话轮次导航',

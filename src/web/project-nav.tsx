@@ -1,12 +1,13 @@
-import { FolderCog, ListTodo, MessageSquare, Newspaper, Users } from 'lucide-react';
+import { FolderCog, ListTodo, MessageSquare, Newspaper, Users, Workflow } from 'lucide-react';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref, type Page, type Route } from './route.ts';
 
 const items = [
-  { page: 'home', icon: MessageSquare },
+  { page: 'home', icon: Workflow },
   { page: 'work', icon: ListTodo },
   { page: 'brief', icon: Newspaper },
   { page: 'team', icon: Users },
+  { page: 'conversation', icon: MessageSquare },
   { page: 'project', icon: FolderCog },
 ] as const satisfies readonly { page: Page; icon: typeof MessageSquare }[];
 
@@ -29,7 +30,7 @@ export function ProjectNav({
 }) {
   const { t, number } = useLocale();
   // A work page belongs to the work list.
-  const current = route.page === 'task' ? 'work' : route.page;
+  const current = route.page === 'task' ? 'work' : route.page === 'input' ? 'home' : route.page;
   return (
     <nav className={`project-pages pages-${variant}`} aria-label={t('nav.label')}>
       {items.map(({ page, icon: Icon }) => {
@@ -45,7 +46,9 @@ export function ProjectNav({
             aria-current={current === page ? 'page' : undefined}
           >
             <Icon size={16} aria-hidden="true" />
-            <span className="page-link-label">{label}</span>
+            <span className="page-link-label">
+              {variant === 'bar' && page === 'conversation' ? t('nav.conversationShort') : label}
+            </span>
             {badge > 0 && (
               <span className={`page-badge ${page === 'team' ? 'live' : 'attention'}`}>
                 {number(badge)}

@@ -137,6 +137,7 @@ export async function checkMaintenance() {
       if (request.resourceType() === 'script') scripts.push(request.url());
     });
     await page.goto(origin);
+    await openPage(page, 'conversation');
     await page.getByLabel('Message to PM').waitFor();
     assert.equal(
       await page.locator('.project-actions .action-record').count(),
@@ -366,7 +367,7 @@ export async function checkMaintenance() {
     await page.locator('.runtime-settings').waitFor();
     await page.keyboard.press('Escape');
     // Classify each Incident independently, even when several belong to the same Task.
-    await openPage(page, 'home');
+    await openPage(page, 'conversation');
     let currentIncidents = 0;
     const openTechnicalActions = async () => {
       const summary = page
@@ -451,7 +452,7 @@ export async function checkMaintenance() {
         await runRow.locator('.runtime-badge.warning').count(),
         sample.historical ? 0 : 1,
       );
-      await openPage(page, 'home');
+      await openPage(page, 'conversation');
       assert.deepEqual(store.get('incident', added.id), added);
     }
     const orphan = store.createIncident({ projectId: project.id, phase: 'sync', message: reason });
@@ -475,6 +476,7 @@ export async function checkMaintenance() {
       message: reason,
     });
     await page.getByRole('button', { name: otherProject.name, exact: true }).click();
+    await openPage(page, 'conversation');
     await page.getByRole('heading', { name: otherProject.name, exact: true }).waitFor();
     await openTechnicalActions();
     await page.waitForFunction(
@@ -488,6 +490,7 @@ export async function checkMaintenance() {
     assert.deepEqual(store.get('incident', foreign.id), foreign);
     assert.deepEqual(store.get('incident', orphan.id), orphan);
     await page.getByRole('button', { name: 'Background refresh happened', exact: true }).click();
+    await openPage(page, 'conversation');
     await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
     await openTechnicalActions();
     assert.equal(await page.locator('.project-actions').count(), 1);
@@ -533,6 +536,7 @@ export async function checkMaintenance() {
           return route.continue();
         });
         await failure.goto(origin);
+        await openPage(failure, 'conversation');
         const retainedDraft = `Draft survives ${panel} ${recovery}`;
         await failure.getByLabel('Message to PM').fill(retainedDraft);
         const open = async () => {

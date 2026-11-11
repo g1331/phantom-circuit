@@ -117,6 +117,7 @@ export async function checkWorkspace() {
       await route.fulfill({ json: {} });
     });
     await page.goto(origin);
+    await openPage(page, 'conversation');
     await page.getByLabel('给 PM 的消息', { exact: true }).waitFor();
     await openTask(page, task.title);
     await page.getByRole('button', { name: '讨论调整', exact: true }).click();
@@ -413,7 +414,7 @@ export async function checkWorkspace() {
     );
     const delivery = store.addMessage(project.id, 'assistant', notice.content);
     store.updateMessage(delivery.id, { descriptor: notice.descriptor });
-    await page.goto(`${origin}/#/p/${project.id}`);
+    await page.goto(`${origin}/#/p/${project.id}/conversation`);
     await choosePreference(page, 'language', 'zh-CN');
     const notification = page.locator(`#message-${delivery.id} .message-content`);
     await notification.getByText(`已交付「${task.title}」。`, { exact: false }).waitFor();

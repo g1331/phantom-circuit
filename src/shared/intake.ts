@@ -57,6 +57,7 @@ export interface SourceInput {
   state: 'open' | 'closed';
   createdAt: string;
   updatedAt: string;
+  bodyUpdatedAt?: string;
   observedAt: string;
 }
 
@@ -121,7 +122,7 @@ export interface WorkflowPage {
   inputs: {
     input: Omit<SourceInput, 'body'>;
     assessment: InputAssessment;
-    replies: SourceReply[];
+    replies: Omit<SourceReply, 'body'>[];
     task?: Pick<Task, 'id' | 'title' | 'stage' | 'control' | 'blocked' | 'completion'>;
   }[];
   next?: string;

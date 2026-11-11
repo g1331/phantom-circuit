@@ -58,6 +58,7 @@ function messageSummary(message: Message) {
   return {
     id: message.id,
     role: message.role,
+    ...(message.origin ? { origin: message.origin } : {}),
     ...(message.intent ? { intent: message.intent } : {}),
     ...(message.status ? { status: message.status } : {}),
     createdAt: message.createdAt,

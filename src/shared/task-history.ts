@@ -1,4 +1,14 @@
-import type { Incident, Task } from './types.ts';
+import type { Evidence, Incident, Task } from './types.ts';
+
+export function latestPerCommand(tests: Evidence[], head?: string) {
+  const at = head ? tests.filter((evidence) => evidence.head === head) : tests;
+  const byCommand = new Map<string, Evidence>();
+  for (const evidence of at) {
+    const seen = byCommand.get(evidence.command);
+    if (!seen || seen.at <= evidence.at) byCommand.set(evidence.command, evidence);
+  }
+  return [...byCommand.values()];
+}
 
 export const externalMergeReason = '远端已合并 · 待团队核对';
 

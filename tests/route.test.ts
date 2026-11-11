@@ -5,7 +5,9 @@ import { parseRoute, routeHref, type Route } from '../src/web/route.ts';
 test('every page round-trips through its hash, and unknown hashes fall back to home', () => {
   const routes: Route[] = [
     { page: 'home', projectId: 'p 1' },
-    { page: 'home', projectId: 'p1', view: 'question/1' },
+    { page: 'conversation', projectId: 'p1' },
+    { page: 'conversation', projectId: 'p1', view: 'question/1' },
+    { page: 'input', projectId: 'p1', inputId: 'input/1' },
     { page: 'brief', projectId: 'p1' },
     { page: 'work', projectId: 'p1' },
     { page: 'task', projectId: 'p1', taskId: 't/1' },
@@ -20,6 +22,16 @@ test('every page round-trips through its hash, and unknown hashes fall back to h
   assert.equal(routeHref({ page: 'work' }), '#/');
   // Sections belong to the task and project pages only.
   assert.deepEqual(parseRoute('#/p/p1/team/extra'), { page: 'team', projectId: 'p1' });
+});
+
+test('legacy request links still open the conversation while the default home is the workbench', () => {
+  assert.deepEqual(parseRoute('#/p/p1/requests/q1'), {
+    page: 'conversation',
+    projectId: 'p1',
+    view: 'q1',
+  });
+  assert.equal(routeHref({ page: 'home', projectId: 'p1', view: 'q1' }), '#/p/p1/requests/q1');
+  assert.deepEqual(parseRoute('#/p/p1'), { page: 'home', projectId: 'p1' });
 });
 
 test('malformed URL encoding falls back to home without throwing', () => {

@@ -1022,7 +1022,7 @@
   }
   .pages-bar {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     position: fixed;
     inset: auto 0 0 0;
     z-index: 20;

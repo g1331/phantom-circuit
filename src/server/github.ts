@@ -1,3 +1,13 @@
+import type { SourceReply } from '../shared/intake.ts';
+import {
+  resolveActor,
+  readIssues,
+  findReply,
+  sourceCommentSchema,
+  replyBinding,
+  type ObservedIssue,
+} from './intake-github.ts';
+export type { ObservedIssue } from './intake-github.ts';
 import { command } from './process.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -175,6 +185,16 @@ export function isTransientGitHubError(error: unknown): boolean {
     )
   );
 }
+const importedIssueSchema = z.object({
+  id: z.number().int().positive(),
+  node_id: z.string(),
+  number: z.number(),
+  html_url: z.url(),
+  body: z.string().nullable(),
+  state: z.enum(['open', 'closed']),
+  state_reason: z.string().nullable().optional(),
+});
+
 export class GitHub {
   private operations = new Map<string, Promise<unknown>>();
   /** Status field per GitHub Project; the board's options rarely change while the host runs. */
@@ -214,6 +234,74 @@ export class GitHub {
     if (result.errors?.length)
       throw new Fault(result.errors.map((x: any) => x.message).join('; '), 502);
     return result.data;
+  }
+  async resolveIntakeActor(login: string) {
+    return resolveActor(this.api.bind(this), login);
+  }
+  private async intakePage(endpoint: string) {
+    const response = await this.gh(['api', endpoint, '--method', 'GET']);
+    if (response.truncated) throw new Fault('GitHub 接收读取被截断，未确认完整结果', 502);
+    const page: unknown = JSON.parse(response.stdout);
+    return page;
+  }
+  async readIntakeIssues(repo: Repo, since: string): Promise<ObservedIssue[]> {
+    return readIssues(this.api.bind(this), this.intakePage.bind(this), repo, since);
+  }
+  async deliverSourceReply(reply: SourceReply, assertAllowed: () => void) {
+    const repo = this.store.repo(reply.repoId);
+    return this.operation(
+      `source-reply:${reply.id}`,
+      'source-reply',
+      () => findReply(this.api.bind(this), this.intakePage.bind(this), repo, reply),
+      async () => {
+        assertAllowed();
+        this.authorize(repo);
+        return sourceCommentSchema.parse(
+          await this.api<unknown>(`repos/${repo.github}/issues/${reply.issue}/comments`, 'POST', {
+            body: reply.body,
+          }),
+        );
+      },
+      replyBinding(reply),
+    );
+  }
+  async reconcileSourceReply(reply: SourceReply) {
+    const key = `source-reply:${reply.id}`;
+    const operation = this.store.get('operation', key);
+    if (!operation || !['pending', 'uncertain'].includes(operation.status))
+      throw new Fault('回复不需要核对', 409);
+    const found = await findReply(
+      this.api.bind(this),
+      this.intakePage.bind(this),
+      this.store.repo(reply.repoId),
+      reply,
+    );
+    const current = this.store.get('operation', key)!;
+    if (!describesOperation(operation, current)) throw new Fault('回复操作已变化，请重新核对', 409);
+    this.store.transaction(() =>
+      this.store.put(
+        'operation',
+        key,
+        found
+          ? { ...current, status: 'done', result: found }
+          : {
+              ...current,
+              reconciliation: {
+                id: id(),
+                actor: 'user',
+                at: now(),
+                verdict: 'absent',
+                evidence: '完整读取原 Issue 全部分页，未找到固定回复标记及正文',
+                taskRevision: replyBinding(reply),
+                observedOperation: {
+                  status: current.status,
+                  error: current.error,
+                  attempt: current.attempt ?? 0,
+                },
+              },
+            },
+      ),
+    );
   }
   async identity() {
     const user = await this.api('user');
@@ -501,6 +589,10 @@ export class GitHub {
     }
   }
   async publishIssue(task: Task): Promise<any> {
+    if (task.issueOrigin) {
+      this.store.assertTaskExecutable(task.id);
+      return this.readImportedIssue(task);
+    }
     this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
@@ -995,6 +1087,10 @@ export class GitHub {
     return result;
   }
   async reviseIssue(task: Task) {
+    if (task.issueOrigin) {
+      this.store.assertTaskExecutable(task.id);
+      return this.readImportedIssue(task);
+    }
     this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
@@ -1027,7 +1123,93 @@ export class GitHub {
       `<!-- phantom-task:${task.id} -->\n## What to build\n${task.spec}\n\n## Acceptance criteria\n${task.acceptance.map((x) => `- [${completed ? 'x' : ' '}] ${x}`).join('\n')}\n\n## Blocked by\n${deps.join('\n') || 'None (can start immediately)'}\n`,
     ) as string;
   }
+  private async readImportedIssue(task: Task) {
+    const input = task.issueOrigin && this.store.get('sourceInput', task.issueOrigin.inputId);
+    if (!input) throw new Fault('原 Issue 来源不存在', 409);
+    this.store.sourceAuthority(task.sourceMessageId, task.projectId, task.repoId);
+    const issue = importedIssueSchema.parse(
+      await this.api<unknown>(`repos/${this.store.repo(task.repoId).github}/issues/${task.issue}`),
+    );
+    if (
+      issue.id !== task.issueDatabaseId ||
+      issue.node_id !== input.nativeId ||
+      issue.number !== input.number ||
+      issue.html_url !== input.url
+    )
+      throw new Fault('原 Issue 身份已变化', 409);
+    return issue;
+  }
   async completeIssue(task: Task) {
+    if (task.issueOrigin) {
+      const authority = this.store.sourceAuthority(
+        task.sourceMessageId,
+        task.projectId,
+        task.repoId,
+      );
+      if (
+        task.stage !== 'done' ||
+        !task.completion ||
+        task.control !== 'active' ||
+        authority.external?.assessment.disposition.status !== 'accepted'
+      )
+        throw new Fault('原请求尚未完整完成，不能关闭 Issue', 409);
+      const check = () => {
+        const current = this.store.task(task.id);
+        const currentAuthority = this.store.sourceAuthority(
+          current.sourceMessageId,
+          current.projectId,
+          current.repoId,
+        );
+        if (
+          this.store.project(task.projectId).admissionPaused ||
+          current.control !== 'active' ||
+          current.stage !== 'done' ||
+          currentAuthority.external?.assessment.disposition.status !== 'accepted'
+        )
+          throw new Fault('团队或任务已暂停', 409);
+        this.authorize(this.store.repo(task.repoId));
+      };
+      check();
+      const observed = await this.readImportedIssue(task);
+      if (
+        this.store.get('operation', `complete-imported-issue:${task.id}`)?.status === 'done' &&
+        (observed.state !== 'closed' || observed.state_reason !== 'completed')
+      )
+        throw new Fault('原 Issue 完成后状态已变化，保留外部决定', 409);
+      const result = await this.operation(
+        `complete-imported-issue:${task.id}`,
+        'complete-imported-issue',
+        async () => {
+          const issue = await this.readImportedIssue(task);
+          if (issue.state === 'closed' && issue.state_reason !== 'completed')
+            throw new Fault('原 Issue 未按完成关闭，不能覆盖外部决定', 409);
+          return issue.state === 'closed' ? issue : undefined;
+        },
+        async () => {
+          await this.readImportedIssue(task);
+          check();
+          const issue = importedIssueSchema.parse(
+            await this.api<unknown>(
+              `repos/${this.store.repo(task.repoId).github}/issues/${task.issue}`,
+              'PATCH',
+              { state: 'closed', state_reason: 'completed' },
+            ),
+          );
+          if (
+            issue.id !== task.issueDatabaseId ||
+            issue.node_id !== task.issueNodeId ||
+            issue.number !== task.issue ||
+            issue.html_url !== task.issueUrl
+          )
+            throw new Fault('原 Issue 完成响应身份不一致', 409);
+          if (issue.state !== 'closed' || issue.state_reason !== 'completed')
+            throw new Fault('GitHub 尚未确认原 Issue 完成', 409);
+          return issue;
+        },
+      );
+      this.store.updateTask(task.id, { issueState: 'completed' });
+      return result;
+    }
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     if (!task.issue || !task.issueBody?.startsWith(`<!-- phantom-task:${task.id} -->`))
