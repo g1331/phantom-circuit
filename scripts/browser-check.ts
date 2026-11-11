@@ -714,14 +714,17 @@ try {
   const conversation = page.locator('.conversation');
   async function readBeginning() {
     // This short fixture tests the absolute beginning after resolving its paged history.
+    const bounds = await conversation.boundingBox();
+    assert.ok(bounds);
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
     for (let batch = 0; batch < 4; batch++) {
-      const earlier = page.getByRole('button', { name: '加载更早消息', exact: true });
-      if (!(await earlier.count())) break;
-      const loaded = page.waitForResponse((response) =>
-        response.url().includes('/messages?before='),
-      );
-      await earlier.click();
-      await loaded;
+      await conversation.evaluate((element) => {
+        const boundary = element.querySelector('.history-before')!;
+        element.scrollTop +=
+          boundary.getBoundingClientRect().top - element.getBoundingClientRect().top + 260;
+      });
+      await page.mouse.wheel(0, -100);
+      await page.evaluate(() => new Promise(requestAnimationFrame));
       await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
     }
     await conversation.focus();

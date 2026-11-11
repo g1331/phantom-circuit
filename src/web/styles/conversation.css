@@ -58,15 +58,23 @@
 .history-control {
   display: flex;
   justify-content: center;
-  min-height: 36px;
+  min-height: 28px;
   align-items: center;
   color: var(--muted);
   font-size: 12px;
 }
 .history-control button {
   color: var(--muted);
-  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  max-width: 100%;
+  padding: 6px 8px;
   border-radius: 6px;
+}
+.history-control button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .history-control button:hover {
   background: var(--accent-bg);

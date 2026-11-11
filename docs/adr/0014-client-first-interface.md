@@ -26,6 +26,11 @@ The client retains at most 150 entries and mounts at most 150 message components
 restores discarded records from the host without changing the stored history or model context.
 The turn directory describes the loaded window. Background state reads omit conversation
 bodies. Earlier-page failures retain the current window and draft for an inline retry.
+Reading toward a message boundary loads the adjacent page automatically. Normal reading
+does not require a separate load-history button; only failed loads offer an inline retry.
+The boundary belongs to the message stream, after any project question forms. Background
+refreshes remain silent. Latest-page responses merge with overlapping retained history
+instead of replacing a larger window with 50 entries; the 150-entry bound still applies.
 
 Project-level questions appear in the Work page's needs-you group even before a task exists.
 The Work and brief links address the question's conversation form and focus that form when
