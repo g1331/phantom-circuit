@@ -1,6 +1,6 @@
 # Phantom Circuit
 
-A local software-engineering orchestrator where the user discusses product requirements with a project PM and evaluates delivered experiences.
+A local software-engineering team whose workbench shows requests, decisions, ongoing work and delivery.
 
 ## Language
 
@@ -82,7 +82,7 @@ _Avoid_: Workspace, Project, development server
 **Team instructions**: A Project’s versioned working agreements for repository conventions, engineering practices and delivery requirements. Each Run uses the version saved when it starts. Its repository conventions section holds one block per repository that the team reads from the trunk (commit style, pull request and Issue templates, CI, verification commands, agent instruction files); the rest of the text is the user's.
 _Avoid_: Permissions, role configuration, memory bank
 
-## Language for the planned super-agent direction
+## Super-agent workflow language
 
 **Input**: An immutable event received from a platform or the Web conversation, retaining its origin and evidence independently of whether it produces work.
 _Avoid_: Task, authorization, Run

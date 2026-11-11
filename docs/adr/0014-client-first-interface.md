@@ -1,9 +1,9 @@
 # A client-first interface: brief, work and receipts
 
-Status: accepted and implemented. ADR 0019 adopts the direction of replacing this home with
-a visual source-to-result workbench. Until that milestone lands, this record describes the actual
-interface. Its task routes, receipts, attention semantics, and bounded conversation remain contracts
-for the replacement.
+Status: accepted and implemented. ADR 0019 M1 now supersedes this record's conversation-first
+home and navigation with the visual source-to-result workbench. The layout below records the
+original client workspace; its conversation remains available as a secondary page. Task routes,
+receipts, attention semantics, and bounded conversation remain implemented contracts.
 
 The interface was organized around the host's internals. Its four tabs were the PM conversation, the team, a seven-column stage board and a run log. Project facts sat in a modal, and task details sat in another. A finished Project showed six empty columns, the team view was a stream of "Review started / Review completed", and nothing said what had been delivered or what was waiting on the user. Surveyed agent products (Codex, Devin, Cursor, Copilot Agent HQ, Jules, Factory, Conductor, t3code, Linear, Antigravity) share the same shape: a list of sessions for the user to supervise. Phantom's user is the client of an autonomous team, so the interface starts from what they asked for, what was delivered, and what needs them.
 

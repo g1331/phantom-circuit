@@ -1,7 +1,8 @@
 # An event-driven development team with a visual workbench
 
-Status: accepted direction after independent product and engineering review. M1 through M4
-remain to be implemented. Current runtime behavior remains governed by the implemented ADRs.
+Status: M1 implemented and accepted through the real-platform loop below, after independent
+implementation review. M2 through M4 remain planned. Existing installations require an explicit
+update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/8c32a9dc5d72c033816c6a8110b37f40cf94fba4),
@@ -116,6 +117,23 @@ Acceptance:
    team pause blocks new admissions across restart and preserves individual Task pauses.
 3. Actual 390 px and 1280 px views show what needs the user, current work and source health, and
    one input's complete recorded history, with source links, reply state, and secondary chat.
+
+M1 delivery evidence: real [Issue #93](https://github.com/g1331/phantom-circuit/issues/93)
+produced one Task and [PR #95](https://github.com/g1331/phantom-circuit/pull/95), merged into
+this repository's `feat/superagent-workbench` branch by an isolated acceptance instance.
+Build, unit/integration,
+type, and complete browser checks passed at `1bf7aa9d61a7a108854e75299dab761d7e34b49a`;
+independent review approved that head and its fixed base. The original body remained unchanged,
+and exactly one [result reply](https://github.com/g1331/phantom-circuit/issues/93#issuecomment-6798927187)
+was confirmed. Repeated intake and recovery retained the same Task and original Issue.
+The user's running service, data, and model choices were preserved.
+
+The receiving cutoff follows body creation or latest edit time. Comments and other Issue activity
+alone do not renew an older body request. A committed no-action judgment freezes its answer:
+repetition is idempotent, and conflicting judgments, Task creation, or later clarification are
+rejected. A subsequent model-run failure or interruption preserves that judgment and Run history;
+automatic and manual recovery do not reassess it. Unresolved steering retains its reconciliation
+hold. Correcting a final judgment requires a new explicitly authorized request.
 
 ### M2: Owner-led follow-ups and event-driven repair
 

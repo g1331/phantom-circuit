@@ -1,8 +1,8 @@
 # Operate as an autonomous development team behind a requirements conversation
 
-Direction update: ADR 0019 records the accepted super-agent milestones and visual primary workbench.
-The user remains the team's client. Its milestone status distinguishes planned changes from the
-implemented behavior recorded below.
+Direction update: ADR 0019 M1 delivers the visual primary workbench and opt-in, explicitly
+addressed GitHub Issue requests through original-Issue result replies. The user remains the team's
+client. Owner-led platform follow-ups and proactive maintenance remain later milestones.
 
 Status: accepted direction, partly implemented: these parts have landed:
 
