@@ -63,15 +63,15 @@ function App() {
   const processDisclosures = useRef({ projectId: '', items: new Map<string, boolean>() });
   const followingLatest = useRef(true);
   const [atLatest, setAtLatest] = useState(true);
-  const userScrollIntent = useRef(false);
-  const userScrollTimer = useRef<number | undefined>(undefined);
-  const markUserScroll = useCallback(() => {
-    userScrollIntent.current = true;
-    if (userScrollTimer.current !== undefined) window.clearTimeout(userScrollTimer.current);
-    userScrollTimer.current = window.setTimeout(() => {
-      userScrollIntent.current = false;
-      userScrollTimer.current = undefined;
-    }, 250);
+  const historyBefore = useRef<HTMLDivElement>(null);
+  const historyAfter = useRef<HTMLDivElement>(null);
+  const userScrollIntent = useRef<
+    { direction: 'before' | 'after'; movement?: number } | 'drag' | undefined
+  >(undefined);
+  const scrollPosition = useRef(0);
+  const touchPosition = useRef<number | undefined>(undefined);
+  const clearScrollIntent = useCallback(() => {
+    userScrollIntent.current = undefined;
   }, []);
   const stateRequest = useRef(0);
   const reload = useCallback(async (signal?: AbortSignal) => {
@@ -182,10 +182,12 @@ function App() {
   const messages = history.messages;
   const activities = history.activities;
   const scrollToLatest = useCallback(() => {
+    clearScrollIntent();
     const finish = () => {
       followingLatest.current = true;
       setAtLatest(true);
       requestAnimationFrame(() => {
+        clearScrollIntent();
         if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
       });
     };
@@ -194,18 +196,7 @@ function App() {
         if (loaded) finish();
       });
     else finish();
-  }, [history.hasAfter, history.load]);
-  const trackConversationScroll = useCallback(() => {
-    const element = scroll.current;
-    if (!element || !userScrollIntent.current) return;
-    const remaining = element.scrollHeight - element.clientHeight - element.scrollTop;
-    const atBottom = remaining <= 64 && !history.hasAfter;
-    followingLatest.current = atBottom;
-    setAtLatest(atBottom);
-    if (history.failure || history.loading) return;
-    if (element.scrollTop < 200 && history.hasBefore) void history.load('before');
-    else if (remaining < 200 && history.hasAfter) void history.load('after');
-  }, [history.hasBefore, history.hasAfter, history.load, history.loading, history.failure]);
+  }, [history.hasAfter, history.load, clearScrollIntent]);
   // Every page names its project in the address, so links and the back button land in place.
   useEffect(() => {
     if (!project) return;
@@ -230,6 +221,7 @@ function App() {
     if (page !== 'home') return;
     const element = scroll.current;
     if (!element) return;
+    clearScrollIntent();
     followingLatest.current = !requestId;
     setAtLatest(!requestId);
     if (requestId) {
@@ -238,26 +230,107 @@ function App() {
       request?.focus({ preventScroll: true });
     } else element.scrollTop = element.scrollHeight;
     const observer = new ResizeObserver(() => {
-      if (followingLatest.current) element.scrollTop = element.scrollHeight;
+      if (followingLatest.current) {
+        clearScrollIntent();
+        element.scrollTop = element.scrollHeight;
+      }
     });
     observer.observe(element);
     if (conversationContent.current) observer.observe(conversationContent.current);
     return () => {
-      if (userScrollTimer.current !== undefined) window.clearTimeout(userScrollTimer.current);
-      userScrollTimer.current = undefined;
-      userScrollIntent.current = false;
+      clearScrollIntent();
       observer.disconnect();
     };
   }, [project?.id, page, requestId, requestReady]);
-  useReadingAnchor(
+  const captureReadingAnchor = useReadingAnchor(
     scroll,
     conversationContent,
     followingLatest,
     `${project?.id}:${page}:${requestId ?? ''}:${requestReady}`,
+    clearScrollIntent,
   );
+  const considerHistory = (direction: 'before' | 'after', movement = 0) => {
+    const element = scroll.current;
+    const boundary = direction === 'before' ? historyBefore.current : historyAfter.current;
+    if (!element || !boundary || history.loading || history.failure) return;
+    if (!(direction === 'before' ? history.hasBefore : history.hasAfter)) return;
+    const viewport = element.getBoundingClientRect();
+    const edge = boundary.getBoundingClientRect();
+    const distance =
+      direction === 'before' ? edge.top - viewport.top : viewport.bottom - edge.bottom;
+    const previousDistance = distance + (direction === 'before' ? movement : -movement);
+    if (Math.max(distance, previousDistance) < -200 || Math.min(distance, previousDistance) > 200)
+      return;
+    clearScrollIntent();
+    followingLatest.current = false;
+    setAtLatest(false);
+    captureReadingAnchor();
+    void history.load(direction);
+  };
+  const markUserScroll = (direction: 'before' | 'after', movement?: number) => {
+    const position = scroll.current?.scrollTop ?? 0;
+    const delta = position - scrollPosition.current;
+    scrollPosition.current = position;
+    userScrollIntent.current = history.loading ? undefined : { direction, movement };
+    if (direction === 'before') {
+      followingLatest.current = false;
+      setAtLatest(false);
+    }
+    // Compositor scrolling can precede wheel delivery.
+    // Pending programmatic jumps must not count as input.
+    const applied =
+      movement !== undefined &&
+      Math.sign(delta) === Math.sign(movement) &&
+      Math.abs(delta) <= Math.abs(movement)
+        ? delta
+        : 0;
+    if (userScrollIntent.current) considerHistory(direction, applied);
+  };
+  const trackConversationScroll = () => {
+    const element = scroll.current;
+    if (!element) return;
+    const delta = element.scrollTop - scrollPosition.current;
+    scrollPosition.current = element.scrollTop;
+    const permit = userScrollIntent.current;
+    if (!permit || !delta) return;
+    const direction = delta < 0 ? 'before' : 'after';
+    if (
+      permit !== 'drag' &&
+      (permit.direction !== direction ||
+        (permit.movement !== undefined && Math.abs(delta) > Math.abs(permit.movement)))
+    ) {
+      clearScrollIntent();
+      return;
+    }
+    const atBottom =
+      element.scrollHeight - element.clientHeight - element.scrollTop <= 64 && !history.hasAfter;
+    followingLatest.current = atBottom;
+    setAtLatest(atBottom);
+    considerHistory(direction, delta);
+  };
+  const retryHistory = () => {
+    clearScrollIntent();
+    followingLatest.current = false;
+    setAtLatest(false);
+    captureReadingAnchor();
+    void history.retry();
+  };
+  const historyStatus = (history.loading || history.failure) && (
+    <div className="history-control">
+      {history.failure ? (
+        <button onClick={retryHistory}>{t('chat.historyRetry')}</button>
+      ) : (
+        <span role="status">{t('ui.loading')}</span>
+      )}
+    </div>
+  );
+  const historyAtEnd = (history.failure?.direction ?? history.loadingDirection) === 'after';
   useEffect(() => {
     const element = scroll.current;
-    if (followingLatest.current && element) element.scrollTop = element.scrollHeight;
+    if (followingLatest.current && element) {
+      clearScrollIntent();
+      element.scrollTop = element.scrollHeight;
+    }
   }, [history.entries.at(-1)?.cursor, stream]);
   const projectAgent =
     project?.agentSelection?.mode === 'override'
@@ -370,7 +443,9 @@ function App() {
     ) : null;
   return (
     <div
-      className={`shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${drawer ? 'drawer-open' : ''}`}
+      className={
+        `shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ` + `${drawer ? 'drawer-open' : ''}`
+      }
     >
       {drawer && (
         <button
@@ -467,7 +542,7 @@ function App() {
           </div>
         ) : (
           <>
-            {/* The conversation stays mounted so drafts and reading position survive page changes. */}
+            {/* Keep drafts and reading position mounted across navigation. */}
             <div className="home-grid" hidden={page !== 'home'}>
               <section className="home-main" aria-label={t('nav.home')}>
                 <h1 className="sr-only">{project.name}</h1>
@@ -481,45 +556,66 @@ function App() {
                       aria-live="polite"
                       tabIndex={0}
                       onScroll={trackConversationScroll}
-                      onWheel={markUserScroll}
-                      onTouchMove={markUserScroll}
+                      onWheel={(event) => {
+                        if (!event.deltaY) return;
+                        const unit =
+                          event.deltaMode === 2
+                            ? event.currentTarget.clientHeight
+                            : event.deltaMode === 1
+                              ? parseFloat(getComputedStyle(event.currentTarget).lineHeight) ||
+                                parseFloat(getComputedStyle(event.currentTarget).fontSize)
+                              : 1;
+                        markUserScroll(event.deltaY < 0 ? 'before' : 'after', event.deltaY * unit);
+                      }}
+                      onTouchStart={(event) => {
+                        touchPosition.current = event.touches[0]?.clientY;
+                      }}
+                      onTouchMove={(event) => {
+                        const y = event.touches[0]?.clientY;
+                        const previous = touchPosition.current;
+                        touchPosition.current = y;
+                        if (y !== undefined && previous !== undefined && y !== previous)
+                          markUserScroll(y > previous ? 'before' : 'after', previous - y);
+                      }}
+                      onTouchEnd={() => {
+                        touchPosition.current = undefined;
+                      }}
+                      onTouchCancel={() => {
+                        touchPosition.current = undefined;
+                        clearScrollIntent();
+                      }}
                       onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) markUserScroll();
+                        if (event.target === event.currentTarget) {
+                          scrollPosition.current = event.currentTarget.scrollTop;
+                          userScrollIntent.current = 'drag';
+                        }
                       }}
                       onPointerMove={(event) => {
-                        if (event.buttons && event.target === event.currentTarget) markUserScroll();
+                        if (event.buttons && event.target === event.currentTarget)
+                          userScrollIntent.current = history.loading ? undefined : 'drag';
                       }}
+                      onPointerUp={clearScrollIntent}
+                      onPointerCancel={clearScrollIntent}
                       onKeyDown={(event) => {
                         if (
-                          ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp'].includes(
-                            event.key,
-                          )
+                          event.defaultPrevented ||
+                          (event.target instanceof Element &&
+                            event.target.closest(
+                              'input, textarea, select, button, a, summary, ' +
+                                '[contenteditable="true"]',
+                            ))
                         )
-                          markUserScroll();
+                          return;
+                        if (
+                          ['ArrowUp', 'Home', 'PageUp'].includes(event.key) ||
+                          (event.key === ' ' && event.shiftKey)
+                        )
+                          markUserScroll('before');
+                        else if (['ArrowDown', 'End', 'PageDown', ' '].includes(event.key))
+                          markUserScroll('after');
                       }}
                     >
                       <div className="conversation-content" ref={conversationContent}>
-                        {(history.loading || history.failure || history.hasBefore) && (
-                          <div className="history-control">
-                            {history.failure ? (
-                              <button onClick={() => void history.retry()}>
-                                {t('chat.historyRetry')}
-                              </button>
-                            ) : history.loading ? (
-                              <span role="status">{t('connection.loading')}</span>
-                            ) : (
-                              <button
-                                onClick={() => {
-                                  followingLatest.current = false;
-                                  setAtLatest(false);
-                                  void history.load('before');
-                                }}
-                              >
-                                {t('chat.historyEarlier')}
-                              </button>
-                            )}
-                          </div>
-                        )}
                         <ProjectActions
                           key={`project-actions:${project.id}`}
                           onOpenTask={openTask}
@@ -527,6 +623,8 @@ function App() {
                           project={project}
                           reload={reload}
                         />
+                        <div className="history-before" ref={historyBefore} />
+                        {!historyAtEnd && historyStatus}
                         {!history.loading &&
                           !history.failure &&
                           !messages.length &&
@@ -579,6 +677,8 @@ function App() {
                             />
                           )}
                         />
+                        <div className="history-after" ref={historyAfter} />
+                        {historyAtEnd && historyStatus}
                         {!history.hasAfter &&
                           active
                             .filter(
@@ -606,6 +706,7 @@ function App() {
                       runs={runs}
                       scroll={scroll}
                       onNavigate={() => {
+                        clearScrollIntent();
                         followingLatest.current = false;
                         setAtLatest(false);
                       }}

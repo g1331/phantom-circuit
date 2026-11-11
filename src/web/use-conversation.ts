@@ -21,15 +21,19 @@ export function useConversation(
   const current = useRef(window);
   current.current = window;
   const generation = useRef(0);
-  const pending = useRef(false);
+  const pending = useRef<Direction | 'refresh' | undefined>(undefined);
   const controller = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(
     async (direction: Direction, liveUpdate = false) => {
       if (!projectId) return;
       if (pending.current) {
-        if (liveUpdate) refreshPending.current = true;
-        return;
+        if (liveUpdate) {
+          refreshPending.current = true;
+          return;
+        }
+        if (pending.current !== 'refresh') return;
+        controller.current?.abort();
       }
       const ticket = generation.current;
       const prior = current.current;
@@ -40,28 +44,48 @@ export function useConversation(
             ? prior.entries.at(-1)?.cursor
             : undefined;
       if (direction !== 'latest' && !cursor) return;
-      pending.current = true;
-      setLoading(true);
-      setFailure(undefined);
+      const request = new AbortController();
+      controller.current = request;
+      pending.current = liveUpdate ? 'refresh' : direction;
+      if (!liveUpdate) {
+        setLoading(true);
+        setFailure(undefined);
+      }
       try {
         const suffix = cursor ? `?${direction}=${encodeURIComponent(cursor)}` : '';
         const page = await api<ConversationPage>(
           `/projects/${projectId}/messages${suffix}`,
           undefined,
           'GET',
-          controller.current?.signal,
+          request.signal,
         );
-        if (ticket !== generation.current) return;
+        if (ticket !== generation.current || request.signal.aborted) return;
+        if (liveUpdate)
+          setFailure((previous) => (previous?.direction === 'refresh' ? undefined : previous));
         setWindow((previous) => {
-          if (liveUpdate && !following.current) {
-            const known = new Set(previous.entries.map((entry) => entry.cursor));
-            const additions = page.entries.filter((entry) => !known.has(entry.cursor));
+          if (direction === 'latest') {
+            const preserveReading = liveUpdate && !following.current && previous.entries.length > 0;
+            const known = new Map(previous.entries.map((entry, index) => [entry.cursor, index]));
             const overlaps = page.entries.some((entry) => known.has(entry.cursor));
-            if (overlaps && previous.entries.length + additions.length <= 150)
-              return { ...previous, entries: [...previous.entries, ...additions], hasAfter: false };
-            return { ...previous, hasAfter: previous.hasAfter || additions.length > 0 };
+            if (!overlaps)
+              return preserveReading
+                ? { ...previous, hasAfter: previous.hasAfter || page.entries.length > 0 }
+                : { ...page, projectId };
+            const first = known.get(page.entries[0]?.cursor ?? '');
+            const combined =
+              first === undefined
+                ? page.entries
+                : [...previous.entries.slice(0, first), ...page.entries];
+            const trimmed = combined.length > 150;
+            if (preserveReading && trimmed) return { ...previous, hasAfter: true };
+            return {
+              projectId,
+              entries: combined.slice(-150),
+              hasBefore:
+                trimmed || (first !== undefined && first > 0 ? previous.hasBefore : page.hasBefore),
+              hasAfter: page.hasAfter,
+            };
           }
-          if (direction === 'latest') return { ...page, projectId };
           const combined =
             direction === 'before'
               ? [...page.entries, ...previous.entries]
@@ -77,14 +101,14 @@ export function useConversation(
         });
         return true;
       } catch (error) {
-        if (ticket === generation.current)
+        if (ticket === generation.current && !request.signal.aborted)
           setFailure({
             direction: liveUpdate ? 'refresh' : direction,
             error: error instanceof Error ? error : new Error(String(error)),
           });
       } finally {
-        if (ticket === generation.current) {
-          pending.current = false;
+        if (ticket === generation.current && controller.current === request) {
+          pending.current = undefined;
           setLoading(false);
           if (refreshPending.current) {
             refreshPending.current = false;
@@ -99,7 +123,7 @@ export function useConversation(
   useEffect(() => {
     generation.current++;
     controller.current = new AbortController();
-    pending.current = false;
+    pending.current = undefined;
     refreshPending.current = false;
     current.current = { ...empty, projectId: projectId ?? '' };
     setWindow(current.current);
@@ -120,7 +144,7 @@ export function useConversation(
     const ticket = generation.current;
     const retained = current.current;
     if (!retained.entries.length) {
-      void load('latest');
+      void load('latest', true);
       return;
     }
     let alive = true;
@@ -144,11 +168,13 @@ export function useConversation(
         entries: previous.entries.map((entry) => replacements.get(entry.cursor) ?? entry),
       }));
       if (!current.current.hasAfter && !(await load('latest', true))) return;
-      if (alive && ticket === generation.current)
+      if (alive && ticket === generation.current) {
+        setFailure((previous) => (previous?.direction === 'refresh' ? undefined : previous));
         setSettledRuns({
           projectId: retained.projectId,
           runs: revision?.runs.filter((run) => run.projectId === projectId) ?? [],
         });
+      }
     }
     void refresh().catch((error: unknown) => {
       if (alive && ticket === generation.current)
@@ -167,6 +193,7 @@ export function useConversation(
   return {
     ...visible,
     loading,
+    loadingDirection: pending.current,
     failure,
     runs:
       settledRuns && settledRuns.projectId === projectId

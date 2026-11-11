@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -198,8 +199,10 @@ export function useReadingAnchor(
   content: RefObject<HTMLDivElement | null>,
   following: RefObject<boolean>,
   identity: string,
+  beforeRestore: () => void,
 ) {
   const restoreAfterCommit = useRef<() => void>(() => {});
+  const captureNow = useRef<() => void>(() => {});
   useLayoutEffect(() => {
     restoreAfterCommit.current();
   });
@@ -232,24 +235,31 @@ export function useReadingAnchor(
         (anchor) => anchor.element.isConnected && anchor.element.getClientRects().length,
       );
       if (anchor) {
-        element.scrollTop +=
+        const adjustment =
           anchor.element.getBoundingClientRect().top -
           element.getBoundingClientRect().top -
           anchor.offset;
+        if (Math.abs(adjustment) >= 1) {
+          beforeRestore();
+          element.scrollTop += adjustment;
+        }
         restoredTop = element.scrollTop;
       }
     };
     restoreAfterCommit.current = restore;
+    captureNow.current = capture;
     element.addEventListener('scroll', capture, { passive: true });
     const observer = new ResizeObserver(restore);
     observer.observe(body);
     capture();
     return () => {
       restoreAfterCommit.current = () => {};
+      captureNow.current = () => {};
       observer.disconnect();
       element.removeEventListener('scroll', capture);
     };
-  }, [scroll, content, following, identity]);
+  }, [scroll, content, following, identity, beforeRestore]);
+  return useCallback(() => captureNow.current(), []);
 }
 
 export function TurnNavigator({
