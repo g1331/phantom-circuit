@@ -16,6 +16,22 @@ npm start
 
 Open **http://127.0.0.1:4317**. Create a project, connect a repository and explicitly grant its engineering permissions. Repositories start with new task claims disabled. Ask the PM to inspect project scripts and configure install/build/test/start commands before opening work. `聊一聊` never authorizes tasks; `交给 PM 做` and `体验反馈` do. No sample data is inserted into the real workspace.
 
+### GitHub Issue receiving
+
+Open a project and choose **Workbench** in the project navigation. Open **Receiving settings** from the header settings button or the repository's source row, then select the repository. Issue receiving starts disabled. Repository engineering authorization is granted separately when connecting the repository; it does not enable receiving or select who may request work.
+
+Set **Request command** (default `/phantom`), **Allowed GitHub users** (comma-separated human usernames) and **Receive updates since**. Enable **Receive explicit Issue requests** and choose **Save receiving settings**. The sender check uses the verified body author or latest editor. In an open Issue in that repository, start the body with the configured command followed by whitespace and an explicit request for one independently deliverable change, for example:
+
+```text
+/phantom Add a GitHub Issue receiving section to README.md.
+```
+
+**Receive updates since** is an inclusive cutoff for the Issue body's creation time, or its latest edit time when edited. Later comments or other Issue activity alone do not bring an older body into scope. Once an Issue has been recorded, later edits are retained as context and grant no new work or revision authority. Accepted work stays linked to the original Issue and preserves its authored body. **Pause team** persists across host restarts and holds new request admission and execution until **Resume team**; resuming preserves individually paused Tasks.
+
+The Workbench source row shows whether receiving is off, awaiting its first read, receiving Issues or unavailable, with the last check time and any read error. Use **Refresh source** to check again. Under **Inputs**, open an input to inspect **Assessment**, **Original request** and **Receiving and authorization record**, including recorded refusals, no-action judgments and unavailable assessments. Follow the GitHub Issue link to its original conversation, and **View work** to the Task receipt with validation, independent review and merge evidence.
+
+Engineering completion and result-reply delivery are recorded separately. In input details, check **Source reply**: **Reply sent** confirms delivery and **Open original** links to the posted reply; **Reply queued**, **Reply needs reconciliation** and **Reply unavailable** retain their respective pending or unresolved outcomes. Use **Reconcile reply** for an uncertain send. **Conversation** (**Chat** on narrow screens), also reached through **New request**, remains a secondary request and discussion channel.
+
 ### Develop and debug
 
 After `npm ci`, start the backend and the frontend dev server together:
