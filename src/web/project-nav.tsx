@@ -4,15 +4,15 @@ import { routeHref, type Page, type Route } from './route.ts';
 
 const items = [
   { page: 'home', icon: MessageSquare },
-  { page: 'brief', icon: Newspaper },
   { page: 'work', icon: ListTodo },
+  { page: 'brief', icon: Newspaper },
   { page: 'team', icon: Users },
   { page: 'project', icon: FolderCog },
 ] as const satisfies readonly { page: Page; icon: typeof MessageSquare }[];
 
 /**
  * The project's pages. The sidebar lists them under the selected project; on a phone the same
- * links sit in a bottom bar. The brief link only shows where the brief is not beside the chat.
+ * links sit in a bottom bar. The brief is an addressable page at every screen width.
  */
 export function ProjectNav({
   route,

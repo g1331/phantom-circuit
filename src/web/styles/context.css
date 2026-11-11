@@ -29,7 +29,7 @@
   margin-left: auto;
 }
 .repo-slug {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
   display: flex;
   align-items: center;
@@ -44,7 +44,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 20px;
 }
@@ -58,7 +58,7 @@
   width: 45px;
   padding: 5px 4px 5px 8px;
   margin-left: 7px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .repo-empty {
   color: var(--muted);
@@ -161,7 +161,7 @@
   border-radius: 0;
   background: var(--panel);
   color: var(--text);
-  box-shadow: -20px 0 60px #0004;
+  box-shadow: -12px 0 48px var(--shadow);
 }
 .context-panel::backdrop {
   background: #0006;
@@ -182,7 +182,7 @@
   margin-bottom: 16px;
 }
 .context-heading h2 {
-  font-size: 20px;
+  font-size: 24px;
   overflow-wrap: anywhere;
 }
 .context-heading p {
@@ -199,7 +199,7 @@
   margin-bottom: 20px;
 }
 .context-actions .secondary-button {
-  font-size: 11px;
+  font-size: 12px;
 }
 .context-panel > .quiet-link {
   margin-bottom: 18px;

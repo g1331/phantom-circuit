@@ -13,7 +13,7 @@ const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export async function openDrawer(page: Page) {
   // The drawer breakpoint (pages.css); the menu button itself appears once the project loads.
   if (page.viewportSize()!.width > 660) return false;
-  const menu = page.locator('.mobile-top > button');
+  const menu = page.locator('.workspace-header .workspace-menu');
   if (!(await page.locator('.drawer-scrim').count())) await menu.click();
   const sidebar = page.locator('.sidebar');
   await sidebar.waitFor({ state: 'visible' });
@@ -36,7 +36,7 @@ export async function clickInSidebar(page: Page, name: string) {
   await page.locator('.sidebar').getByRole('button', { name, exact: true }).click();
 }
 
-/** Follows a page link in whichever navigation is on screen: the sidebar or the phone's bottom bar. */
+/** Follows a page link in the sidebar or the phone's bottom bar. */
 export async function openPage(page: Page, target: ProjectPage) {
   await closeDrawer(page);
   const t = await copy(page);
@@ -55,13 +55,16 @@ export async function openTask(page: Page, title: string) {
     .getByRole('link')
     .filter({ has: page.locator('strong').getByText(title, { exact: true }) })
     .click();
-  await page.getByRole('heading', { level: 1, name: title, exact: true }).waitFor();
+  await page
+    .locator('.task-page')
+    .getByRole('heading', { level: 1, name: title, exact: true })
+    .waitFor();
 }
 
 /** Leaves a work page through its own back link. */
 export async function backToWork(page: Page) {
   const t = await copy(page);
-  await page.getByRole('link', { name: t['work.back'], exact: true }).click();
+  await page.locator('.task-page').getByRole('link', { name: t['work.back'], exact: true }).click();
   await page.waitForURL(/#\/p\/[^/]+\/work$/);
 }
 

@@ -14,7 +14,8 @@ import { useLocale } from './locale/provider.tsx';
 
 type Entry = { at: string; order: number } & ({ message: Message } | { activity: PMActivity });
 type Item =
-  { kind: 'message'; message: Message } | { kind: 'process'; runId: string; entries: Entry[] };
+  | { kind: 'message'; message: Message }
+  | { kind: 'process'; groupId: string; runId: string; entries: Entry[] };
 
 function presentation(
   messages: Message[],
@@ -44,7 +45,18 @@ function presentation(
     );
   });
   const final = new Map<string, string>();
+  // Preserve process identity when the final answer moves past its tool evidence.
+  const processGroups = new Map<Entry, string>();
+  let previousRunId: string | undefined;
+  let groupId = '';
   for (const entry of entries) {
+    const runId = 'activity' in entry ? entry.activity.runId : entry.message.runId;
+    if (runId !== previousRunId || ('message' in entry && entry.message.role === 'user')) {
+      const entryId = 'activity' in entry ? entry.activity.id : entry.message.id;
+      groupId = `${runId ?? 'unbound'}:${entryId}`;
+    }
+    processGroups.set(entry, groupId);
+    previousRunId = runId;
     if ('message' in entry && entry.message.role === 'assistant' && entry.message.runId)
       final.set(entry.message.runId, entry.message.id);
   }
@@ -79,7 +91,13 @@ function presentation(
     if (process && runId) {
       const previous = result.at(-1);
       if (previous?.kind === 'process' && previous.runId === runId) previous.entries.push(entry);
-      else result.push({ kind: 'process', runId, entries: [entry] });
+      else
+        result.push({
+          kind: 'process',
+          groupId: processGroups.get(entry)!,
+          runId,
+          entries: [entry],
+        });
     } else if (message) result.push({ kind: 'message', message });
   }
   return result;
@@ -148,13 +166,11 @@ export function ConversationFlow({
   });
   function render(item: Item) {
     if (item.kind === 'message') return renderMessage(item.message);
-    const first = item.entries[0]!;
-    const key = 'activity' in first ? first.activity.id : first.message.id;
     const run = runs.find((run) => run.id === item.runId);
     return (
       <ActivityGroup
-        key={key}
-        groupId={key}
+        key={`process:${item.groupId}`}
+        groupId={item.groupId}
         disclosures={disclosures}
         wasLive={liveRuns.current.has(item.runId)}
         following={following}

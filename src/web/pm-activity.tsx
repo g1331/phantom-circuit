@@ -240,8 +240,6 @@ export function ActivityGroup({
   children,
   disclosures,
   groupId,
-  wasLive,
-  following,
 }: {
   activities: PMActivity[];
   runStatus?: RunStatus;
@@ -258,27 +256,15 @@ export function ActivityGroup({
   const status = runStatus ?? activities.at(-1)?.status ?? 'completed';
   const ref = useRef<HTMLDetailsElement>(null);
   const key = groupId ?? activities[0]?.id ?? runId ?? '';
-  const touched = useRef(disclosures?.has(key) ?? false);
   const failures = activities.filter(
     (activity) => activity.status === 'failed' && activity.kind !== 'phase',
   );
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    if (touched.current && disclosures?.has(key)) element.open = disclosures.get(key)!;
-    else if (status !== 'completed') element.open = true;
-    else if (!touched.current && !element.contains(document.activeElement)) {
-      const scroller = element.closest('.conversation');
-      const box = element.getBoundingClientRect();
-      const viewport = scroller?.getBoundingClientRect();
-      const reading = following
-        ? !following.current
-        : scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 64;
-      const inView = viewport && box.bottom > viewport.top && box.top < viewport.bottom;
-      if (wasLive && reading && inView) element.open = true;
-      else element.open = false;
-    }
-  }, [status]);
+    // Status updates leave the user's disclosure choice and reading position intact.
+    element.open = disclosures?.get(key) ?? false;
+  }, [disclosures, key]);
   const elapsed = run?.endedAt
     ? duration((Date.parse(run.endedAt) - Date.parse(run.startedAt)) / 1000)
     : '';
@@ -294,7 +280,6 @@ export function ActivityGroup({
       <summary
         className="process-summary"
         onClick={() => {
-          touched.current = true;
           if (ref.current) disclosures?.set(key, !ref.current.open);
         }}
       >
@@ -332,17 +317,22 @@ export function PMProgress({ run, activities }: { run: Run; activities: PMActivi
     .reverse()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   const updatedAt = latest?.updatedAt ?? run.startedAt;
-  const stale = clock - new Date(updatedAt).getTime() >= 60000;
+  const stale =
+    ['queued', 'running', 'waiting'].includes(run.status) &&
+    clock - new Date(updatedAt).getTime() >= 60000;
   return (
-    <div className="pm-progress" role="status">
+    <div
+      className="pm-progress"
+      role="status"
+      data-status={run.status}
+      data-stale={stale}
+      title={`${t('ui.lastActivity')} ${timestamp(updatedAt)}`}
+    >
       <span>
         {stale ? t('ui.waitingForActivityNoUpdateForOver') : t(statuses[run.status])} ·{' '}
         {latest ? activityTitle(latest.title) : t('ui.preparingContext')}
       </span>
-      <small>
-        {t('ui.lastActivity')} {timestamp(updatedAt)} {t('ui.elapsed')}{' '}
-        {duration(run.startedAt, clock)}
-      </small>
+      <small>{`${t('ui.elapsed')} ${duration(run.startedAt, run.endedAt ?? clock)}`}</small>
     </div>
   );
 }

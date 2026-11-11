@@ -77,7 +77,7 @@ export function Brief({
   return (
     <section className="brief" aria-label={t('brief.title')}>
       <header className="brief-header">
-        <h2>{t('brief.title')}</h2>
+        <h1>{t('brief.title')}</h1>
         {open.length > 0 && (
           <button
             className="brief-team-control"
@@ -122,7 +122,7 @@ export function Brief({
       )}
 
       {(moving.length > 0 || queued > 0) && (
-        <section className="brief-group">
+        <section className="brief-group brief-moving">
           <h3>
             {t('brief.moving')} <span>{moving.length}</span>
           </h3>
@@ -168,7 +168,7 @@ export function Brief({
       )}
 
       {userPaused.length > 0 && (
-        <section className="brief-group">
+        <section className="brief-group brief-paused">
           <h3>
             {t('work.pausedByYou')} <span>{userPaused.length}</span>
           </h3>

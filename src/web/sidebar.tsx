@@ -1,7 +1,6 @@
 import {
   FolderGit2,
   Languages,
-  Layers3,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -43,22 +42,19 @@ export function Sidebar({
   const { preference, setPreference, resolved } = useTheme();
   return (
     <aside className="sidebar">
-      <button
-        className="sidebar-toggle icon-button"
-        aria-label={t(collapsed ? 'sidebar.expand' : 'sidebar.collapse')}
-        aria-expanded={!collapsed}
-        onClick={onToggle}
-      >
-        {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-      </button>
-      <a className="brand" href="/" aria-label={t('app.home')}>
-        <span className="brand-mark">
-          <Layers3 size={20} />
-        </span>
-        <span className="brand-name">
-          Phantom<span className="brand-sub">Circuit</span>
-        </span>
-      </a>
+      <div className="sidebar-top">
+        <a className="brand" href="/" aria-label={t('app.home')}>
+          Phantom Circuit
+        </a>
+        <button
+          className="sidebar-toggle icon-button"
+          aria-label={t(collapsed ? 'sidebar.expand' : 'sidebar.collapse')}
+          aria-expanded={!collapsed}
+          onClick={onToggle}
+        >
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
+      </div>
       <div className="sidebar-heading">
         <span>{t('app.projects')}</span>
         <button className="icon-button" aria-label={t('app.newProject')} onClick={onNewProject}>
@@ -120,7 +116,6 @@ export function Sidebar({
         <div className="connection" role="status">
           <span className={`status-dot ${connected ? 'live' : ''}`} />
           <span>{connected ? t('connection.ready') : t('connection.waiting')}</span>
-          <span className="version">v0.1</span>
         </div>
       </div>
     </aside>

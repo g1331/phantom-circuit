@@ -25,7 +25,8 @@ export async function checkReferenceStates(
   });
   await page.reload();
   await openTask(page, task.title);
-  await page.locator('.task-receipt-details > summary').click();
+  if (!(await page.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+    await page.locator('.task-receipt-details > summary').click();
   await page.locator('.receipt').waitFor();
   for (const [prState, label] of [
     [undefined, '状态未知'],
@@ -93,10 +94,11 @@ export async function checkReferenceStates(
       await openPage(page, 'work');
       await page.locator('.work-row .reference-merged').waitFor();
       await page.screenshot({ path: resolve(artifacts, `references-work-${width}-${theme}.png`) });
-      await openPage(page, width === 390 ? 'brief' : 'home');
+      await openPage(page, 'brief');
       await page.screenshot({ path: resolve(artifacts, `references-brief-${width}-${theme}.png`) });
       await openTask(page, task.title);
-      await page.locator('.task-receipt-details > summary').click();
+      if (!(await page.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+        await page.locator('.task-receipt-details > summary').click();
     }
   }
   // A legacy done stage and a link alone carry no remote state evidence.

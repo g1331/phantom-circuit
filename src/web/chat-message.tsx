@@ -1,4 +1,3 @@
-import { Layers3 } from 'lucide-react';
 import type { Message, Snapshot } from '../shared/types.ts';
 import { MarkdownContent } from './markdown-content.tsx';
 import { PMProgress } from './pm-activity.tsx';
@@ -50,11 +49,6 @@ export function ChatMessage({
   return (
     <article id={`message-${m.id}`} tabIndex={-1} className={`message ${m.role}`}>
       <div className="message-heading">
-        {m.role !== 'user' && (
-          <span className="mini-avatar">
-            {m.role === 'assistant' ? <Layers3 size={13} /> : '!'}
-          </span>
-        )}
         <strong>
           {m.role === 'assistant'
             ? t('profile.pm')
@@ -140,9 +134,6 @@ export function PendingReply({
   return (
     <article className="message assistant">
       <div className="message-heading">
-        <span className="mini-avatar">
-          <Layers3 size={13} />
-        </span>
         <strong>{t('profile.pm')}</strong>
         <span className="thinking">
           {t('chat.thinking')}

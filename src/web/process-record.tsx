@@ -426,7 +426,7 @@ export function TaskProcess({
           </p>
         )}
         <dl className="stat-strip">
-          <div>
+          <div className="duration-stat">
             <dt>{t('usage.duration')}</dt>
             <dd>
               {result?.durationMs === undefined
@@ -434,7 +434,7 @@ export function TaskProcess({
                 : duration(result.durationMs / 1000)}
             </dd>
           </div>
-          <div>
+          <div className="duration-stat">
             <dt>{t('usage.elapsed')}</dt>
             <dd>
               {result?.elapsedMs == null ? t('usage.unknown') : duration(result.elapsedMs / 1000)}

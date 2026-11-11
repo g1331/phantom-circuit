@@ -137,7 +137,7 @@ const readClipboard = async () =>
 page.on('pageerror', recordPageError);
 try {
   await page.goto(origin);
-  await page.getByText('从一个项目开始。').waitFor();
+  await page.getByRole('heading', { name: '开始你的第一个项目', exact: true }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '01-empty-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await page.getByLabel('项目名称', { exact: true }).fill('Orbit Studio');
@@ -146,7 +146,8 @@ try {
   await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
   const project = store.list('project')[0];
   const activityRun = store.run('pm', project.id, 'pm');
-  const diagnosticPath = String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha\src\entry.ts`;
+  const diagnosticPath =
+    String.raw`D:\Orbit Studio\token tools\secret notes` + String.raw`\task-alpha\src\entry.ts`;
   store.activity(activityRun, 'trigger', {
     kind: 'trigger',
     title: '用户消息',
@@ -158,19 +159,29 @@ try {
     title: '执行命令',
     status: 'running',
     details: {
-      command: `curl --user alice:browser-basic-secret https://example.invalid --output "${diagnosticPath}"`,
+      command:
+        'curl --user alice:browser-basic-secret https://example.invalid' +
+        ` --output "${diagnosticPath}"`,
       cwd: String.raw`D:\Orbit Studio\token tools\secret notes\task-alpha`,
       output:
-        'Authorization: Bearer browser-secret\npsql postgresql://alice:browser-db-secret@localhost/app',
+        'Authorization: Bearer browser-secret\n' +
+        'psql postgresql://alice:browser-db-secret@localhost/app',
     },
   });
   const process = page.locator(`.pm-process[data-run-id="${activityRun.id}"]`);
   await process.locator(':scope > summary').waitFor({ timeout: 5000 });
   assert.equal(
     await process.evaluate((el: HTMLDetailsElement) => el.open),
-    true,
-    'a live process stays visible until normal completion',
+    false,
+    'a live process starts folded while progress remains visible',
   );
+  assert.equal(store.get('run', activityRun.id)?.status, 'waiting');
+  const progress = page.locator('.pm-progress[data-status="waiting"]').first();
+  await progress.waitFor();
+  await progress.getByText(/等待结果.*执行命令/).waitFor();
+  await progress.getByText(/已运行/).waitFor();
+  assert.match((await progress.getAttribute('title')) ?? '', /^最后活动\s+\S+/);
+  await process.locator(':scope > summary').click();
   const activity = process.locator('.pm-activity').filter({ hasText: '执行命令' });
   await activity.locator('summary').waitFor({ timeout: 5000 });
   await activity.locator('summary').click();
@@ -179,7 +190,6 @@ try {
   assert.ok(!(await activity.textContent())?.includes('browser-basic-secret'));
   assert.ok(!(await activity.textContent())?.includes('browser-db-secret'));
   assert.ok((await activity.textContent())?.includes('https://example.invalid'));
-  await page.getByText(/最后活动.*已运行/).waitFor();
   await page.clock.install();
   await page.clock.fastForward(61000);
   await page.getByText(/超过 60 秒未更新/).waitFor();
@@ -194,12 +204,20 @@ try {
   store.finishRun(activityRun.id, 'failed', '找不到文件');
   await activity.locator('summary').getByText('失败', { exact: true }).waitFor();
   assert.equal(await process.locator(':scope > summary .process-failure').count(), 1);
-  await page.reload();
   assert.equal(
     await process.evaluate((el: HTMLDetailsElement) => el.open),
     true,
-    'a failed process remains visible after reload',
+    'manual expansion survives the failed status update',
   );
+  await page.reload();
+  await process.locator(':scope > summary').waitFor();
+  assert.equal(
+    await process.evaluate((el: HTMLDetailsElement) => el.open),
+    false,
+    'a fresh page starts folded and keeps failures in its summary',
+  );
+  assert.equal(await process.locator(':scope > summary .process-failure').count(), 1);
+  await process.locator(':scope > summary').click();
   await activity.locator('summary').click();
   assert.ok((await activity.textContent())?.includes(diagnosticPath));
   await page.setViewportSize({ width: 390, height: 844 });
@@ -228,7 +246,8 @@ try {
   const groupedProcess = page.locator(`.pm-process[data-run-id="${groupedRun.id}"]`);
   await groupedProcess.locator(':scope > summary').waitFor({ timeout: 5000 });
   assert.equal(await groupedProcess.locator('.pm-activity').count(), 2);
-  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
+  assert.equal(await groupedProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+  await groupedProcess.locator(':scope > summary').click();
   assert.equal(
     await groupedProcess.evaluate((el) => el.nextElementSibling?.classList.contains('message')),
     true,
@@ -601,7 +620,10 @@ try {
   const done = makeTask('完成首次项目创建体验');
   store.updateTask(done.id, {
     stage: 'done',
-    issueBody: `<!-- phantom-task:${done.id} -->\n## What to build\n持久化的 Issue 正文。\n\n## Acceptance criteria\n- [x] 可以创建项目\n- [x] 空状态引导清晰\n\n## Blocked by\nNone (can start immediately)\n`,
+    issueBody:
+      `<!-- phantom-task:${done.id} -->\n## What to build\n持久化的 Issue 正文。\n\n` +
+      '## Acceptance criteria\n- [x] 可以创建项目\n- [x] 空状态引导清晰\n\n' +
+      '## Blocked by\nNone (can start immediately)\n',
   });
   const task = makeTask('简化仓库接入与授权提示');
   store.updateTask(task.id, {
@@ -668,18 +690,18 @@ try {
   await openPage(page, 'home');
   await page.screenshot({ path: resolve(artifacts, '02-workspace-dark.png'), fullPage: true });
   await page.setViewportSize({ width: 1366, height: 768 });
-  // At 1366px the brief sits beside the conversation; both keep room to read.
   const conversationSize = await page.locator('.conversation').boundingBox();
-  const briefSize = await page.locator('.home-brief').boundingBox();
   assert.ok(
-    conversationSize &&
-      briefSize &&
-      conversationSize.width >= 640 &&
-      conversationSize.height >= 380 &&
-      briefSize.width >= 300 &&
-      conversationSize.x + conversationSize.width <= briefSize.x,
-    `conversation ${JSON.stringify(conversationSize)} beside brief ${JSON.stringify(briefSize)}`,
+    conversationSize && conversationSize.width >= 640 && conversationSize.height >= 380,
+    `conversation ${JSON.stringify(conversationSize)}`,
   );
+  assert.equal(await page.locator('.home-brief').count(), 0);
+  assert.equal(await page.locator('.message .mini-avatar').count(), 0);
+  await page.locator('.workspace-header').waitFor();
+  assert.equal(await page.locator('.workspace-menu').isVisible(), false);
+  await openPage(page, 'brief');
+  await page.locator('.brief-page .brief').waitFor();
+  await openPage(page, 'home');
   await page.screenshot({ path: resolve(artifacts, 'pm-desktop-1366.png') });
   for (let index = 0; index < 8; index++)
     store.addMessage(
@@ -766,7 +788,8 @@ try {
   });
   const followProcess = page.locator(`.pm-process[data-run-id="${followRun.id}"]`);
   await followProcess.locator(':scope > summary').waitFor();
-  assert.equal(await followProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
+  assert.equal(await followProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+  await followProcess.locator(':scope > summary').click();
   store.activity(followRun, 'follow-command-update', {
     kind: 'command',
     title: '底部继续跟随活动',
@@ -774,6 +797,11 @@ try {
     details: { command: 'npm run test:browser' },
   });
   await followProcess.locator('.pm-activity').nth(1).waitFor();
+  assert.equal(
+    await followProcess.evaluate((el: HTMLDetailsElement) => el.open),
+    true,
+    'new activity preserves manual expansion while following',
+  );
   await page.waitForFunction(() => {
     const element = document.querySelector('.conversation');
     return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
@@ -854,7 +882,8 @@ try {
   }
   await openTask(page, '简化仓库接入与授权提示');
   const taskPage = page.locator('.task-page');
-  await taskPage.locator('.task-receipt-details > summary').click();
+  if (!(await taskPage.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+    await taskPage.locator('.task-receipt-details > summary').click();
   const receipt = taskPage.getByRole('region', { name: '交付回执', exact: true });
   await receipt.getByRole('heading', { name: '验收标准' }).waitFor();
   assert.equal(
@@ -930,15 +959,16 @@ try {
       });
   }
   await openSection(page, 'task.tab.overview');
-  await page.locator('.task-receipt-details > summary').click();
+  if (!(await page.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+    await page.locator('.task-receipt-details > summary').click();
   await page
     .getByRole('region', { name: '交付回执', exact: true })
     .getByText('已合入 main', { exact: false })
     .waitFor();
   // Rolling back a delivery is a request to the liaison: the conversation opens with it prefilled.
-  const deliveredTitle = await page.getByRole('heading', { level: 1 }).innerText();
+  const deliveredTitle = await taskPage.getByRole('heading', { level: 1 }).innerText();
   await page.locator('.task-controls > summary').click();
-  await page.getByRole('button', { name: '撤销这次交付', exact: true }).click();
+  await taskPage.getByRole('button', { name: '撤销这次交付', exact: true }).click();
   await page.waitForURL(/#\/p\/[^/]+$/);
   const rollbackDraft = page.getByLabel('给 PM 的消息', { exact: true });
   assert.ok((await rollbackDraft.inputValue()).includes(`撤销已交付的「${deliveredTitle}」`));
@@ -1062,7 +1092,8 @@ try {
   assert.equal(await readClipboard(), literal);
   assert.equal(store.snapshot().messages.find((m) => m.id === userMarkdown.id)?.content, literal);
   await page.evaluate(
-    "Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async () => { throw new Error('Clipboard denied'); } })",
+    "Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, " +
+      "value: async () => { throw new Error('Clipboard denied'); } })",
   );
   await userBlock.getByRole('button', { name: '复制', exact: true }).click();
   await userBlock.getByRole('status').getByText('复制失败，请重试').waitFor();
@@ -1247,7 +1278,8 @@ try {
       await page.screenshot({ path: resolve(artifacts, `markdown-doc-${width}-${theme}.png`) });
       if (width === 390) {
         await page.evaluate(
-          "Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async () => { throw new Error('Clipboard denied'); } })",
+          "Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, " +
+            "value: async () => { throw new Error('Clipboard denied'); } })",
         );
         await documentBlock.getByRole('button', { name: '复制', exact: true }).click();
         await documentBlock.getByRole('status').getByText('复制失败，请重试').waitFor();
@@ -1352,6 +1384,8 @@ try {
     viewport: { width: 1280, height: 900 },
     reducedMotion: 'reduce',
   });
+  historyPage.setDefaultTimeout(8000);
+  historyPage.setDefaultNavigationTimeout(60_000);
   historyPage.on('pageerror', recordPageError);
   try {
     await historyPage.goto(origin);
@@ -1361,7 +1395,14 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    'Browser checks passed: project creation, claim switch/drain, details/search/settings, Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, instant zh-CN/en and persistence, page links and phone drawer, work grouped by attention with search, task pages with delivery receipts and back navigation, project page with claim order and run log, delayed SSE refresh and project isolation, keyboard, 1440x1000/1366x768/390x844/390x500 dark/light layouts; screenshots in test-results/.',
+    'Browser checks passed: project creation, claim switch/drain, details/search/settings, ' +
+      'Markdown safety/streaming/raw copying, image workflows, providers/profiles/priorities, ' +
+      'instant zh-CN/en and persistence, page links and phone drawer, ' +
+      'work grouped by attention with search, ' +
+      'task pages with delivery receipts and back navigation, ' +
+      'project page with claim order and run log, delayed SSE refresh and project isolation, ' +
+      'keyboard, 1440x1000/1366x768/1280x1000/390x844/390x500 dark/light layouts; ' +
+      'screenshots in test-results/.',
   );
 } finally {
   await page.close();

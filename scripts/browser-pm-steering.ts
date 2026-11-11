@@ -183,7 +183,7 @@ async function checkScenario(
   try {
     await app.listen({ host: '127.0.0.1', port });
     await page.goto(`http://127.0.0.1:${port}`);
-    await page.getByText('从一个项目开始。', { exact: true }).waitFor();
+    await page.getByText('开始你的第一个项目', { exact: true }).waitFor();
     if (scenario === 'before-thread') {
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 900 });
