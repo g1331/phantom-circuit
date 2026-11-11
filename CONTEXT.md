@@ -81,3 +81,20 @@ _Avoid_: Workspace, Project, development server
 
 **Team instructions**: A Project’s versioned working agreements for repository conventions, engineering practices and delivery requirements. Each Run uses the version saved when it starts. Its repository conventions section holds one block per repository that the team reads from the trunk (commit style, pull request and Issue templates, CI, verification commands, agent instruction files); the rest of the text is the user's.
 _Avoid_: Permissions, role configuration, memory bank
+
+## Language for the planned super-agent direction
+
+**Input**: An immutable event received from a platform or the Web conversation, retaining its origin and evidence independently of whether it produces work.
+_Avoid_: Task, authorization, Run
+
+**Admission**: The deterministic decision that a source event is eligible for assessment under the configured receiving scope and sender policy.
+_Avoid_: Assessment, repository write permission
+
+**Work authorization**: The recorded request or rule and scope that permit a piece of work, including who or what authorized it.
+_Avoid_: Context, team instructions, repository onboarding
+
+**Source reply**: A purpose-bound response returned to the conversation where a request originated, with its own delivery outcome.
+_Avoid_: Merge, local notification, acknowledgment of completion
+
+**Workbench**: The visual account of received inputs, recorded judgments, observable work, and delivered results.
+_Avoid_: Fixed stage board, raw event log
