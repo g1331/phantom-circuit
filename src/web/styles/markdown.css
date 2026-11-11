@@ -13,7 +13,7 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 10px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .markdown-block + .markdown-block {
@@ -21,9 +21,12 @@
 }
 .markdown-tools button {
   background: none;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  min-height: 32px;
+  padding: 6px 8px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .markdown-rendered > * {
   margin: 0 0 1em;
@@ -34,7 +37,7 @@
 .markdown-rendered :is(h1, h2, h3, h4, h5, h6) {
   margin-top: 1.4em;
   margin-bottom: 0.6em;
-  line-height: 1.5;
+  line-height: 1.4;
   font-weight: 600;
 }
 .markdown-rendered > :first-child {
@@ -61,7 +64,7 @@
 .markdown-rendered blockquote {
   margin-left: 0;
   padding-left: 1em;
-  border-left: 3px solid var(--accent);
+  border-left: 2px solid var(--line);
   color: var(--muted);
 }
 .markdown-rendered blockquote > :first-child {
@@ -88,9 +91,9 @@
   white-space: pre;
   overflow-wrap: normal;
   padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--input);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
   line-height: 1.7;
 }
 .markdown-rendered pre code {
@@ -110,6 +113,7 @@
   border-collapse: collapse;
   font-size: 0.95em;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .markdown-rendered :is(th, td) {
   padding: 7px 12px;

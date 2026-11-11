@@ -300,7 +300,8 @@ export async function checkMaintenance() {
       0,
       'new evidence failure with identical prose remains an actionable warning',
     );
-    await dialog.locator('.task-receipt-details > summary').click();
+    if (!(await dialog.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+      await dialog.locator('.task-receipt-details > summary').click();
     await dialog
       .getByRole('region', { name: 'Delivery receipt', exact: true })
       .getByText('1 check failed', { exact: false })
@@ -567,7 +568,10 @@ export async function checkMaintenance() {
         await failure.close();
       }
     console.log(
-      'Production maintenance browser checks passed: cold/first/repeated lazy requests, loading/failed chunk retry and reopen, draft/focus/reading position, historical and actionable diagnostics, desktop/390px zh-CN/en light/dark. Evidence: test-results/maintenance-*.',
+      'Production maintenance browser checks passed: cold/first/repeated lazy requests, ' +
+        'loading/failed chunk retry and reopen, draft/focus/reading position, ' +
+        'historical and actionable diagnostics, desktop/390px zh-CN/en light/dark. ' +
+        'Evidence: test-results/maintenance-*.',
     );
   } finally {
     await browser.close();

@@ -1,15 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  ArrowUpRight,
-  ChevronDown,
-  Layers3,
-  Menu,
-  Plus,
-  Radio,
-  ShieldCheck,
-  X,
-} from 'lucide-react';
+import { ChevronDown, Menu, Plus, X } from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { teamView, workGroup } from '../shared/team.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
@@ -401,9 +392,9 @@ function App() {
       />
       <main className="main">
         {project && (
-          <header className="mobile-top">
+          <header className="workspace-header">
             <button
-              className="icon-button"
+              className="workspace-menu icon-button"
               aria-label={t('nav.menu')}
               aria-expanded={drawer}
               onClick={() => setDrawer(true)}
@@ -411,19 +402,26 @@ function App() {
               <Menu size={18} />
             </button>
             <strong>{project.name}</strong>
+            <div className="workspace-status">
+              {waitingCount > 0 && (
+                <a
+                  className="status-attention"
+                  href={routeHref({ page: 'work', projectId: project.id })}
+                >
+                  {t('home.status.waiting', { count: waitingCount })}
+                </a>
+              )}
+              {movingCount > 0 && (
+                <a href={routeHref({ page: 'work', projectId: project.id })}>
+                  {t('home.status.moving', { count: movingCount })}
+                </a>
+              )}
+            </div>
           </header>
         )}
         {!project && (
           <header className="topbar">
-            <div className="breadcrumb">
-              {t('app.workspace')} <span>/</span>
-              <strong>{t('app.start')}</strong>
-            </div>
-            <div className="topbar-actions">
-              <span className="local-badge">
-                <ShieldCheck size={13} /> {t('app.local')}
-              </span>
-            </div>
+            <strong>{t('app.workspace')}</strong>
           </header>
         )}
         {error && (
@@ -461,58 +459,18 @@ function App() {
           </div>
         ) : !project ? (
           <div className="onboarding">
-            <div className="eyebrow">
-              <Radio size={16} /> PHANTOM CIRCUIT
-            </div>
             <h1>{t('onboarding.title')}</h1>
-            <p>
-              {t('onboarding.intro')}
-              <br />
-              {t('onboarding.description')}
-            </p>
+            <p>{t('onboarding.intro')}</p>
             <button className="primary-button" onClick={() => setModal('project')}>
               <Plus size={17} /> {t('project.create')}
             </button>
-            <div className="onboarding-flow">
-              <div>
-                <span>01</span>
-                <strong>{t('onboarding.discuss')}</strong>
-              </div>
-              <div>
-                <span>02</span>
-                <strong>{t('onboarding.switch')}</strong>
-              </div>
-              <div>
-                <span>03</span>
-                <strong>{t('onboarding.feedback')}</strong>
-              </div>
-            </div>
           </div>
         ) : (
           <>
             {/* The conversation stays mounted so drafts and reading position survive page changes. */}
             <div className="home-grid" hidden={page !== 'home'}>
               <section className="home-main" aria-label={t('nav.home')}>
-                <header className="project-header">
-                  <div className="project-title">
-                    <h1>{project.name}</h1>
-                    <p className="project-status">
-                      {waitingCount > 0 && (
-                        <a
-                          className="status-attention"
-                          href={routeHref({ page: 'work', projectId: project.id })}
-                        >
-                          {t('home.status.waiting', { count: waitingCount })}
-                        </a>
-                      )}
-                      <span>
-                        {movingCount
-                          ? t('home.status.moving', { count: movingCount })
-                          : t('home.status.idle')}
-                      </span>
-                    </p>
-                  </div>
-                </header>
+                <h1 className="sr-only">{project.name}</h1>
                 <div className="chat-workspace">
                   <div className="conversation-shell">
                     <div
@@ -574,9 +532,6 @@ function App() {
                           !messages.length &&
                           !activities.length && (
                             <div className="chat-empty">
-                              <div className="pm-avatar">
-                                <Layers3 size={22} />
-                              </div>
                               <h2>{t('chat.emptyTitle')}</h2>
                               <p>{t('chat.emptyDescription')}</p>
                               <div className="suggestions">
@@ -585,14 +540,14 @@ function App() {
                                     composerRef.current?.setDraft(t('chat.requirementsDraft'))
                                   }
                                 >
-                                  {t('chat.requirements')} <ArrowUpRight size={13} />
+                                  {t('chat.requirements')}
                                 </button>
                                 <button
                                   onClick={() =>
                                     composerRef.current?.setDraft(t('chat.exploreDraft'))
                                   }
                                 >
-                                  {t('chat.explore')} <ArrowUpRight size={13} />
+                                  {t('chat.explore')}
                                 </button>
                               </div>
                             </div>
@@ -680,27 +635,34 @@ function App() {
                   />
                 </div>
               </section>
-              <aside className="home-brief">{brief}</aside>
             </div>
             {page === 'brief' && <div className="page brief-page">{brief}</div>}
-            {page === 'work' && (
-              <WorkList state={state} project={project} query={workQuery} setQuery={setWorkQuery} />
-            )}
-            {page === 'task' && route.taskId && (
-              <TaskPage
-                state={state}
-                projectId={project.id}
-                taskId={route.taskId}
-                view={route.view}
-                schedule={currentSchedule}
-                busy={busy}
-                act={act}
-                reload={reload}
-                onDraft={(draft) => {
-                  go({ page: 'home', projectId: project.id });
-                  composerRef.current?.setDraft(draft.content, draft.intent);
-                }}
-              />
+            {(page === 'work' || page === 'task') && (
+              <div className={page === 'task' ? 'work-inspection' : 'work-surface'}>
+                <WorkList
+                  state={state}
+                  project={project}
+                  query={workQuery}
+                  setQuery={setWorkQuery}
+                  selectedId={page === 'task' ? route.taskId : undefined}
+                />
+                {page === 'task' && route.taskId && (
+                  <TaskPage
+                    state={state}
+                    projectId={project.id}
+                    taskId={route.taskId}
+                    view={route.view}
+                    schedule={currentSchedule}
+                    busy={busy}
+                    act={act}
+                    reload={reload}
+                    onDraft={(draft) => {
+                      go({ page: 'home', projectId: project.id });
+                      composerRef.current?.setDraft(draft.content, draft.intent);
+                    }}
+                  />
+                )}
+              </div>
             )}
             {page === 'team' && (
               <TeamRoom

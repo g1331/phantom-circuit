@@ -91,17 +91,19 @@ export function Receipt({ task, state }: { task: Task; state: Snapshot }) {
           icon={<ListChecks size={13} />}
           title={t('receipt.acceptance')}
         >
-          <ul className="receipt-acceptance">
-            {task.acceptance.map((item, i) => (
-              <li key={i}>
-                <MarkdownContent
-                  content={item}
-                  label={t('acceptance.label', { count: i + 1 })}
-                  copyable={false}
-                />
-              </li>
-            ))}
-          </ul>
+          <Clamp height={120}>
+            <ul className="receipt-acceptance">
+              {task.acceptance.map((item, i) => (
+                <li key={i}>
+                  <MarkdownContent
+                    content={item}
+                    label={t('acceptance.label', { count: i + 1 })}
+                    copyable={false}
+                  />
+                </li>
+              ))}
+            </ul>
+          </Clamp>
         </Line>
 
         <Line

@@ -51,7 +51,7 @@
 }
 .conversation-content {
   width: 100%;
-  max-width: 800px;
+  max-width: var(--conversation-width);
   min-width: 0;
   margin: 0 auto;
 }
@@ -86,8 +86,8 @@
   border-radius: 999px;
   background: var(--raised);
   color: var(--text);
-  box-shadow: 0 4px 16px #0003;
-  font-size: 11px;
+  box-shadow: var(--shadow-soft);
+  font-size: 12px;
   white-space: nowrap;
 }
 .latest-message:hover {
@@ -146,13 +146,13 @@
 .message.user {
   position: relative;
   width: fit-content;
-  max-width: min(85%, 680px);
+  max-width: min(85%, 640px);
   margin-left: auto;
-  margin-bottom: 40px;
+  margin-bottom: 56px;
   padding: 12px 16px;
-  background: var(--input);
+  background: var(--surface-soft);
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
 }
 .message.user .message-heading {
   flex-wrap: wrap;
@@ -172,9 +172,9 @@
   font-weight: 500;
 }
 .message-heading time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
-  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 .mini-avatar,
 .user-avatar {
@@ -197,8 +197,8 @@
   background: var(--raised);
 }
 .message-intent.intent-implement {
-  color: var(--focus);
-  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--delivery);
+  background: color-mix(in srgb, var(--delivery) 10%, transparent);
 }
 .message-intent.intent-feedback {
   color: var(--warning);
@@ -225,6 +225,8 @@
 }
 .message.user .markdown-tools {
   right: 72px;
+  width: max-content;
+  flex-wrap: nowrap;
 }
 .message.system {
   padding: 9px 12px;
@@ -237,29 +239,28 @@
   margin-bottom: 5px;
 }
 .message.system .message-content {
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.6;
 }
 .retry-message {
-  margin: 5px 0 0 31px;
-  font-size: 11px;
+  margin: 5px 0 0;
+  font-size: 12px;
   background: none;
   border: 0;
-  padding: 3px 0;
-  color: var(--faint);
+  padding: 6px;
+  min-height: 32px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .thinking {
   color: var(--muted);
-  font-size: 11px;
-}
-.thinking span {
-  animation: pulse 1s infinite;
+  font-size: 12px;
 }
 .message-images {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 12px 0;
 }
 .image-preview-dialog {
   width: fit-content;
@@ -364,7 +365,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 28px;
+  min-height: 36px;
   padding: 4px 0;
   cursor: pointer;
   list-style: none;
@@ -395,12 +396,14 @@
 .process-failure {
   flex: 0 0 auto;
   color: var(--danger);
-  font-size: 11px;
+  font-size: 12px;
 }
 .pm-process[data-status='running'] > summary .process-status {
   color: var(--progress);
 }
-.pm-process[data-status='waiting'] > summary .process-status {
+.pm-process[data-status='waiting'] > summary .process-status,
+.pm-process[data-status='paused'] > summary .process-status,
+.pm-process[data-status='interrupted'] > summary .process-status {
   color: var(--warning);
 }
 .pm-process[data-status='completed'] > summary .process-status {
@@ -471,21 +474,12 @@
 .activity-chevron {
   flex: 0 0 14px;
   color: var(--muted);
-  opacity: 0;
-  transition:
-    opacity 140ms ease,
-    transform 140ms ease;
-}
-.pm-activity > summary:hover .activity-chevron,
-.pm-activity > summary:focus-visible .activity-chevron,
-.pm-activity[open] > summary .activity-chevron {
-  opacity: 1;
+  transition: transform 140ms ease;
 }
 .pm-activity[open] > summary .activity-chevron {
   transform: rotate(90deg);
 }
 .pm-activity[data-status='running'] .activity-icon {
-  animation: pulse 1.8s infinite;
   color: var(--progress);
 }
 .pm-activity[data-status='running'] .activity-state {
@@ -560,13 +554,34 @@
   user-select: text;
 }
 .pm-progress {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
   font-size: 12px;
   margin: 8px 0 14px;
 }
+.pm-progress > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pm-progress small {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
+}
+.pm-progress[data-status='running'] {
+  color: var(--progress);
+}
+.pm-progress:is([data-status='waiting'], [data-status='paused'], [data-status='interrupted']),
+.pm-progress[data-stale='true'] {
+  color: var(--warning);
+}
+.pm-progress[data-status='failed'] {
+  color: var(--danger);
 }
 @media (max-width: 480px) {
   .pm-process > summary {
@@ -615,14 +630,14 @@
   overflow: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
-  padding: 28px max(40px, calc((100% - 800px) / 2));
+  padding: 28px max(40px, calc((100% - var(--conversation-width)) / 2));
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
 .message-content {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.75;
   padding-left: 0;
 }
@@ -641,7 +656,7 @@
     padding: 18px 16px;
   }
   .message-content {
-    font-size: 13px;
+    font-size: 14px;
   }
 }
 .process-duration {
@@ -661,12 +676,8 @@
 .activity-details {
   color: var(--muted);
 }
-.pm-progress {
-  color: var(--muted);
-}
 .message-heading time {
-  margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
 }
 .message.user .user-avatar {
   display: none;
@@ -675,7 +686,7 @@
   display: none;
 }
 .message-intent {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .retry-message {
@@ -721,7 +732,6 @@
   height: 2px;
   background: var(--muted);
   border-radius: 2px;
-  transition: width 120ms;
 }
 .turn-mark:is(:hover, :focus-visible, [aria-current='true'])::before {
   width: 22px;
@@ -826,21 +836,18 @@
     padding-top: 36px;
   }
 }
-@media (hover: hover) {
-  .message:not(:last-child) :is(.retry-message, .markdown-tools) {
-    opacity: 0;
-    transition: opacity 120ms;
-  }
-  .message:is(:hover, :focus-within) :is(.retry-message, .markdown-tools) {
-    opacity: 1;
-  }
-}
 @media (max-width: 660px) {
   .conversation {
     padding: 24px var(--page-gutter) 16px;
   }
   .message.user {
     max-width: 92%;
+  }
+  .message .markdown-tools button,
+  .retry-message,
+  .pm-process > summary,
+  .pm-activity > summary {
+    min-height: 44px;
   }
 }
 
@@ -860,4 +867,9 @@
 }
 .message .markdown-tools button:hover {
   background: var(--raised);
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-chevron {
+    transition: none;
+  }
 }

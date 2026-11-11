@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { Send, X } from 'lucide-react';
+import { Paperclip, X } from 'lucide-react';
 import { useLocale } from './locale/provider.tsx';
 import { ErrorText } from './error-text.tsx';
 import { LocalUiError } from './api.ts';
@@ -159,6 +159,8 @@ export function PMComposer({
         <dialog
           ref={previewDialog}
           className="image-preview-dialog"
+          tabIndex={-1}
+          autoFocus
           aria-label={t('images.preview', { name: preview.file.name })}
           onClose={() => setPreview(undefined)}
           onClick={(event) => {
@@ -179,7 +181,6 @@ export function PMComposer({
               type="button"
               aria-label={t('common.close')}
               onClick={() => previewDialog.current?.close()}
-              autoFocus
             >
               <X size={18} />
             </button>
@@ -221,7 +222,7 @@ export function PMComposer({
         <div className="composer-tools">
           <div className="image-picker">
             <label title={`${t('images.formats')} · ${t('images.pasteHint')}`}>
-              {t('ui.addImages')}{' '}
+              <Paperclip size={18} aria-hidden="true" />
               <input
                 aria-label={t('ui.chooseImages')}
                 type="file"
@@ -278,7 +279,6 @@ export function PMComposer({
               onClick={() => void send()}
             >
               <span>{pmBusy ? t('delivery.sendQueue') : t('common.send')}</span>
-              <Send size={17} />
             </button>
           </div>
         </div>

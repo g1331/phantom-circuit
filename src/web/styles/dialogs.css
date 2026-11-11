@@ -1,13 +1,13 @@
 .modal {
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border: 0;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   color: var(--text);
   width: min(520px, calc(100vw - 32px));
   max-height: 90dvh;
   overflow: hidden;
-  box-shadow: 0 30px 100px #0006;
+  box-shadow: 0 24px 80px var(--shadow);
   animation: enter 0.18s ease-out;
 }
 .modal.wide {
@@ -41,15 +41,15 @@
   flex-shrink: 0;
   margin-bottom: 0;
   padding: var(--surface-padding) var(--dialog-padding);
-  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
 }
 .modal header h2 {
-  font-size: 19px;
+  font-size: 24px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .modal header p {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.8;
   color: var(--muted);
   margin-top: 8px;
@@ -83,7 +83,7 @@
   flex-direction: row !important;
   align-items: flex-start;
   line-height: 1.9;
-  font-size: 11px !important;
+  font-size: 12px !important;
 }
 .checkbox-label input {
   margin-top: 5px;
@@ -91,7 +91,7 @@
 }
 .form-columns {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--section-gap);
 }
 .assignment-form {
@@ -200,7 +200,7 @@
   min-height: var(--control-height);
   padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   font-size: 13px;
@@ -212,8 +212,8 @@
   color: var(--text);
 }
 .settings-nav button[aria-selected='true'] {
-  background: var(--accent-bg);
-  color: var(--text);
+  background: var(--accent);
+  color: var(--button-text);
   font-weight: 600;
 }
 .settings-pages {
@@ -266,11 +266,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   margin-top: auto;
   padding: 14px 0 var(--dialog-padding);
-  border-top: 1px solid var(--line);
-  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(12px);
 }
 .settings-footer-status {
   flex: 1;
@@ -308,8 +308,8 @@
   width: fit-content;
   margin-bottom: 20px;
   padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  background: var(--surface-soft);
+  border-radius: var(--radius);
 }
 .agent-switch button {
   display: inline-flex;
@@ -317,18 +317,19 @@
   gap: 8px;
   padding: 6px 14px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   font-size: 13px;
 }
 .agent-switch button[aria-pressed='true'] {
-  background: var(--accent-bg);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
   color: var(--text);
   font-weight: 600;
 }
 .agent-switch small {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--success);
 }
@@ -380,7 +381,7 @@
   font-size: 12px;
 }
 .provider-secret small {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
 }
 .key-state {
@@ -477,7 +478,7 @@
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   text-align: left;
@@ -498,13 +499,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
 }
 .role-picker .is-unset {
   color: var(--warning);
 }
 .role-picker small {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--faint);
 }
 .omp-profiles .assignment,
@@ -532,6 +533,8 @@
     justify-content: center;
     padding: 7px 6px;
     font-size: 12px;
+    min-height: 44px;
+    white-space: normal;
   }
   .settings-nav button svg {
     display: none;
@@ -542,6 +545,12 @@
   .model-prices .form-columns,
   .assignment-fields.two {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .form-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-footer {
+    flex-wrap: wrap;
   }
   .runtime-summary button {
     grid-column: 1;

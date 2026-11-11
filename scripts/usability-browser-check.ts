@@ -75,7 +75,8 @@ export async function checkUsability() {
     store.addMessage(
       conversationProject.id,
       'assistant',
-      `Final answer ${index}\n\n${'Readable **answer** with [a link](https://example.com).\n\n'.repeat(20)}`,
+      `Final answer ${index}\n\n` +
+        'Readable **answer** with [a link](https://example.com).\n\n'.repeat(20),
       undefined,
       undefined,
       { runId: run.id, sourceMessageId: input.id },
@@ -128,7 +129,11 @@ export async function checkUsability() {
     class FixtureEvents extends EventTarget {
       onerror = null;
       changed = () => this.dispatchEvent(new MessageEvent('change', { data: '{}' }));
-      constructor() { super(); window.addEventListener('fixture-change', this.changed); setTimeout(() => this.dispatchEvent(new MessageEvent('ready')), 0); }
+      constructor() {
+        super();
+        window.addEventListener('fixture-change', this.changed);
+        setTimeout(() => this.dispatchEvent(new MessageEvent('ready')), 0);
+      }
       close() { window.removeEventListener('fixture-change', this.changed); }
     }
     Object.defineProperty(window, 'EventSource', { value: FixtureEvents });
@@ -285,7 +290,8 @@ export async function checkUsability() {
           const projectIcon = await page.locator('.project-link svg').first().boundingBox();
           assert.ok(
             projectIcon && Math.abs(projectIcon.x - controls[0].iconX) < 1,
-            `${context}: project and control icon columns (${projectIcon?.x} vs ${controls[0].iconX})`,
+            `${context}: project and control icon columns ` +
+              `(${projectIcon?.x} vs ${controls[0].iconX})`,
           );
           if (controls[0].labelVisible) {
             const projectLabel = await page.locator('.project-link > span').first().boundingBox();
@@ -296,7 +302,8 @@ export async function checkUsability() {
           }
           for (const control of controls) {
             assert.ok(Math.abs(control.iconX - controls[0].iconX) < 1, `${context}: icon column`);
-            assert.equal(control.height, 40, `${context}: row height`);
+            const rowHeight = width <= 660 ? 44 : control.labelVisible ? 36 : 40;
+            assert.equal(control.height, rowHeight, `${context}: row height`);
             assert.equal(control.width, controls[0].width, `${context}: row width`);
             assert.ok(
               Math.abs(control.iconCenterY - (control.y + control.height / 2)) < 1,
@@ -309,13 +316,15 @@ export async function checkUsability() {
               );
               assert.ok(
                 control.labelFits,
-                `${context}: readable labels (${control.labelText}: ${control.labelScrollWidth}px required, ${control.labelClientWidth}px available)`,
+                `${context}: readable labels (${control.labelText}: ` +
+                  `${control.labelScrollWidth}px required, ` +
+                  `${control.labelClientWidth}px available)`,
               );
             }
           }
           assert.ok(
-            Math.abs(controls[1].y - controls[0].y - 44) < 1 &&
-              Math.abs(controls[2].y - controls[1].y - 44) < 1,
+            Math.abs(controls[1].y - controls[0].y - controls[0].height - 2) < 1 &&
+              Math.abs(controls[2].y - controls[1].y - controls[1].height - 2) < 1,
             `${context}: row gaps`,
           );
           assert.ok(
@@ -457,7 +466,7 @@ export async function checkUsability() {
     const liveProcess = page.locator(`.pm-process[data-run-id="${pendingRun.id}"]`);
     await liveProcess.locator(':scope > summary').waitFor();
     await checkTyping(page);
-    assert.equal(await liveProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
+    assert.equal(await liveProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
     assert.equal(await firstProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
     assert.equal(
       await page.getByText('Intermediate 50', { exact: true }).isVisible(),
@@ -469,7 +478,6 @@ export async function checkUsability() {
       true,
       'final answer is retained',
     );
-    // The turn rail needs a 900px conversation; with the brief beside it that takes a wide screen.
     await page.setViewportSize({ width: 1600, height: 768 });
     const turnMarks = page.locator('.turn-mark');
     await turnMarks.nth((await turnMarks.count()) - 2).focus();
@@ -492,7 +500,7 @@ export async function checkUsability() {
     assert.equal(
       await liveProcess.evaluate((el: HTMLDetailsElement) => el.open),
       false,
-      'offscreen normal completion auto-collapses',
+      'untouched live activity remains collapsed after normal completion',
     );
     assert.equal(
       await firstProcess.evaluate((el: HTMLDetailsElement) => el.open),
@@ -548,6 +556,9 @@ export async function checkUsability() {
       .getByText('Reading a live reply', { exact: true })
       .waitFor();
     await page.locator('.turn-mark').last().click();
+    const readingProcess = page.locator(`.pm-process[data-run-id="${readingRun.id}"]`);
+    assert.equal(await readingProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
+    await readingProcess.locator(':scope > summary').click();
     const liveExplanation = page
       .getByRole('region', { name: '与 PM 讨论', exact: true })
       .getByText('Live explanation being read', { exact: true });
@@ -569,8 +580,9 @@ export async function checkUsability() {
     assert.equal(
       await liveExplanation.isVisible(),
       true,
-      'a reply moving into a completed process stays visible while being read',
+      'manual expansion keeps the reply visible when it moves into the completed process',
     );
+    assert.equal(await readingProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
     await page.setViewportSize({ width: 1366, height: 768 });
     // Collapsed or narrowed to a rail, every sidebar icon shares one vertical axis.
     const railCenters = () =>
@@ -871,6 +883,7 @@ export async function checkUsability() {
     });
     const views = [
       { page: 'home', name: 'Conversation' },
+      { page: 'brief', name: 'Brief' },
       { page: 'work', name: 'Work' },
       { page: 'team', name: 'Team' },
       { page: 'project', name: 'Project' },
@@ -878,6 +891,7 @@ export async function checkUsability() {
     for (const viewport of [
       { width: 1440, height: 1000 },
       { width: 1366, height: 768 },
+      { width: 1280, height: 1000 },
       { width: 390, height: 844 },
       { width: 390, height: 500 },
     ]) {
@@ -887,6 +901,18 @@ export async function checkUsability() {
           await choosePreference(page, 'theme', theme);
         for (const view of views) {
           await openPage(page, view.page);
+          await page.locator('.workspace-header').waitFor();
+          assert.equal(
+            await page.locator('.workspace-menu').isVisible(),
+            viewport.width <= 660,
+            'workspace menu appears only on phone',
+          );
+          if (view.page === 'home') {
+            assert.equal(await page.locator('.home-brief').count(), 0);
+            assert.equal(await page.locator('.message .mini-avatar').count(), 0);
+          } else if (view.page === 'brief') {
+            await page.locator('.brief-page .brief').waitFor();
+          }
           assert.equal(
             await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
             true,
@@ -913,7 +939,33 @@ export async function checkUsability() {
             // Keyboard: the last row opens its page, and the browser's back button returns.
             await workPage.locator('.work-row:visible').last().focus();
             await page.keyboard.press('Enter');
-            await page.locator('.task-page').waitFor();
+            const taskPage = page.locator('.task-page');
+            await taskPage.waitFor();
+            assert.equal(
+              await workPage.isVisible(),
+              viewport.width > 660,
+              'task inspection keeps the work list on desktop and focuses the task on phone',
+            );
+            if (viewport.width > 660) {
+              const listBox = await workPage.boundingBox();
+              const detailBox = await taskPage.boundingBox();
+              assert.ok(
+                listBox && detailBox && listBox.x + listBox.width <= detailBox.x + 1,
+                'desktop work list sits to the left of the task detail',
+              );
+              assert.equal(await workPage.locator('.work-row[aria-current="page"]').count(), 1);
+            }
+            assert.equal(
+              await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              true,
+              `${viewport.width}px task workspace overflow`,
+            );
+            await page.screenshot({
+              path: resolve(
+                process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+                `usability-task-${viewport.width}x${viewport.height}-${theme}.png`,
+              ),
+            });
             await page.goBack();
             await workPage.evaluate((element) => {
               element.scrollTop = 0;
@@ -945,7 +997,7 @@ export async function checkUsability() {
     async function captureModal(name: string, width: number, theme: string) {
       const modal = page.locator('.modal');
       await modal.waitFor();
-      // Relative to the dialog: a centered dialog moves as lazy content loads or its entrance animation ends.
+      // Measure relative to the dialog: lazy content and entrance motion can move its frame.
       // Read both rectangles in one browser task so loading cannot move the frame between reads.
       const headerOffset = () =>
         modal.evaluate((element) => {

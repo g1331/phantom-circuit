@@ -180,6 +180,7 @@ export async function checkClientAttention({
         ] as const) {
           await openTask(page, task.title);
           await page
+            .locator('.task-page')
             .getByRole('heading', { name: copy[`work.hold.${hold}`], exact: true })
             .waitFor();
           await capture(hold);
@@ -190,10 +191,12 @@ export async function checkClientAttention({
         await capture('question');
         await openTask(page, paused.title);
         await page
+          .locator('.task-page')
           .getByRole('heading', { name: copy['task.progress.paused'], exact: true })
           .waitFor();
         await page.locator('.task-controls > summary').click();
         await page
+          .locator('.task-page')
           .getByRole('button', { name: locale === 'en' ? 'Resume task' : '恢复任务', exact: true })
           .waitFor();
         await capture('paused');
@@ -217,7 +220,10 @@ export async function checkClientAttention({
   await openTask(page, paused.title);
   await page.locator('.task-controls > summary').click();
   const resumed = page.waitForResponse((r) => r.url().includes(`/tasks/${paused.id}/resume`));
-  await page.getByRole('button', { name: 'Resume task', exact: true }).click();
+  await page
+    .locator('.task-page')
+    .getByRole('button', { name: 'Resume task', exact: true })
+    .click();
   assert.equal((await resumed).ok(), true);
   assert.equal(store.task(paused.id).control, 'active');
   await checkProjectQuestion(page, store, artifacts);
@@ -259,19 +265,23 @@ export async function checkBriefProjectIsolation(page: Page, store: Store, artif
   );
   const origin = new URL(page.url()).origin;
   await page.goto(`${origin}/?brief-isolation-fixture=1#/p/${first.id}`);
-  await page.locator('.home-brief .brief').waitFor({ state: 'attached' });
+  await openPage(page, 'brief');
+  await page.locator('.brief-page .brief').waitFor();
   await clickInSidebar(page, second.name);
-  await page
-    .locator('.project-header h1')
-    .filter({ hasText: second.name })
-    .waitFor({ state: 'attached' });
+  await page.locator('.workspace-header > strong').filter({ hasText: second.name }).waitFor();
   await page.locator('.drawer-scrim').waitFor({ state: 'detached' });
-  assert.equal(await page.locator('.home-brief .brief-delivered li').count(), 1);
+  assert.equal(await page.locator('.home-brief').count(), 0);
   await openPage(page, 'brief');
   await page.locator('.brief-page .brief-delivered li').waitFor();
+  assert.equal(await page.locator('.brief-page .brief-delivered li').count(), 1);
   await page.screenshot({ path: resolve(artifacts, 'brief-project-isolation.png') });
   await page.locator('.brief-page .brief-seen').click();
   await page.locator('.brief-page .brief-last').waitFor();
+  assert.notEqual(
+    await page.evaluate((id) => localStorage.getItem(`phantom.seen.${id}`), second.id),
+    '2000-01-01T00:00:00.000Z',
+    'acknowledging the selected project records its new visit',
+  );
   const seen = await page.evaluate((id) => localStorage.getItem(`phantom.seen.${id}`), first.id);
   assert.equal(
     seen,

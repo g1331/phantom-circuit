@@ -24,9 +24,6 @@
 }
 .team-full {
   flex: 1;
-  width: min(920px, 100%);
-  margin: 0 auto;
-  padding: 28px var(--page-gutter) 40px;
 }
 .team-full .team-members {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -37,6 +34,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 .team-header h2 {
   margin: 0;
@@ -53,7 +51,7 @@
   color: var(--faint);
 }
 .team-header p.team-live {
-  color: var(--role-dev);
+  color: var(--progress);
 }
 .team-pulse {
   width: 7px;
@@ -67,16 +65,19 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  min-height: 36px;
   padding: 0 11px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--muted);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
 }
 .team-control:hover:not(:disabled) {
   color: var(--text);
@@ -89,10 +90,8 @@
 
 .team-section h3 {
   margin: 0 0 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--faint);
 }
 .team-section ul,
@@ -117,30 +116,17 @@
   gap: 8px;
 }
 .team-request {
-  position: relative;
-  padding: 11px 12px 11px 14px;
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--line));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--warning) 9%, var(--panel));
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
   overflow: hidden;
 }
-.team-request::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--warning);
-}
 .team-request.kind-blocked {
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
   background: color-mix(in srgb, var(--danger) 7%, var(--panel));
-}
-.team-request.kind-blocked::before {
-  background: var(--danger);
 }
 .team-request-kind {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--warning);
 }
@@ -191,10 +177,8 @@
   display: flex;
   gap: 11px;
   align-items: flex-start;
-  padding: 10px 11px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+  padding: 14px;
+  border-radius: var(--radius);
 }
 .team-member.role-dev {
   --role: var(--role-dev);
@@ -206,8 +190,7 @@
   --role: var(--role-oncall);
 }
 .team-member.is-working {
-  border-color: color-mix(in srgb, var(--role) 28%, var(--line));
-  background: color-mix(in srgb, var(--role) 7%, var(--panel));
+  background: var(--surface-soft);
 }
 .team-avatar {
   position: relative;
@@ -219,17 +202,6 @@
   border-radius: 50%;
   color: var(--role);
   background: color-mix(in srgb, var(--role) 14%, var(--panel));
-}
-/* A working member's avatar carries a turning arc in its role colour. */
-.is-working .team-avatar::after {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 55%, var(--role) 100%);
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
-  animation: team-spin 1.6s linear infinite;
 }
 .team-member-body {
   min-width: 0;
@@ -245,7 +217,7 @@
   font-size: 13px;
 }
 .team-clock {
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--role);
 }
@@ -281,18 +253,17 @@
   display: grid;
   gap: 8px;
   padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+  transition: background 0.15s;
 }
 .team-work:hover {
-  border-color: var(--muted);
-  transform: translateY(-1px);
+  background: var(--raised);
 }
 .team-work:focus-visible,
 .team-control:focus-visible,
@@ -313,7 +284,7 @@
   flex: none;
   padding: 1px 7px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
   color: var(--faint);
   background: var(--raised);
@@ -337,15 +308,10 @@
   background: var(--raised);
 }
 .team-track > .done {
-  background: color-mix(in srgb, var(--role-dev) 70%, var(--raised));
+  background: color-mix(in srgb, var(--progress) 45%, var(--raised));
 }
 .team-track > .current {
-  background: var(--role-dev);
-}
-.is-live .team-track > .current {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--role-dev) 45%, transparent), var(--role-dev), color-mix(in srgb, var(--role-dev) 45%, transparent));
-  background-size: 200% 100%;
-  animation: team-flow 1.6s linear infinite;
+  background: var(--progress);
 }
 .attention-blocked .team-track > .current {
   background: var(--danger);
@@ -361,13 +327,13 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--faint);
 }
 .team-owners {
   display: inline-flex;
   gap: 4px;
-  color: var(--role-dev);
+  color: var(--progress);
 }
 .team-reason {
   flex-basis: 100%;
@@ -453,22 +419,12 @@
   color: var(--faint);
 }
 
-@keyframes team-spin {
-  to {
-    transform: rotate(1turn);
-  }
-}
 @keyframes team-pulse {
   0% {
     box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent);
   }
   100% {
     box-shadow: 0 0 0 7px transparent;
-  }
-}
-@keyframes team-flow {
-  to {
-    background-position: -200% 0;
   }
 }
 @keyframes team-dots {
@@ -487,13 +443,20 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .team-pulse,
-  .is-working .team-avatar::after,
-  .is-live .team-track > .current,
   .team-dots::after {
     animation: none;
   }
   .team-work:hover {
     transform: none;
+  }
+}
+@media (max-width: 660px) {
+  .team-control,
+  .team-link {
+    min-height: 44px;
+  }
+  .team-full .team-members {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

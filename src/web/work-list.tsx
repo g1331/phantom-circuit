@@ -53,6 +53,7 @@ function Row({
   repoName,
   activity,
   request,
+  selected,
 }: {
   work: TeamWork;
   group: WorkGroup;
@@ -61,6 +62,7 @@ function Row({
   repoName?: string;
   activity?: string;
   request?: string;
+  selected: boolean;
 }) {
   const { t } = useLocale();
   const when = useWhen();
@@ -98,11 +100,16 @@ function Row({
       <a
         className={`work-row group-${group} ${work.teamHold === 'blocked' ? 'hold-blocked' : ''}`}
         href={routeHref({ page: 'task', projectId, taskId: work.taskId })}
+        aria-current={selected ? 'page' : undefined}
+        data-selected={selected || undefined}
       >
         <Icon className="work-icon" size={16} aria-hidden="true" />
         <span className="work-main">
-          <strong>{work.title}</strong>
-          <span className={`work-line ${issue || work.teamHold === 'blocked' ? 'has-issue' : ''}`}>
+          <strong title={work.title}>{work.title}</strong>
+          <span
+            className={`work-line ${issue || work.teamHold === 'blocked' ? 'has-issue' : ''}`}
+            title={work.teamHold ? undefined : line}
+          >
             {work.teamHold ? <WorkHold work={work} /> : line}
           </span>
         </span>
@@ -131,7 +138,7 @@ function ProjectRequestRow({ request, projectId }: { request: TeamRequest; proje
       >
         <Hand className="work-icon" size={16} aria-hidden="true" />
         <span className="work-main">
-          <strong>{request.text}</strong>
+          <strong title={request.text}>{request.text}</strong>
           <span className="work-line">
             {t(`team.request.${request.kind}`)} · {t('brief.inConversation')}
           </span>
@@ -148,12 +155,14 @@ export function WorkList({
   project,
   query,
   setQuery,
+  selectedId,
 }: {
   state: Snapshot;
   project: Project;
   /** Held by the app, so a search survives opening a piece of work and coming back. */
   query: string;
   setQuery: (query: string) => void;
+  selectedId?: string;
 }) {
   const { t, number } = useLocale();
   const [expanded, setExpanded] = useState<Partial<Record<WorkGroup, boolean>>>({});
@@ -183,8 +192,8 @@ export function WorkList({
   };
   return (
     <div className="page work-page">
-      <header className="page-header">
-        <h1>{t('work.title')}</h1>
+      <header className="page-header work-header">
+        {selectedId === undefined ? <h1>{t('work.title')}</h1> : <h2>{t('work.title')}</h2>}
         {(view.work.length > 0 || projectRequests.length > 0) && (
           <input
             type="search"
@@ -203,7 +212,11 @@ export function WorkList({
       ) : (
         groups.map(({ group, items, requests }) => {
           const folded = (group === 'delivered' || group === 'cancelled') && !needle;
-          const visible = folded && !expanded[group] ? items.slice(0, preview) : items;
+          const selectedIndex = items.findIndex((item) => item.taskId === selectedId);
+          const visible =
+            folded && !expanded[group]
+              ? items.slice(0, Math.max(preview, selectedIndex + 1))
+              : items;
           const body = (
             <>
               <ul className="work-rows">
@@ -214,6 +227,7 @@ export function WorkList({
                   <Row
                     key={work.taskId}
                     work={work}
+                    selected={selectedId === work.taskId}
                     group={group}
                     state={state}
                     projectId={project.id}
@@ -239,7 +253,11 @@ export function WorkList({
             </>
           );
           return group === 'cancelled' && !needle ? (
-            <details key={group} className={`work-group group-${group}`}>
+            <details
+              key={group}
+              className={`work-group group-${group}`}
+              open={items.some((item) => item.taskId === selectedId) || undefined}
+            >
               <summary>{heading}</summary>
               {body}
             </details>

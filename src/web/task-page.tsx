@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { ArrowLeft, Pause, Play, Undo2, UserRoundPlus } from 'lucide-react';
 import type { Message, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
@@ -45,6 +45,11 @@ export function TaskPage({
   onDraft: (draft: TaskDraft) => void;
 }) {
   const { t } = useLocale();
+  const surface = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    surface.current?.focus({ preventScroll: true });
+    surface.current?.scrollTo({ top: 0 });
+  }, [projectId, taskId]);
   const task = state.tasks.find((x) => x.id === taskId && x.projectId === projectId);
   const view = useMemo(() => teamView(state, projectId), [state, projectId]);
   const work = view.work.find((w) => w.taskId === taskId);
@@ -55,7 +60,7 @@ export function TaskPage({
   );
   if (!task || !work)
     return (
-      <div className="page task-page">
+      <div className="page task-page" ref={surface} tabIndex={-1}>
         {back}
         <p className="work-none">{t('task.notFound')}</p>
       </div>
@@ -79,7 +84,7 @@ export function TaskPage({
     </button>
   );
   return (
-    <div className="page task-page">
+    <div className="page task-page" ref={surface} tabIndex={-1} aria-label={task.title}>
       {back}
       <header className="page-header task-header">
         <h1>{task.title}</h1>
@@ -100,25 +105,6 @@ export function TaskPage({
           { view: 'process', label: t('task.tab.process') },
         ]}
       />
-      {section === 'overview' &&
-        (task.stage === 'done' ? (
-          <TaskExperience task={task} state={state} onDraft={onDraft} />
-        ) : (
-          <div className="task-collaborate">
-            <p className="muted">{t('task.adjustHint')}</p>
-            <button
-              className="secondary-button"
-              onClick={() =>
-                onDraft({
-                  content: t('task.discussDraft', { title: task.title }),
-                  intent: 'discuss',
-                })
-              }
-            >
-              {t('task.discuss')}
-            </button>
-          </div>
-        ))}
       {stuck && (
         <div className="task-trouble" role="status">
           <p>
@@ -136,6 +122,25 @@ export function TaskPage({
         busy={busy}
         act={act}
         reload={reload}
+        experience={
+          task.stage === 'done' ? (
+            <TaskExperience task={task} state={state} onDraft={onDraft} />
+          ) : (
+            <div className="task-collaborate">
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  onDraft({
+                    content: t('task.discussDraft', { title: task.title }),
+                    intent: 'discuss',
+                  })
+                }
+              >
+                {t('task.discuss')}
+              </button>
+            </div>
+          )
+        }
       />
       <Fold className="task-controls" title={t('task.controls')}>
         <p className="muted task-control-hint">{t('task.controlHint')}</p>

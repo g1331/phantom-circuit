@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Page, Response } from 'playwright';
+import type { Page, Request, Response } from 'playwright';
 import type { Store } from '../src/server/store.ts';
 import type { ConversationPage, Snapshot } from '../src/shared/types.ts';
 import sharp from 'sharp';
@@ -85,15 +85,14 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
       throw error;
     }
   };
-  const record = (response: Response) => {
-    if (!response.url().includes('/api/')) return;
-    if (
-      response.url().includes('/messages') &&
-      !response.url().includes('/images/') &&
-      response.ok()
-    ) {
+  const record = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (!path.startsWith('/api/')) return;
+    if (path.endsWith('/messages')) {
       responseChecks.push(
         (async () => {
+          const response = await request.response();
+          if (!response?.ok()) return;
           const body = await readBody(response);
           if (body === undefined) return;
           const data: ConversationPage = JSON.parse(body);
@@ -103,9 +102,11 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
           network.push({ url: response.url(), count: data.entries.length, bytes: body.length });
         })(),
       );
-    } else if (response.url().includes('/api/state') && response.ok()) {
+    } else if (path === '/api/state') {
       responseChecks.push(
         (async () => {
+          const response = await request.response();
+          if (!response?.ok()) return;
           const body = await readBody(response);
           if (body === undefined) return;
           const state: Snapshot = JSON.parse(body);
@@ -120,7 +121,7 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
       );
     }
   };
-  page.on('response', record);
+  page.on('requestfinished', record);
   await page.route(`**/projects/${project.id}/messages/*/images/*`, (route) =>
     route.fulfill({ contentType: 'image/png', body: image }),
   );
@@ -410,7 +411,7 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
     await page.screenshot({ path: join(artifacts, 'history-failure.png'), animations: 'disabled' });
     throw error;
   } finally {
-    page.off('response', record);
+    page.off('requestfinished', record);
     await page.unroute(`**/projects/${project.id}/messages/*/images/*`);
   }
 }

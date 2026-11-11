@@ -135,8 +135,28 @@ export async function checkWorkspace() {
       60,
       'all owner history remains available',
     );
-    const before = await page.locator('.owner-conversation').boundingBox();
-    assert.ok(before && before.y < 600, 'owner collaboration is above engineering evidence');
+    const sectionOrder = (actionSelector: string) =>
+      page.locator('.task-workspace').evaluate((workspace, selector) => {
+        const receipt = workspace.querySelector('.task-receipt-details');
+        const action = workspace.querySelector(selector);
+        const owner = workspace.querySelector('.owner-conversation');
+        return !!(
+          receipt &&
+          action &&
+          owner &&
+          receipt.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING &&
+          action.compareDocumentPosition(owner) & Node.DOCUMENT_POSITION_FOLLOWING
+        );
+      }, actionSelector);
+    assert.equal(
+      await sectionOrder('.task-collaborate'),
+      true,
+      'receipt, collaboration and owner follow reading order',
+    );
+    const ownerInput = page.locator('.owner-conversation textarea');
+    await ownerInput.scrollIntoViewIfNeeded();
+    await ownerInput.focus();
+    assert.equal(await ownerInput.evaluate((input) => input === document.activeElement), true);
     await openSection(page, 'task.tab.spec');
     await page.reload();
     await page.getByRole('heading', { name: '需求说明', exact: true }).waitFor();
@@ -151,6 +171,12 @@ export async function checkWorkspace() {
     await page.reload();
     await page.getByRole('heading', { name: '体验与反馈', exact: true }).waitFor();
     const experience = page.locator('.task-experience');
+    await experience.waitFor();
+    assert.equal(
+      await sectionOrder('.task-experience'),
+      true,
+      'receipt, experience and owner follow reading order',
+    );
     assert.equal(await experience.getByRole('link').count(), 0);
     assert.equal(await experience.getByRole('button').count(), 1, 'feedback remains available');
     store.transaction(() =>
@@ -330,14 +356,15 @@ export async function checkWorkspace() {
       }),
     );
     await page.reload();
-    await page.getByRole('heading', { name: '已交付到项目', exact: true }).waitFor();
+    await page.locator('.task-status-group').getByText('已交付', { exact: true }).waitFor();
     assert.equal(
       await page.locator('.task-decisions').count(),
       0,
       'historical completion problems are not new decisions',
     );
     await page.locator('.historical-completion').waitFor();
-    await page.locator('.task-receipt-details > summary').click();
+    if (!(await page.locator('.task-receipt-details').evaluate((el) => el.hasAttribute('open'))))
+      await page.locator('.task-receipt-details > summary').click();
     await page.getByRole('region', { name: '交付回执', exact: true }).waitFor();
     store.updateTask(task.id, { stage: 'reviewing', control: 'active', blocked: undefined });
     store.transaction(() =>
@@ -371,7 +398,7 @@ export async function checkWorkspace() {
     );
     store.updateTask(queued.id, { stage: 'cancelled' });
     await page.reload();
-    await page.getByRole('heading', { name: '这项工作已取消', exact: true }).waitFor();
+    await page.locator('.task-status-group').getByText('已取消', { exact: true }).waitFor();
     assert.equal(
       await page.locator('.task-experience').count(),
       0,
