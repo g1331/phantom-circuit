@@ -13,6 +13,174 @@ import { command } from '../src/server/process.ts';
 import type { Task, ReviewResult, Profile } from '../src/shared/types.ts';
 import { devFixture, hang, until } from './dev-fixture.ts';
 
+for (const role of ['dev', 'review'] as const) {
+  test(`observing a merge aborts an active ${role} and ignores its late failure`, async () => {
+    const f = await devFixture('phantom-active-external-merge-');
+    const workspaces = new Workspaces(join(f.root, 'ws'), f.store);
+    f.store.updateTask(f.task.id, { issue: 1, issueBody: 'body' });
+    if (role === 'review') {
+      const prepared = await workspaces.prepare(f.store.task(f.task.id));
+      const head = await workspaces.git(prepared.worktree!, ['rev-parse', 'HEAD']);
+      f.store.updateTask(f.task.id, {
+        stage: 'reviewing',
+        head,
+        base: head,
+        tests: [{ command: 'test', exitCode: 0, output: 'pass', head, at: 'now' }],
+      });
+    }
+    let working = false;
+    let sawAbort = false;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    class Model extends Codex {
+      override async start() {}
+      override async stop() {
+        release();
+      }
+      override async thread() {
+        return `old-${role}`;
+      }
+      override async turn(
+        _thread: string,
+        _prompt: string,
+        _profile: unknown,
+        signal?: AbortSignal,
+      ): Promise<string> {
+        working = true;
+        signal?.addEventListener(
+          'abort',
+          () => {
+            sawAbort = true;
+          },
+          { once: true },
+        );
+        await gate;
+        throw new Error('Late original worker failure');
+      }
+    }
+    let merged = false;
+    let writes = 0;
+    class Remote extends GitHub {
+      override async syncStatus() {}
+      override async gh(args: string[], input?: string) {
+        if (args[1] === 'graphql') {
+          const query = JSON.parse(input!);
+          assert.doesNotMatch(query.query, /mutation/);
+          return {
+            stdout: JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    number: 9,
+                    closingIssuesReferences: {
+                      nodes: [{ number: 1, repository: { nameWithOwner: 'fixture/source' } }],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  },
+                  issue: {
+                    number: 1,
+                    state: 'CLOSED',
+                    stateReason: 'COMPLETED',
+                    timelineItems: {
+                      nodes: [
+                        {
+                          __typename: 'ClosedEvent',
+                          createdAt: '2026-11-10T08:47:41Z',
+                          closer: {
+                            __typename: 'PullRequest',
+                            number: 9,
+                            repository: { nameWithOwner: 'fixture/source' },
+                          },
+                        },
+                      ],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  },
+                },
+              },
+            }),
+            stderr: '',
+            code: 0,
+          };
+        }
+        if (args[args.indexOf('--method') + 1] !== 'GET') {
+          writes++;
+          throw new Error('Remote writes forbidden');
+        }
+        const response = args[1].endsWith('/pulls/9')
+          ? {
+              number: 9,
+              html_url: 'https://github.com/fixture/source/pull/9',
+              state: 'closed',
+              merged: true,
+              merged_at: '2026-11-10T08:47:41Z',
+              merge_commit_sha: 'd'.repeat(40),
+              body: '',
+              head: { sha: 'a'.repeat(40), ref: 'outside', repo: { full_name: 'fixture/source' } },
+              base: { sha: 'b'.repeat(40), ref: 'main', repo: { full_name: 'fixture/source' } },
+            }
+          : {
+              body: 'body',
+              state: merged ? 'closed' : 'open',
+              state_reason: 'completed',
+              closed_at: '2026-11-10T08:47:41Z',
+            };
+        return { stdout: JSON.stringify(response), stderr: '', code: 0 };
+      }
+    }
+    const engine = new Engine(f.store, new Remote(f.store), workspaces, f.root, () => new Model());
+    try {
+      await engine.start();
+      await engine.tick();
+      await until(() => working, `${role} executing`);
+      f.store.updateTask(f.task.id, { pr: 9 });
+      const before = f.store.task(f.task.id);
+      merged = true;
+      await engine.sync();
+      assert.equal(sawAbort, true, 'remote observation aborts the old engineering turn');
+      const observed = f.store.task(f.task.id);
+      assert.notEqual(observed.stage, 'done', 'settlement waits for the old worker callbacks');
+      release();
+      await until(() => !engine.active.size, 'old exception callbacks drained');
+      await engine.stop();
+      const after = f.store.task(f.task.id);
+      for (const key of [
+        'stage',
+        'control',
+        'pausedByUser',
+        'head',
+        'base',
+        'devPhase',
+        'ownerRunId',
+        'devThreadId',
+        'retries',
+        'tests',
+        'reviews',
+        'blocked',
+      ] as const)
+        assert.deepEqual(after[key], before[key], `late callback preserves ${key}`);
+      assert.deepEqual(after.remoteMerge, observed.remoteMerge);
+      assert.equal(after.issueState, 'completed');
+      assert.equal(f.store.list('incident').length, 0);
+      assert.equal(f.store.list('run').length, 1);
+      assert.equal(writes, 0);
+      assert.equal(f.store.claimNext(), undefined);
+      await engine.sync();
+      assert.equal(f.store.task(f.task.id).stage, 'done');
+      assert.equal(f.store.task(f.task.id).completion?.source, 'external');
+      assert.equal(f.store.list('run').length, 1, 'settlement starts no model or retrospective');
+      assert.equal(writes, 0);
+    } finally {
+      release();
+      await engine.stop();
+      f.store.close();
+      await rm(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    }
+  });
+}
+
 for (const scope of ['task', 'team'] as const)
   test(`${scope} pause remains authoritative after a running Dev stops`, async () => {
     const f = await devFixture('phantom-dev-user-pause-');

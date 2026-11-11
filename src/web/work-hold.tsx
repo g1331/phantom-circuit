@@ -5,6 +5,14 @@ import { useLocale } from './locale/provider.tsx';
 export function WorkHold({ work, showStatus = true }: { work: TeamWork; showStatus?: boolean }) {
   const { t } = useLocale();
   if (!work.teamHold) return null;
+  if (work.attention === 'needs_user')
+    return <span className="work-hold attention-pending">{t('team.attention.needs_user')}</span>;
+  if (work.externalDeliveryPending)
+    return (
+      <span className="work-hold attention-pending">
+        {t(work.externalMergePending ? 'task.remoteMerged' : 'task.externalPending')}
+      </span>
+    );
   return (
     <span className={`work-hold attention-${work.teamHold === 'blocked' ? 'blocked' : 'none'}`}>
       {showStatus && <>{t(`work.hold.${work.teamHold}`)} · </>}

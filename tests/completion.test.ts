@@ -6,10 +6,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/store.ts';
 import { GitHub, GitHubRejected, type PullState } from '../src/server/github.ts';
-import { Engine } from '../src/server/engine.ts';
+import { Engine, mergeReady } from '../src/server/engine.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Codex } from '../src/server/codex.ts';
 import type { Task } from '../src/shared/types.ts';
+import { hasOwner, teamView, workGroup } from '../src/shared/team.ts';
+import {
+  taskAttention,
+  taskDeliveryHead,
+  taskDeliveryRevision,
+} from '../src/shared/task-history.ts';
+import { deliveryPreview } from '../src/shared/delivery-preview.ts';
+import { completionNotice } from '../src/server/delivery-runtime.ts';
+import { renderReport } from '../src/server/report.ts';
 
 function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
   let store = new Store(dbPath);
@@ -154,6 +163,9 @@ function fixture(source = '.', dataDir = '.cache', dbPath = ':memory:') {
     unmerged: () => {
       merged = false;
     },
+    merged: () => {
+      merged = true;
+    },
     lose: () => {
       lost = true;
     },
@@ -217,7 +229,7 @@ for (const message of [
       const attempts = calls;
       await engine.sync();
       assert.equal(calls, attempts);
-      assert.deepEqual(f.task(), before);
+      assert.deepEqual(f.task(), { ...before, prState: 'merged', issueState: 'open' });
     }
     assert.equal(calls, 6);
     assert.equal(f.store.events().filter((e) => e.type === 'sync').length, 6);
@@ -510,6 +522,7 @@ for (const control of ['paused', 'active'] as const)
 
 test('revise_task publishes unchecked criteria and invalidates evidence until the new revision passes', async () => {
   const f = await repositoryFixture();
+  f.unmerged();
   const engine = f.engine();
   try {
     const old = f.task();
@@ -538,6 +551,7 @@ test('revise_task publishes unchecked criteria and invalidates evidence until th
       tests: old.tests.map((t) => ({ ...t, head: 'revised-head' })),
       reviews: old.reviews.map((r) => ({ ...r, head: 'revised-head' })),
     });
+    f.merged();
     await engine.sync();
     assert.equal(f.task().stage, 'done');
     assert.match(f.remote.body, /- \[x\] Revised behavior works/);
@@ -560,7 +574,7 @@ test('an externally merged PR without deterministic merge evidence cannot comple
     await engine.sync();
     assert.equal(f.task().stage, 'merging');
     assert.equal(f.writes(), 0);
-    assert.match(f.task().blocked ?? '', /验收证据|合并状态/);
+    assert.match(taskAttention(f.task()).blocked ?? '', /远端已合并.*待团队核对/);
     assert.equal(f.pmCalls(), 0, 'merge completion must not call PM for an acceptance decision');
   } finally {
     await engine.stop();
@@ -755,6 +769,375 @@ test('a new fixed-revision failure on a settled Task stays actionable on repeate
       undefined,
       'a different cause clears the previous diagnostic',
     );
+  } finally {
+    await engine.stop();
+    f.store.close();
+  }
+});
+
+for (const mode of [
+  'drift-resume',
+  'matched-no-review',
+  'drift-reassign',
+  'paginated',
+  'same-pr-closer',
+  'missing-relationship',
+  'wrong-closure',
+  'incomplete-page',
+  'relation-read-failure',
+  'legacy-marker',
+  'issue-only',
+  'issue-only-missing',
+  'issue-only-not-planned',
+  'issue-only-observed-not-planned',
+] as const) {
+  test(`external delivery settles original development through ${mode}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'phantom-external-settle-'));
+    const f = fixture('.', root, join(root, 'state.sqlite'));
+    const adopt = [
+      'drift-resume',
+      'matched-no-review',
+      'drift-reassign',
+      'paginated',
+      'same-pr-closer',
+      'issue-only',
+    ].includes(mode);
+    const issueOnly = mode.startsWith('issue-only');
+    const remoteHead = 'a'.repeat(40);
+    const localHead = mode === 'matched-no-review' ? remoteHead : 'b'.repeat(40);
+    const base = 'c'.repeat(40);
+    const mergeCommit = 'd'.repeat(40);
+    const oldRun = f.store.run('dev', f.task().projectId, 'backend', f.task());
+    f.store.finishRun(oldRun.id, 'completed');
+    f.patch({
+      stage: 'developing',
+      head: localHead,
+      base,
+      worktree: 'never-open-user-worktree',
+      ownerRunId: oldRun.id,
+      devThreadId: 'original-owner-thread',
+      retries: 2,
+      tests: [{ command: 'test', exitCode: 0, output: 'pass', head: remoteHead, at: 'now' }],
+      reviews: [],
+      mergeApproval: undefined,
+      pr: issueOnly ? undefined : 2,
+      prState: issueOnly ? undefined : 'merged',
+    });
+    if (mode === 'issue-only-observed-not-planned')
+      f.patch({
+        issueState: 'completed',
+        remoteMerge: {
+          repoId: f.task().repoId,
+          repository: 'example/repo',
+          pr: 3,
+          head: 'e'.repeat(40),
+          base,
+          baseRef: 'main',
+          mergeCommit: 'f'.repeat(40),
+          mergedAt: '2026-11-10T08:47:41Z',
+          checkedAt: '2026-11-10T08:47:42Z',
+        },
+      });
+    f.store.control(f.task().id, 'pause', { source: 'user', reason: 'original_pause' });
+    f.store.put('run', oldRun.id, { ...oldRun, status: 'running' });
+    const recovery = f.store.recover().find((item) => item.oldRunId === oldRun.id)!;
+    const incident = f.store.createIncident({
+      projectId: f.task().projectId,
+      taskId: f.task().id,
+      phase: 'validation',
+      message: 'Original diagnosis',
+      evidence: 'Original evidence',
+    });
+    f.store.updateIncident(incident.id, { status: 'waiting_user' });
+    const before = f.task();
+    f.store.patchRepo(before.repoId, { enabled: true });
+    const dependent = f.store.createTask({
+      projectId: before.projectId,
+      repoId: before.repoId,
+      sourceMessageId: before.sourceMessageId,
+      title: 'Dependent',
+      spec: 'Next',
+      acceptance: ['Works'],
+      dependencies: [before.id],
+      kind: 'backend',
+      complexity: 'normal',
+      priority: 0,
+    });
+    f.store.control(dependent.id, 'pause');
+    const controls = f.store.taskEvents(before.id).filter((event) => event.control);
+    let issueReads = 0;
+    class Remote extends GitHub {
+      override async gh(args: string[], input?: string) {
+        let response: unknown;
+        if (args[1] === 'graphql') {
+          if (mode === 'relation-read-failure') throw new Error('Relation read unavailable');
+          const query = JSON.parse(input!);
+          assert.doesNotMatch(query.query, /mutation/);
+          const firstPage = mode === 'paginated' && !query.variables.prCursor;
+          response = {
+            data: {
+              repository: {
+                pullRequest: {
+                  number: query.variables.pr,
+                  closingIssuesReferences: {
+                    nodes:
+                      mode === 'missing-relationship' || mode === 'issue-only-missing' || firstPage
+                        ? []
+                        : [{ number: 1, repository: { nameWithOwner: 'example/repo' } }],
+                    pageInfo: {
+                      hasNextPage: mode === 'incomplete-page' || firstPage,
+                      endCursor: firstPage ? 'next-pr' : null,
+                    },
+                  },
+                },
+                issue: {
+                  number: 1,
+                  state: 'CLOSED',
+                  stateReason: 'COMPLETED',
+                  timelineItems: {
+                    nodes: firstPage
+                      ? [{ __typename: 'ReopenedEvent', createdAt: '2026-11-10T08:00:00Z' }]
+                      : [
+                          {
+                            __typename: 'ClosedEvent',
+                            createdAt: '2026-11-10T08:47:42Z',
+                            closer: {
+                              __typename: 'PullRequest',
+                              number: mode === 'same-pr-closer' ? 2 : 3,
+                              repository: {
+                                nameWithOwner:
+                                  mode === 'wrong-closure' ? 'other/repo' : 'example/repo',
+                              },
+                            },
+                          },
+                        ],
+                    pageInfo: {
+                      hasNextPage: firstPage,
+                      endCursor: firstPage ? 'next-issue' : null,
+                    },
+                  },
+                },
+              },
+            },
+          };
+        } else if (/\/pulls\/[23]$/.test(args[1])) {
+          assert.equal(args[args.indexOf('--method') + 1], 'GET');
+          const closing = args[1].endsWith('/3');
+          response = {
+            number: closing ? 3 : 2,
+            html_url: 'https://github.com/example/repo/pull/2',
+            state: 'closed',
+            merged: true,
+            merged_at: '2026-11-10T08:47:41Z',
+            merge_commit_sha:
+              mode === 'legacy-marker' ? null : closing ? 'f'.repeat(40) : mergeCommit,
+            head: {
+              sha: closing ? 'e'.repeat(40) : remoteHead,
+              ref: 'external-branch',
+              repo: { full_name: 'example/repo' },
+            },
+            base: { sha: base, ref: 'main', repo: { full_name: 'example/repo' } },
+            body: '',
+          };
+        } else if (args[1].endsWith('/issues/1')) {
+          issueReads++;
+          response = {
+            state: 'closed',
+            state_reason: mode.endsWith('not-planned') ? 'not_planned' : 'completed',
+            body: before.issueBody,
+            closed_at: '2026-11-10T08:47:42Z',
+          };
+        } else throw new Error(`Unexpected remote read: ${args[1]}`);
+        return { stdout: JSON.stringify(response), stderr: '', code: 0 };
+      }
+    }
+    class UntouchedWorkspaces extends Workspaces {
+      override async assertTask() {}
+    }
+    const engine = new Engine(
+      f.store,
+      new Remote(f.store),
+      new UntouchedWorkspaces('never-open-workspaces', f.store),
+      '.',
+      () => {
+        throw new Error('Model calls forbidden');
+      },
+    );
+    try {
+      await engine.sync();
+      const eventCount = f.store.events().length;
+      await engine.sync();
+      assert.equal(f.store.events().length, eventCount, 'repeated merge observation adds no event');
+      if (mode.endsWith('not-planned')) {
+        assert.equal(f.task().stage, 'cancelled');
+        assert.equal(f.task().completion, undefined);
+        assert.equal(f.messages().length, 0);
+        return;
+      }
+      if (!adopt) {
+        assert.equal(f.task().stage, before.stage);
+        assert.equal(f.task().completion, undefined);
+        assert.ok(f.task().externalCompletionPendingReason);
+        f.store.control(dependent.id, 'resume');
+        assert.equal(
+          f.store.claimNext(),
+          undefined,
+          'unknown relationships do not release dependencies',
+        );
+        await assert.rejects(engine.resume(before.id), /待团队核对/);
+        assert.equal(f.task().pausedByUser, true);
+        assert.equal(f.task().ownerRunId, oldRun.id);
+        assert.equal(f.messages().length, 0);
+        return;
+      }
+      let refusal: unknown;
+      try {
+        if (mode === 'drift-reassign')
+          await engine.reassign(before.id, { source: 'user', reason: 'test_reassign' });
+        else await engine.resume(before.id, undefined, { source: 'user', reason: 'test_resume' });
+      } catch (error) {
+        refusal = error;
+      }
+      f.store.control(dependent.id, 'resume');
+      assert.equal(
+        f.store.claimNext()?.taskId,
+        dependent.id,
+        'only the released dependency may claim',
+      );
+      assert.match(String(refusal), /任务已经结束/);
+      assert.equal(issueReads, 1, 'settled external delivery leaves the polling loop');
+      assert.equal(f.task().issueState, 'completed');
+      assert.equal(f.task().stage, 'done');
+      const completion = f.task().completion;
+      assert.equal(completion?.source, 'external');
+      assert.ok(completion?.source === 'external');
+      assert.equal(completion.localCheckpoint.stage, before.stage);
+      assert.equal(completion.primary.pr, issueOnly ? 3 : 2);
+      assert.equal(completion.closing.pr, mode === 'same-pr-closer' ? 2 : 3);
+      assert.equal(f.task().pr, before.pr, 'original PR binding is never silently replaced');
+      const deliveredHead = issueOnly ? 'e'.repeat(40) : remoteHead;
+      const deliveredCommit = issueOnly ? 'f'.repeat(40) : mergeCommit;
+      assert.equal(taskDeliveryHead(f.task()), deliveredHead);
+      assert.deepEqual(taskDeliveryRevision(f.task()), {
+        head: deliveredHead,
+        commit: deliveredCommit,
+      });
+      assert.equal(mergeReady(f.task()), false, 'host review remains absent');
+      assert.equal(f.task().control, 'paused');
+      assert.equal(f.task().pausedByUser, true);
+      assert.equal(f.task().head, localHead);
+      assert.equal(f.task().ownerRunId, oldRun.id);
+      assert.equal(f.task().devThreadId, before.devThreadId);
+      assert.equal(f.task().retries, 2);
+      assert.deepEqual(f.task().tests, before.tests);
+      assert.deepEqual(f.task().reviews, []);
+      assert.deepEqual(
+        f.store.taskEvents(before.id).filter((event) => event.control),
+        controls,
+      );
+      assert.equal(hasOwner(f.task()), false);
+      assert.equal(taskAttention(f.task()).paused, false);
+      const work = teamView(f.store.snapshot(), before.projectId).work.find(
+        (work) => work.taskId === before.id,
+      )!;
+      assert.equal(workGroup(work), 'delivered');
+      assert.equal(f.messages().length, 1);
+      assert.equal(f.messages()[0].descriptor?.code, 'delivery_external_completed');
+      const notice = await completionNotice(f.task(), f.store.repo(before.repoId), {
+        kind: 'unknown',
+        source: 'must-not-read-original-checkout',
+      });
+      assert.equal(notice.descriptor.code, 'delivery_external_completed');
+      const report = renderReport({
+        file: 'memory',
+        readAt: new Date().toISOString(),
+        events: [],
+        documents: [
+          {
+            kind: 'project',
+            id: before.projectId,
+            body: JSON.stringify(f.store.project(before.projectId)),
+          },
+          { kind: 'repo', id: before.repoId, body: JSON.stringify(f.store.repo(before.repoId)) },
+          { kind: 'task', id: before.id, body: JSON.stringify(f.task()) },
+        ],
+      });
+      assert.match(report, /确认合并任务：1；历史 done 未确认：0/);
+      assert.match(report, /来源=external/);
+      assert.equal(
+        f.store.events().filter((event) => event.type === 'external-completion').length,
+        1,
+      );
+      const previewRepo = {
+        ...f.store.repo(before.repoId),
+        preview: {
+          status: 'running' as const,
+          url: 'http://localhost:7777',
+          revision: deliveredCommit,
+          taskHeads: [deliveredHead],
+        },
+      };
+      assert.equal(deliveryPreview(f.task(), [previewRepo]), undefined);
+      assert.ok(
+        deliveryPreview(f.task(), [
+          {
+            ...previewRepo,
+            preview: {
+              ...previewRepo.preview,
+              deliveryCommits: [deliveredCommit, 'f'.repeat(40)],
+            },
+          },
+        ]),
+      );
+      assert.equal(f.store.get('incident', incident.id)?.message, 'Original diagnosis');
+      assert.equal(f.store.get('incident', incident.id)?.status, 'waiting_user');
+      assert.ok(f.store.get('incident', incident.id)?.supersededByExternalCompletionAt);
+      assert.equal(f.store.get('recovery', recovery.id)?.successorRunId, undefined);
+      assert.ok(f.store.get('recovery', recovery.id)?.supersededByExternalCompletionAt);
+      f.reopen();
+      const settled = f.task();
+      const restarted = new Engine(
+        f.store,
+        new Remote(f.store),
+        new UntouchedWorkspaces('unused', f.store),
+        '.',
+        () => {
+          throw new Error('No retrospective model');
+        },
+      );
+      await restarted.sync();
+      assert.deepEqual(f.task(), settled, 'external done bypasses host evidence and remote writes');
+      assert.equal(f.messages().length, 1);
+      await restarted.resumeRecovery(before.projectId, recovery.id);
+      assert.equal(f.store.get('recovery', recovery.id)?.successorRunId, undefined);
+    } finally {
+      f.store.close();
+    }
+  });
+}
+
+test('PM revision preserves remotely merged requirements and evidence', async () => {
+  const f = await repositoryFixture();
+  f.patch({
+    stage: 'developing',
+    worktree: 'must-not-open',
+    control: 'paused',
+    pausedByUser: true,
+  });
+  const before = f.task();
+  const engine = f.engine();
+  f.revise();
+  try {
+    const message = f.store.addMessage(before.projectId, 'user', 'Revise the behavior', 'feedback');
+    await assert.rejects(engine.chat(message), /远端已合并/);
+    assert.equal(f.task().spec, before.spec);
+    assert.deepEqual(f.task().acceptance, before.acceptance);
+    assert.deepEqual(f.task().tests, before.tests);
+    assert.deepEqual(f.task().reviews, before.reviews);
+    assert.equal(f.task().pausedByUser, true);
+    assert.equal(f.task().stage, before.stage);
+    assert.equal(f.writes(), 0);
+    assert.equal(f.store.claimNext(), undefined);
   } finally {
     await engine.stop();
     f.store.close();

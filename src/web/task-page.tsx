@@ -2,6 +2,11 @@ import { useLayoutEffect, useMemo, useRef } from 'react';
 import { ArrowLeft, Pause, Play, Undo2, UserRoundPlus } from 'lucide-react';
 import type { Message, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { maxReworks, teamView, workGroup } from '../shared/team.ts';
+import {
+  externalDeliveryHold,
+  isExternalDelivery,
+  taskDeliveryPR,
+} from '../shared/task-history.ts';
 import { api } from './api.ts';
 import { DeferredTaskDetail } from './deferred-panels.tsx';
 import { Fold, PageTabs } from './fold.tsx';
@@ -9,7 +14,7 @@ import { TaskExperience } from './task-experience.tsx';
 import type { TaskView } from './task-detail.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
-import { EngineeringReference } from './engineering-reference.tsx';
+import { deliveryPRUrl, EngineeringReference } from './engineering-reference.tsx';
 
 export const profileKeys = {
   backend: 'profile.backend',
@@ -67,12 +72,13 @@ export function TaskPage({
     );
   const group = workGroup(work);
   const finished = task.stage === 'done' || task.stage === 'cancelled';
+  const held = externalDeliveryHold(task);
   const section: TaskView =
     requested === 'spec' || requested === 'process' ? requested : 'overview';
   const rounds = task.feedback.length + (task.pendingFeedback?.length ?? 0);
   const devWorking = view.members.some((m) => m.taskId === taskId && m.role === 'dev');
   // A fresh developer only helps unfinished work that already has code and nobody on it now.
-  const canReassign = !!task.worktree && !['done', 'cancelled'].includes(task.stage) && !devWorking;
+  const canReassign = !!task.worktree && !finished && !held && !devWorking;
   const stuck = canReassign && (work.rounds >= maxReworks || work.attention === 'blocked');
   const reassign = (
     <button
@@ -88,9 +94,21 @@ export function TaskPage({
       {back}
       <header className="page-header task-header">
         <h1>{task.title}</h1>
-        <p className={`task-status group-${group}`} data-hold={work.teamHold}>
+        <p
+          className={`task-status group-${group}`}
+          data-hold={work.teamHold}
+          data-external-pending={held || undefined}
+        >
           <span className="task-status-group">
-            {work.teamHold ? t(`work.hold.${work.teamHold}`) : t(`work.group.${group}`)}
+            {work.attention === 'needs_user'
+              ? t('team.attention.needs_user')
+              : isExternalDelivery(task)
+                ? t('receipt.external')
+                : work.externalDeliveryPending
+                  ? t(work.externalMergePending ? 'task.remoteMerged' : 'task.externalPending')
+                  : work.teamHold
+                    ? t(`work.hold.${work.teamHold}`)
+                    : t(`work.group.${group}`)}
           </span>
           {group === 'moving' && !work.teamHold && <span>{t(`team.step.${work.step}`)}</span>}
         </p>
@@ -123,7 +141,7 @@ export function TaskPage({
         act={act}
         reload={reload}
         experience={
-          task.stage === 'done' ? (
+          task.stage === 'done' || held ? (
             <TaskExperience task={task} state={state} onDraft={onDraft} />
           ) : (
             <div className="task-collaborate">
@@ -143,7 +161,7 @@ export function TaskPage({
         }
       />
       <Fold className="task-controls" title={t('task.controls')}>
-        <p className="muted task-control-hint">{t('task.controlHint')}</p>
+        {!finished && !held && <p className="muted task-control-hint">{t('task.controlHint')}</p>}
         <div className="task-interventions" role="group" aria-label={t('task.controls')}>
           {canReassign && !stuck && reassign}
           {task.stage === 'done' && (
@@ -153,7 +171,7 @@ export function TaskPage({
                 onDraft({
                   content: t('task.rollbackDraft', {
                     title: task.title,
-                    pr: task.pr ? ` (PR #${task.pr})` : '',
+                    pr: taskDeliveryPR(task) ? ` (PR #${taskDeliveryPR(task)})` : '',
                   }),
                   intent: 'implement',
                 })
@@ -162,7 +180,7 @@ export function TaskPage({
               <Undo2 size={14} /> {t('task.rollback')}
             </button>
           )}
-          {!finished && (
+          {!finished && !held && (
             <>
               <button
                 className="secondary-button"
@@ -185,9 +203,11 @@ export function TaskPage({
               </button>
             </>
           )}
-          {(task.issueUrl || task.prUrl) && <span className="task-links-gap" aria-hidden="true" />}
+          {(task.issueUrl || deliveryPRUrl(task)) && (
+            <span className="task-links-gap" aria-hidden="true" />
+          )}
           {task.issueUrl && <EngineeringReference task={task} kind="issue" external />}
-          {task.prUrl && <EngineeringReference task={task} kind="pr" external />}
+          {deliveryPRUrl(task) && <EngineeringReference task={task} kind="pr" external />}
         </div>
         <p className="muted task-technical-profile">{t(profileKeys[task.profile])}</p>
       </Fold>

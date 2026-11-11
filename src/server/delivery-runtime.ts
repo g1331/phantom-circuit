@@ -7,6 +7,13 @@ import { runtimePath } from './runtime-paths.ts';
 import type { Repo, Task } from '../shared/types.ts';
 import { deliveryPreview } from '../shared/delivery-preview.ts';
 import { renderHostMessage } from '../shared/host-messages.ts';
+import {
+  taskDeliveryHead,
+  taskDeliveryRevision,
+  taskDeliveryCommits,
+  isExternalDelivery,
+  externalDeliveryNotice,
+} from '../shared/task-history.ts';
 
 const releaseSchema = z.object({
   source: z.string(),
@@ -116,24 +123,29 @@ export async function deliveryVersion(
       ? source.toLowerCase() === runtimeSource.toLowerCase()
       : source === runtimeSource;
   if (!matches) return 'other';
-  const delivery = task.deliveryRevision;
-  const revision = delivery && delivery.head === task.head ? delivery.commit : task.head;
+  const delivery = taskDeliveryRevision(task);
+  const revision = delivery?.commit ?? taskDeliveryHead(task);
   if (runtime.kind !== 'release' || !runtime.revision || !revision) return 'unknown';
-  const included = await command(
-    'git',
-    ['merge-base', '--is-ancestor', revision, runtime.revision],
-    source,
-    undefined,
-    10000,
-    false,
+  const included = await Promise.all(
+    taskDeliveryCommits(task).map((commit) =>
+      command(
+        'git',
+        ['merge-base', '--is-ancestor', commit, runtime.revision!],
+        source,
+        undefined,
+        10000,
+        false,
+      ),
+    ),
   );
-  if (included.code === 0) return 'current';
-  if (included.code !== 1) return 'unknown';
+  if (included.every((result) => result.code === 0)) return 'current';
+  if (included.some((result) => result.code !== 0 && result.code !== 1)) return 'unknown';
   // A bare feature head may have been rebased; a confirmed squash commit identifies the delivery.
-  return delivery && delivery.head === task.head ? 'pending' : 'unknown';
+  return delivery ? 'pending' : 'unknown';
 }
 
 export async function completionNotice(task: Task, repo: Repo, runtime: DeliveryRuntime) {
+  if (isExternalDelivery(task)) return externalDeliveryNotice(task);
   const version = await deliveryVersion(task, repo, runtime);
   const preview = version === 'other' ? deliveryPreview(task, [repo]) : undefined;
   const code =

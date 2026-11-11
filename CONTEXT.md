@@ -25,10 +25,10 @@ _Avoid_: Dev chat, steer
 **Reassign**: Handing an unfinished Task to a fresh Dev. The worktree and branch stay; the previous Dev's conversation does not, and the rework budget restarts.
 _Avoid_: retry, restart
 
-**Brief**: The user's summary beside the conversation: what needs them, what is in progress, and what was delivered since they last looked.
+**Brief**: The user's summary of what needs them, what is in progress, and what was delivered since they last looked.
 _Avoid_: dashboard, feed
 
-**Receipt**: A Task's delivery record as the user reads it: acceptance, host validation at the pinned head, the independent review verdict with its model, and the merge.
+**Receipt**: A Task's delivery record as the user reads it: acceptance, recorded validation and review at their fixed versions, the merge, and the delivery source.
 _Avoid_: report, evidence log
 
 **Run**: One bounded execution of a PM, Dev, Review or On-call role.
@@ -39,6 +39,9 @@ _Avoid_: Kill switch, pause
 
 **Engineering completion**: Confirmed merge of work satisfying the task's verification and review requirements.
 _Avoid_: User acceptance, turn completion
+
+**External delivery**: A Task completed outside Phantom Circuit, with its linked merged work and completed Issue verified.
+_Avoid_: Phantom Circuit validation, reassign
 
 **Experience feedback**: A user's observations of delivered behavior, used to initiate a related improvement or repair.
 _Avoid_: Code review

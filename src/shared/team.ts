@@ -1,5 +1,12 @@
 import type { Role, Run, Snapshot, Task } from './types.ts';
-import { incidentAttention } from './task-history.ts';
+import {
+  incidentAttention,
+  pendingExternalMerge,
+  externalDevelopmentHeld,
+  taskCompletionAt,
+  externalDeliveryHold,
+  externalDeliveryHoldReason,
+} from './task-history.ts';
 
 /**
  * The team view (ADR 0013): what the team and each member are doing, in codes the interface
@@ -35,6 +42,8 @@ export interface TeamWork {
   title: string;
   step: WorkStep;
   attention: WorkAttention;
+  externalMergePending?: boolean;
+  externalDeliveryPending?: boolean;
   teamHold?: 'running' | 'queued' | 'blocked';
   teamNext?: 'registration' | 'validation' | 'diagnosis';
   /** Host-written reason when the work is held; shown as-is. */
@@ -74,7 +83,10 @@ export interface TeamView {
 
 /** A Task has an owner to talk with once a Dev opened its worktree, until the work finishes. */
 export const hasOwner = (task: Task) =>
-  !!task.worktree && task.stage !== 'done' && task.stage !== 'cancelled';
+  !!task.worktree &&
+  task.stage !== 'done' &&
+  task.stage !== 'cancelled' &&
+  !externalDevelopmentHeld(task);
 
 // A `waiting` Run is held on the user (a Clarification), which the room shows as a request.
 const live = (run: Run) => run.status === 'running';
@@ -110,24 +122,33 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
   const tasks = new Map(state.tasks.filter((t) => t.projectId === projectId).map((t) => [t.id, t]));
   const runs = state.runs.filter((r) => r.projectId === projectId);
   const active = runs.filter(live);
-  const members: TeamMember[] = active.map((run) => {
-    const task = run.taskId ? tasks.get(run.taskId) : undefined;
-    return {
-      id: run.id,
-      role: run.role,
-      activity: activity(run, task),
-      runId: run.id,
-      ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
-      since: run.startedAt,
-      ...(run.modelIdentity?.model ? { model: run.modelIdentity.model } : {}),
-    };
-  });
+  const members: TeamMember[] = active
+    .filter((run) => {
+      const task = run.taskId ? tasks.get(run.taskId) : undefined;
+      return run.role === 'pm' || !task || !externalDevelopmentHeld(task);
+    })
+    .map((run) => {
+      const task = run.taskId ? tasks.get(run.taskId) : undefined;
+      return {
+        id: run.id,
+        role: run.role,
+        activity: activity(run, task),
+        runId: run.id,
+        ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
+        since: run.startedAt,
+        ...(run.modelIdentity?.model ? { model: run.modelIdentity.model } : {}),
+      };
+    });
   // Only working members are listed: an idle seat costs attention and tells the user nothing.
   const order: Role[] = ['pm', 'dev', 'review', 'oncall'];
   members.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
 
   const clarifications = (state.clarifications ?? []).filter(
-    (c) => c.projectId === projectId && c.status === 'open' && c.questions.length > 0,
+    (c) =>
+      c.projectId === projectId &&
+      c.status === 'open' &&
+      c.questions.length > 0 &&
+      !(c.taskId && tasks.has(c.taskId) && externalDevelopmentHeld(tasks.get(c.taskId)!)),
   );
   const decisions = (state.incidents ?? []).filter(
     (i) =>
@@ -168,6 +189,41 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       .at(-1);
   const work: TeamWork[] = [];
   for (const task of tasks.values()) {
+    const incident = state.incidents?.findLast(
+      (i) =>
+        i.projectId === projectId && i.taskId === task.id && incidentAttention(i, task).actionable,
+    );
+    const teamNext: TeamWork['teamNext'] =
+      incident?.phase === 'sync'
+        ? 'registration'
+        : incident?.phase === 'validation'
+          ? 'validation'
+          : 'diagnosis';
+    const externalPending = externalDeliveryHold(task);
+    if (externalPending || (externalDevelopmentHeld(task) && incident)) {
+      work.push({
+        taskId: task.id,
+        title: task.title,
+        step: externalPending ? 'delivering' : steps[task.stage],
+        attention: asked.has(task.id) ? 'needs_user' : 'blocked',
+        ...(externalPending
+          ? {
+              externalMergePending: pendingExternalMerge(task),
+              externalDeliveryPending: true,
+            }
+          : {}),
+        teamHold: 'blocked',
+        ...(incident ? { teamNext } : {}),
+        reason: incident?.message ?? externalDeliveryHoldReason(task),
+        owners: [],
+        rounds: task.retries,
+        updatedAt: task.updatedAt,
+        ...(!externalPending
+          ? { settledAt: taskCompletionAt(task) ?? settled(task.id) ?? task.updatedAt }
+          : {}),
+      });
+      continue;
+    }
     const owners = [...new Set(active.filter((r) => r.taskId === task.id).map((r) => r.role))];
     const held = task.control === 'paused' && !['done', 'cancelled'].includes(task.stage);
     const attention: WorkAttention =
@@ -189,15 +245,6 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
         r.pauseProvenance !== 'terminal' &&
         !r.pausedByUser,
     );
-    const incident = state.incidents?.findLast(
-      (i) => i.projectId === projectId && i.taskId === task.id && i.status !== 'resolved',
-    );
-    const teamNext: TeamWork['teamNext'] =
-      incident?.phase === 'sync'
-        ? 'registration'
-        : incident?.phase === 'validation'
-          ? 'validation'
-          : 'diagnosis';
     work.push({
       taskId: task.id,
       title: task.title,
@@ -218,7 +265,7 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
       rounds: task.retries,
       updatedAt: task.updatedAt,
       ...(task.stage === 'done' || task.stage === 'cancelled'
-        ? { settledAt: settled(task.id) ?? task.updatedAt }
+        ? { settledAt: taskCompletionAt(task) ?? settled(task.id) ?? task.updatedAt }
         : {}),
     });
   }
@@ -258,8 +305,9 @@ export const workGroups: WorkGroup[] = [
 ];
 export function workGroup(work: TeamWork): WorkGroup {
   if (work.step === 'cancelled') return 'cancelled';
-  if (work.step === 'done') return 'delivered';
   if (work.attention === 'needs_user') return 'needs_you';
+  if (work.externalDeliveryPending || work.externalMergePending) return 'moving';
+  if (work.step === 'done') return 'delivered';
   if (work.attention === 'paused') return 'paused';
   if (work.attention === 'blocked') return 'moving';
   return work.step === 'planned' && !work.owners.length ? 'queued' : 'moving';

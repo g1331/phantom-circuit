@@ -343,7 +343,7 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
     `读取时间：${snapshot.readAt}`,
     `数据来源：${snapshot.file}`,
     '口径：全部持久记录；确认合并按 Task ID；token 先汇总 Task 全部归属 Run，再取中位数；墙钟=createdAt→merged_at。',
-    '合并证据：done merge-pr operation + Task/revision/PR/Project Repo 身份；普通 done/聊天/交接时间不证明合并。',
+    '合并证据：宿主 merge-pr 固定版本记录，或 external completion 固定版本与 Issue 关闭关系；来源分别保留。',
     '干预覆盖：Task“无”仅表示未发现已确认干预证据，历史完整性仍为 unknown；无干预率仅为保守下界。',
     'watchdog 证据：type=watchdog Event 或宿主 Watchdog：/Error: Watchdog：前缀；按 Run ID 去重，一般失败不计。',
     '干预归因：用户讨论/反馈仅按同 Project 持久关联或完整 Task ID/唯一 #Issue/精确 Issue URL；共享来源不扩散，原始实施请求排除。Task.createdAt 为本地发布边界，createdAt≤证据时间≤实际 merged_at，消息和 Task 时间缺失不用 updatedAt 补齐；Clarification 保留发布前来源关联。',
@@ -431,7 +431,7 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
     >();
     const versionedTasks: VersionedTask[] = [];
     const details: { at?: number; line: string }[] = [];
-    for (const { task, at } of merged) {
+    for (const { task, at, source } of merged) {
       const assignedRuns = taskRuns.get(task.id) ?? [];
       const samples = assignedRuns.map(runTokens);
       const known = samples.filter((sample) => sample.value !== undefined);
@@ -459,7 +459,15 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
       const count = [...evidence.values()].reduce((sum, ids) => sum + ids.size, 0);
       const hasIntervention = count > 0;
       if (hasIntervention) intervened++;
-      const key = instructionsVersion(assignedRuns, at);
+      const key =
+        source === 'external'
+          ? {
+              label: '外部交付（本机历史）',
+              version: undefined,
+              versions: '外部实施未记录',
+              pinned: [],
+            }
+          : instructionsVersion(assignedRuns, at);
       const group = versionGroups.get(key.label) ?? {
         version: key.version,
         merged: 0,
@@ -481,9 +489,19 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
           ),
         ),
       });
+      const tokenText = complete
+        ? tokens(observed)
+        : partial
+          ? `partial(已知=${known.length ? tokens(observed) : 'N/A'})`
+          : 'unknown';
+      const sourceText = source === 'external' ? '（来源=external；用量为本机历史）' : '';
+      const interventionText = hasIntervention ? `${count}（${categories.join('、')}）` : '无';
       details.push({
         at,
-        line: `  Task ${taskLabel(task)}：token=${complete ? tokens(observed) : partial ? `partial(已知=${known.length ? tokens(observed) : 'N/A'})` : 'unknown'}；墙钟=${wall === undefined ? 'unknown' : duration(wall)}；干预=${hasIntervention ? `${count}（${categories.join('、')}）` : '无'}；返工=${task.retries ?? 'unknown'}`,
+        line:
+          `  Task ${taskLabel(task)}${sourceText}：token=${tokenText}` +
+          `；墙钟=${wall === undefined ? 'unknown' : duration(wall)}` +
+          `；干预=${interventionText}；返工=${task.retries ?? 'unknown'}`,
       });
     }
     const unassignedClarifications = clarifications.filter(
@@ -497,6 +515,12 @@ export function renderReport(snapshot: Snapshot, options: { explain?: boolean } 
       '',
       `Project：${project.name} [${project.id}]`,
       `确认合并任务：${merged.length}；历史 done 未确认：${tasks.filter((task) => task.stage === 'done' && !merged.some((item) => item.task.id === task.id)).length}`,
+      ...(merged.some((item) => item.source === 'external')
+        ? [
+            `外部交付：${merged.filter((item) => item.source === 'external').length}；` +
+              '外部实施用量和评审未记录',
+          ]
+        : []),
       `无干预合并率（保守下界）：${merged.length ? `0/${merged.length} (0%)` : 'N/A'}；确认无干预：0；确认有干预：${intervened}；未知：${merged.length - intervened}`,
       `未归属干预：Incident=${incidents.filter((incident) => !linkedTask(incident)).length}；暂停/恢复/取消=${controls.filter((event) => !controlTask(event)).length}；Clarification=${unassignedClarifications.length}`,
       `消息未归属=${unassignedMessages}；消息时间证据不足=${messageTimeGaps}`,

@@ -8,7 +8,7 @@ import { TaskProcess } from './process-record.tsx';
 import { OwnerConversation } from './owner-conversation.tsx';
 import { Receipt } from './receipt.tsx';
 import { useLocale } from './locale/provider.tsx';
-import { incidentAttention, taskAttention } from '../shared/task-history.ts';
+import { incidentAttention, isExternalDelivery, taskAttention } from '../shared/task-history.ts';
 import { hasOwner, teamView, type TeamMember, type TeamWork } from '../shared/team.ts';
 import { WorkHold } from './work-hold.tsx';
 
@@ -27,6 +27,7 @@ function progressFor({
 }) {
   if (task.stage === 'done') return 'delivered';
   if (task.stage === 'cancelled') return 'cancelled';
+  if (work?.externalDeliveryPending) return 'teamHandling';
   if (task.pausedByUser && task.control === 'paused') return 'paused';
   if (needsDecision) return 'needsYou';
   if (work?.teamHold) return 'teamHandling';
@@ -114,12 +115,27 @@ function TaskOverview({
           className="task-progress"
           data-progress={status}
           data-hold={work?.teamHold}
+          data-external-pending={work?.externalDeliveryPending || undefined}
           aria-label={t('task.progress')}
         >
-          <h2>{work?.teamHold ? t(`work.hold.${work.teamHold}`) : t(`task.progress.${status}`)}</h2>
-          <p className="muted task-next-step">
-            {work?.teamHold ? <WorkHold work={work} showStatus={false} /> : t(`task.next.${next}`)}
-          </p>
+          <h2>
+            {work?.attention === 'needs_user'
+              ? t('task.progress.needsYou')
+              : work?.externalDeliveryPending
+                ? t(work.externalMergePending ? 'task.remoteMerged' : 'task.externalPending')
+                : work?.teamHold
+                  ? t(`work.hold.${work.teamHold}`)
+                  : t(`task.progress.${status}`)}
+          </h2>
+          {!work?.externalDeliveryPending && (
+            <p className="muted task-next-step">
+              {work?.teamHold ? (
+                <WorkHold work={work} showStatus={false} />
+              ) : (
+                t(`task.next.${next}`)
+              )}
+            </p>
+          )}
           {requests.length > 0 && (
             <div className="task-decisions">
               {requests.map((request) => (
@@ -177,16 +193,20 @@ function TaskOverview({
         </Fold>
       </div>
       {experience}
-      <div className="task-owner-context">
-        {conversation ? (
-          <OwnerConversation task={detail} state={state} busy={busy} act={act} />
-        ) : (
-          <section className="task-owner-empty">
-            <h3>{t('task.ownerPending')}</h3>
-            <p className="muted">{t(finished ? 'task.ownerFinished' : 'task.ownerPendingHint')}</p>
-          </section>
-        )}
-      </div>
+      {(!isExternalDelivery(detail) || conversation) && (
+        <div className="task-owner-context">
+          {conversation ? (
+            <OwnerConversation task={detail} state={state} busy={busy} act={act} />
+          ) : (
+            <section className="task-owner-empty">
+              <h3>{t('task.ownerPending')}</h3>
+              <p className="muted">
+                {t(finished ? 'task.ownerFinished' : 'task.ownerPendingHint')}
+              </p>
+            </section>
+          )}
+        </div>
+      )}
       {!finished && (
         <Fold className="task-scheduling" title={t('task.scheduling')}>
           <section className="detail-schedule">

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Clarification, Incident, Project, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { useLocale } from './locale/provider.tsx';
-import { incidentAttention } from '../shared/task-history.ts';
+import { externalDevelopmentHeld, incidentAttention } from '../shared/task-history.ts';
 import { teamView } from '../shared/team.ts';
 import { Fold } from './fold.tsx';
 
@@ -38,9 +38,15 @@ export function ProjectActions({
       : 'actions.questionHistory',
   );
   const recovery =
-    state.recoveryItems?.filter(
-      (item) => item.projectId === project.id && ['pending', 'recoverable'].includes(item.status),
-    ) ?? [];
+    state.recoveryItems?.filter((item) => {
+      const task = state.tasks.find((task) => task.id === item.taskId);
+      return (
+        item.projectId === project.id &&
+        ['pending', 'recoverable'].includes(item.status) &&
+        !item.supersededByExternalCompletionAt &&
+        !(task && externalDevelopmentHeld(task))
+      );
+    }) ?? [];
   const decisions = new Set(teamView(state, project.id).waiting.map((request) => request.id));
   async function act(key: string, path: string, body: unknown) {
     setBusy(key);
@@ -379,11 +385,15 @@ export function TaskRuntimeBadges({
       ).actionable &&
       ((taskId && item.taskId === taskId) || (runId && item.runId === runId)),
   );
-  const recovery = state.recoveryItems?.some(
-    (item) =>
+  const recovery = state.recoveryItems?.some((item) => {
+    const task = state.tasks.find((task) => task.id === item.taskId);
+    return (
       ['pending', 'recoverable'].includes(item.status) &&
-      ((taskId && item.taskId === taskId) || (runId && item.oldRunId === runId)),
-  );
+      !item.supersededByExternalCompletionAt &&
+      !(task && externalDevelopmentHeld(task)) &&
+      ((taskId && item.taskId === taskId) || (runId && item.oldRunId === runId))
+    );
+  });
   const sourceId =
     state.tasks.find((task) => task.id === taskId)?.sourceMessageId ??
     state.runs.find((run) => run.id === runId)?.sourceMessageId;

@@ -8,6 +8,7 @@ import { checkTeamInstructions } from './browser-team-instructions.ts';
 import { checkRepoConventions } from './browser-repo-conventions.ts';
 import { checkWorkspace } from './browser-workspace.ts';
 import { checkAttentionBrowser } from './browser-client-attention.ts';
+import { checkExternalDelivery } from './browser-external-delivery.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer, type AddressInfo } from 'node:net';
@@ -1371,6 +1372,7 @@ try {
   await checkMaintenance();
   await checkWorkspace();
   await checkAttentionBrowser();
+  await checkExternalDelivery(artifacts);
   await checkTeamInstructions();
   await checkRepoConventions();
   await checkReconnect();

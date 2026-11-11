@@ -116,6 +116,7 @@ export interface Repo {
     revision?: string;
     /** Completed task heads verified as ancestors of this preview checkout. */
     taskHeads?: string[];
+    deliveryCommits?: string[];
   };
 }
 export interface ImageAttachment {
@@ -158,6 +159,36 @@ export interface OwnerMessage {
   context?: 'work_history';
   failureReason?: 'history_unavailable' | 'owner_changed' | 'answer_interrupted';
 }
+export interface RemoteMergeObservation {
+  repoId: string;
+  repository: string;
+  pr: number;
+  head: string;
+  base: string;
+  baseRef: string;
+  mergeCommit: string;
+  mergedAt: string;
+  checkedAt: string;
+}
+export type TaskCompletion =
+  | { source: 'host'; head: string; base: string; completedAt: string }
+  | {
+      source: 'external';
+      primary: RemoteMergeObservation;
+      closing: RemoteMergeObservation;
+      issue: number;
+      closedAt: string;
+      checkedAt: string;
+      relationship: {
+        primaryReferencesIssue: true;
+        closingReferencesIssue: true;
+        closureEventAt: string;
+      };
+      localCheckpoint: Pick<
+        Task,
+        'head' | 'base' | 'stage' | 'control' | 'pausedByUser' | 'ownerRunId'
+      >;
+    };
 export interface Task {
   retrospectiveChecked?: boolean;
   id: string;
@@ -206,6 +237,12 @@ export interface Task {
   pr?: number;
   prUrl?: string;
   prState?: 'open' | 'closed' | 'draft' | 'merged';
+  /** Read-only GitHub evidence; independent of local validation and host completion. */
+  remoteMerge?: RemoteMergeObservation;
+  completion?: TaskCompletion;
+  externalCompletionPendingReason?: string;
+  /** A failed read never removes the last successful merge observation. */
+  prReadFailure?: { status: 'unknown'; checkedAt: string; reason: string };
   /** Remote-confirmed merge commit bound to the reviewed delivery head. */
   deliveryRevision?: { head: string; commit: string };
   head?: string;
@@ -458,6 +495,8 @@ export interface Incident {
   evidence?: string;
   assessmentRunId?: string;
   assessmentAt?: string;
+  /** Historical failure remains unchanged; external delivery supersedes its current action. */
+  supersededByExternalCompletionAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -525,6 +564,7 @@ export interface RecoveryItem {
   pausedByUser?: boolean;
   reason?: string;
   reasonDescriptor?: MessageDescriptor;
+  supersededByExternalCompletionAt?: string;
   createdAt: string;
   updatedAt: string;
 }

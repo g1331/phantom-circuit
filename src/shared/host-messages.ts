@@ -32,6 +32,7 @@ export type HostMessageCode =
   | 'cross_project'
   | 'invalid_price'
   | 'delivery_completed'
+  | 'delivery_external_completed'
   | 'delivery_self_current'
   | 'delivery_self_pending'
   | 'delivery_self_pending_service'
@@ -82,6 +83,8 @@ const templates: Record<HostLocale, Partial<Record<HostMessageCode, string>>> = 
     cross_project: '跨项目操作被拒绝',
     invalid_price: '模型价格必须是非负十进制数',
     delivery_completed: '已交付「{title}」。\n{reference}{preview}',
+    delivery_external_completed:
+      '「{title}」已由外部交付，PR #{pr} 已合并，Issue #{issue} 由 PR #{closingPR} 关闭。本机验证与评审保留原记录。',
     delivery_self_current: '已交付「{title}」。当前应用已包含这次更新。\n{reference}{preview}',
     delivery_self_pending:
       '「{title}」的代码已完成。当前应用尚未包含这次更新。\n{reference}{preview}{update}',
@@ -114,6 +117,10 @@ const templates: Record<HostLocale, Partial<Record<HostMessageCode, string>>> = 
     cross_project: 'Cross-project operation denied',
     invalid_price: 'Model prices must be non-negative decimal values',
     delivery_completed: 'Delivered “{title}”.\n{reference}{preview}',
+    delivery_external_completed:
+      '“{title}” was delivered externally. PR #{pr} is merged; ' +
+      'PR #{closingPR} closed Issue #{issue}. ' +
+      'Local validation and review records are preserved.',
     delivery_self_current:
       'Delivered “{title}”. The running application includes this update.\n{reference}{preview}',
     delivery_self_pending:

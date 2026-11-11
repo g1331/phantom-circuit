@@ -10,6 +10,7 @@ import type {
   Repo,
   Task,
   ReviewResult,
+  RemoteMergeObservation,
 } from '../shared/types.ts';
 import { expectedTaskBranch, pullRequestBody, pullRequestTitle } from './task-naming.ts';
 
@@ -500,6 +501,7 @@ export class GitHub {
     }
   }
   async publishIssue(task: Task): Promise<any> {
+    this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     await this.setupProject(repo);
@@ -530,19 +532,22 @@ export class GitHub {
       async () => {
         const issue = await this.findTaskIssue(task);
         const current = this.store.task(task.id);
+        this.store.assertTaskExecutable(task.id);
         if (current.control === 'paused' || ['done', 'cancelled'].includes(current.stage))
           throw new Fault('任务已暂停或结束，Issue 发布保持等待', 409);
         if (this.issueRevision(current) !== revision)
           throw new Fault('Issue 查询期间任务内容已变化，需要重新核对', 409);
         return issue;
       },
-      () =>
-        this.api(`repos/${repo.github}/issues`, 'POST', {
+      () => {
+        this.store.assertTaskExecutable(task.id);
+        return this.api(`repos/${repo.github}/issues`, 'POST', {
           title: task.title,
           body,
           milestone: this.store.repo(repo.id).milestone,
           labels: ['ready-for-agent'],
-        }),
+        });
+      },
       revision,
     );
     this.store.updateTask(task.id, {
@@ -963,6 +968,7 @@ export class GitHub {
     return { action: 'authorize', evidence };
   }
   async publishPR(task: Task): Promise<PullState> {
+    this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     this.assertTaskBranch(task);
@@ -970,13 +976,15 @@ export class GitHub {
       `pr:${task.id}`,
       'create-pr',
       () => this.findTaskPR(task),
-      () =>
-        this.api(`repos/${repo.github}/pulls`, 'POST', {
+      () => {
+        this.store.assertTaskExecutable(task.id);
+        return this.api(`repos/${repo.github}/pulls`, 'POST', {
           title: pullRequestTitle(task),
           head: task.branch,
           base: repo.defaultBranch,
           body: pullRequestBody(task),
-        }),
+        });
+      },
       this.taskRevision(task),
     );
     this.store.updateTask(task.id, {
@@ -987,6 +995,7 @@ export class GitHub {
     return result;
   }
   async reviseIssue(task: Task) {
+    this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     const endpoint = `repos/${repo.github}/issues/${task.issue}`;
@@ -998,7 +1007,10 @@ export class GitHub {
         const issue = await this.api(endpoint);
         return issue.body === body ? issue : undefined;
       },
-      () => this.api(endpoint, 'PATCH', { body }),
+      () => {
+        this.store.assertTaskExecutable(task.id);
+        return this.api(endpoint, 'PATCH', { body });
+      },
     );
     this.store.updateTask(task.id, {
       issueBody: result.body,
@@ -1060,35 +1072,302 @@ export class GitHub {
       `repos/${this.store.repo(task.repoId).github}/issues/${task.issue}`,
     );
     const issueState = issueDisplayState(issue);
-    if (this.store.task(task.id).issueState !== issueState)
+    const current = this.store.task(task.id);
+    if (
+      current.issueState !== issueState &&
+      !(issueState === undefined && current.issueState === 'completed')
+    )
       this.store.updateTask(task.id, { issueState });
     return issue;
   }
   async pull(task: Task): Promise<PullState> {
-    const pr: PullState = await this.api(
-      `repos/${this.store.repo(task.repoId).github}/pulls/${task.pr}`,
-    );
-    const prState = pullDisplayState(pr);
-    const current = this.store.task(task.id);
-    const deliveryRevision =
-      isMerged(pr) &&
-      pr.number === task.pr &&
-      pr.head.sha === task.head &&
-      typeof pr.merge_commit_sha === 'string' &&
-      /^[a-f0-9]{40}$/i.test(pr.merge_commit_sha)
-        ? { head: pr.head.sha, commit: pr.merge_commit_sha }
+    const repo = this.store.repo(task.repoId);
+    try {
+      const pr: PullState = await this.api(`repos/${repo.github}/pulls/${task.pr}`);
+      const prState = pullDisplayState(pr);
+      const current = this.store.task(task.id);
+      const currentRepo = this.store.repo(current.repoId);
+      if (
+        current.repoId !== task.repoId ||
+        current.pr !== task.pr ||
+        currentRepo.github !== repo.github ||
+        currentRepo.defaultBranch !== repo.defaultBranch ||
+        currentRepo.authorized !== repo.authorized ||
+        (isMerged(pr) &&
+          (pr.number !== task.pr ||
+            (pr.base.repo?.full_name && pr.base.repo.full_name !== repo.github) ||
+            (pr.base.ref && pr.base.ref !== repo.defaultBranch)))
+      )
+        throw new Fault('远端 PR 身份或目标仓库发生变化，保留原记录等待团队核对', 409);
+      const sha = z.string().regex(/^[a-f0-9]{40}$/i);
+      const merged = isMerged(pr)
+        ? z
+            .object({
+              head: z.object({ sha }),
+              base: z.object({
+                sha,
+                ref: z.literal(repo.defaultBranch),
+                repo: z.object({ full_name: z.literal(repo.github) }),
+              }),
+              merge_commit_sha: sha,
+              merged_at: z.iso.datetime({ offset: true }),
+            })
+            .safeParse(pr)
         : undefined;
+      const remoteMerge = merged?.success
+        ? {
+            repoId: repo.id,
+            repository: repo.github,
+            pr: pr.number,
+            head: merged.data.head.sha,
+            base: merged.data.base.sha,
+            baseRef: merged.data.base.ref,
+            mergeCommit: merged.data.merge_commit_sha,
+            mergedAt: merged.data.merged_at,
+            checkedAt: now(),
+          }
+        : undefined;
+      const deliveryRevision =
+        isMerged(pr) &&
+        pr.number === task.pr &&
+        pr.head.sha === task.head &&
+        typeof pr.merge_commit_sha === 'string' &&
+        /^[a-f0-9]{40}$/i.test(pr.merge_commit_sha)
+          ? { head: pr.head.sha, commit: pr.merge_commit_sha }
+          : undefined;
+      if (
+        current.prState !== prState ||
+        current.prReadFailure ||
+        remoteMerge ||
+        (merged && !merged.success) ||
+        (deliveryRevision && current.deliveryRevision?.commit !== deliveryRevision.commit)
+      )
+        this.store.updateTask(task.id, {
+          prState: current.prState === 'merged' ? 'merged' : prState,
+          prReadFailure:
+            merged && !merged.success
+              ? { status: 'unknown', checkedAt: now(), reason: '远端合并记录缺少完整固定版本证据' }
+              : undefined,
+          ...(remoteMerge ? { remoteMerge } : {}),
+          ...(deliveryRevision ? { deliveryRevision } : {}),
+        });
+      return pr;
+    } catch (error) {
+      const current = this.store.task(task.id);
+      const currentRepo = this.store.repo(current.repoId);
+      if (
+        current.repoId === task.repoId &&
+        current.pr === task.pr &&
+        currentRepo.github === repo.github
+      )
+        this.store.updateTask(task.id, {
+          prReadFailure: { status: 'unknown', checkedAt: now(), reason: redact(String(error)) },
+        });
+      throw error;
+    }
+  }
+  /** Query-only GraphQL: exhaust both relationship connections before using the last closure. */
+  private async completionRelations(task: Task, pr?: number) {
+    const repo = this.store.repo(task.repoId);
+    const [owner, name] = repo.github.split('/');
+    const pageInfo = z.object({
+      hasNextPage: z.boolean(),
+      endCursor: z.string().nullable().optional(),
+    });
+    const reference = z.object({
+      number: z.number().int(),
+      repository: z.object({ nameWithOwner: z.string() }),
+    });
+    const event = z.object({
+      __typename: z.string(),
+      createdAt: z.string().optional(),
+      closer: reference
+        .extend({ __typename: z.literal('PullRequest') })
+        .nullable()
+        .optional(),
+    });
+    const schema = z.object({
+      repository: z.object({
+        pullRequest: z
+          .object({
+            number: z.number().int(),
+            closingIssuesReferences: z.object({
+              nodes: z.array(reference),
+              pageInfo,
+            }),
+          })
+          .optional(),
+        issue: z.object({
+          number: z.literal(task.issue!),
+          state: z.literal('CLOSED'),
+          stateReason: z.literal('COMPLETED'),
+          timelineItems: z.object({ nodes: z.array(event), pageInfo }),
+        }),
+      }),
+    });
+    let prCursor: string | undefined;
+    let issueCursor: string | undefined;
+    const references: z.infer<typeof reference>[] = [];
+    const events: z.infer<typeof event>[] = [];
+    const deadline = Date.now() + PULL_SCAN_MS;
+    for (let page = 0; page < 100; page++) {
+      if (Date.now() >= deadline) throw new Fault('远端交付关系核对达到总时限', 502);
+      const data = schema.parse(
+        await this.gql(
+          `
+        query ExternalDelivery($owner:String!, $name:String!, $pr:Int!, $issue:Int!,
+          $prCursor:String, $issueCursor:String, $withPR:Boolean!) {
+          repository(owner:$owner,name:$name) {
+            pullRequest(number:$pr) @include(if:$withPR) { number
+              closingIssuesReferences(first:100,after:$prCursor) {
+              nodes { number repository { nameWithOwner } } pageInfo { hasNextPage endCursor }
+            } }
+            issue(number:$issue) { number state stateReason
+              timelineItems(first:100,after:$issueCursor,itemTypes:[CLOSED_EVENT,REOPENED_EVENT]) {
+                nodes { __typename ... on ClosedEvent { createdAt closer { __typename
+                  ... on PullRequest { number repository { nameWithOwner } }
+                } } ... on ReopenedEvent { createdAt } }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+          {
+            owner,
+            name,
+            pr: pr ?? 0,
+            withPR: pr !== undefined,
+            issue: task.issue,
+            prCursor,
+            issueCursor,
+          },
+        ),
+      );
+      if (pr !== undefined && data.repository.pullRequest?.number !== pr)
+        throw new Fault('远端交付 PR 身份发生变化', 409);
+      const pulls = data.repository.pullRequest?.closingIssuesReferences ?? {
+        nodes: [],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      };
+      const timeline = data.repository.issue.timelineItems;
+      references.push(...pulls.nodes);
+      events.push(...timeline.nodes);
+      if (!pulls.pageInfo.hasNextPage && !timeline.pageInfo.hasNextPage)
+        return { references, events };
+      for (const [info, previous] of [
+        [pulls.pageInfo, prCursor],
+        [timeline.pageInfo, issueCursor],
+      ] as const)
+        if (info.hasNextPage && (!info.endCursor || info.endCursor === previous))
+          throw new Fault('远端交付关系分页未完整读取', 502);
+      // Finished connections repeat their last page while the other connection drains.
+      if (pulls.pageInfo.hasNextPage) prCursor = pulls.pageInfo.endCursor!;
+      if (timeline.pageInfo.hasNextPage) issueCursor = timeline.pageInfo.endCursor!;
+    }
+    throw new Fault('远端交付关系超过核对分页上限', 502);
+  }
+  async externalCompletionEvidence(task: Task, issue: unknown) {
+    const repo = this.store.repo(task.repoId);
+    let primary = task.pr ? this.store.task(task.id).remoteMerge : undefined;
+    const closed = z
+      .object({
+        state: z.literal('closed'),
+        state_reason: z.literal('completed'),
+        closed_at: z.iso.datetime({ offset: true }),
+      })
+      .safeParse(issue);
+    if (!repo.authorized || !task.issue || (task.pr && !primary) || !closed.success)
+      throw new Fault('远端交付缺少完整 PR 合并或 Issue 完成证据', 409);
+    const related = await this.completionRelations(task, task.pr);
+    const referencesIssue = (refs: typeof related.references) =>
+      refs.some((ref) => ref.number === task.issue && ref.repository.nameWithOwner === repo.github);
+    if (task.pr && !referencesIssue(related.references))
+      throw new Fault('Task PR 与 Issue 的完成关系尚未核实', 409);
+    const last = related.events
+      .filter((event) => event.__typename === 'ClosedEvent' || event.__typename === 'ReopenedEvent')
+      .at(-1);
     if (
-      current.prState !== prState ||
-      (deliveryRevision && current.deliveryRevision?.commit !== deliveryRevision.commit)
+      last?.__typename !== 'ClosedEvent' ||
+      !last.closer ||
+      last.closer.repository.nameWithOwner !== repo.github ||
+      !last.createdAt
     )
-      this.store.updateTask(task.id, {
-        prState,
-        ...(deliveryRevision ? { deliveryRevision } : {}),
-      });
-    return pr;
+      throw new Fault('Issue 的实际关闭 PR 尚未核实', 409);
+    let closing = primary;
+    if (!primary || last.closer.number !== task.pr) {
+      const raw: PullState = await this.api(`repos/${repo.github}/pulls/${last.closer.number}`);
+      const sha = z.string().regex(/^[a-f0-9]{40}$/i);
+      const other = z
+        .object({
+          number: z.literal(last.closer.number),
+          merged: z.literal(true),
+          head: z.object({ sha }),
+          base: z.object({
+            sha,
+            ref: z.literal(repo.defaultBranch),
+            repo: z.object({ full_name: z.literal(repo.github) }),
+          }),
+          merge_commit_sha: sha,
+          merged_at: z.iso.datetime({ offset: true }),
+        })
+        .parse(raw);
+      const relations = await this.completionRelations(task, other.number);
+      if (!referencesIssue(relations.references))
+        throw new Fault('关闭 PR 与 Issue 的完成关系尚未核实', 409);
+      closing = {
+        repoId: repo.id,
+        repository: repo.github,
+        pr: other.number,
+        head: other.head.sha,
+        base: other.base.sha,
+        baseRef: other.base.ref,
+        mergeCommit: other.merge_commit_sha,
+        mergedAt: other.merged_at,
+        checkedAt: now(),
+      } satisfies RemoteMergeObservation;
+      const latest = relations.events
+        .filter(
+          (event) => event.__typename === 'ClosedEvent' || event.__typename === 'ReopenedEvent',
+        )
+        .at(-1);
+      if (
+        latest?.__typename !== 'ClosedEvent' ||
+        latest.closer?.number !== closing.pr ||
+        latest.closer.repository.nameWithOwner !== last.closer.repository.nameWithOwner ||
+        latest.createdAt !== last.createdAt
+      )
+        throw new Fault('核对期间 Issue 关闭关系发生变化', 409);
+    }
+    if (!task.pr && closing) {
+      const current = this.store.task(task.id);
+      const currentRepo = this.store.repo(current.repoId);
+      if (
+        current.pr ||
+        current.issue !== task.issue ||
+        current.repoId !== task.repoId ||
+        currentRepo.github !== repo.github ||
+        !currentRepo.authorized
+      )
+        throw new Fault('核对期间 Issue 或仓库绑定发生变化', 409);
+      primary = closing;
+      this.store.updateTask(task.id, { remoteMerge: primary, prReadFailure: undefined });
+    }
+    if (!primary || !closing) throw new Fault('缺少可追溯的远端合并版本', 409);
+    return {
+      primary,
+      closing,
+      issue: task.issue,
+      closedAt: closed.data.closed_at,
+      checkedAt: now(),
+      relationship: {
+        primaryReferencesIssue: true as const,
+        closingReferencesIssue: true as const,
+        closureEventAt: z.iso.datetime({ offset: true }).parse(last.createdAt),
+      },
+    };
   }
   async reviewComment(task: Task, review: ReviewResult) {
+    this.store.assertTaskExecutable(task.id);
     const repo = this.store.repo(task.repoId);
     this.authorize(repo);
     const marker = `<!-- phantom-review:${task.id}:${review.head}:${review.base}:${review.axis} -->`;
@@ -1099,10 +1378,12 @@ export class GitHub {
         (await this.paged(`repos/${repo.github}/issues/${task.pr}/comments?per_page=100`)).find(
           (x) => x.body?.includes(marker),
         ),
-      () =>
-        this.api(`repos/${repo.github}/issues/${task.pr}/comments`, 'POST', {
+      () => {
+        this.store.assertTaskExecutable(task.id);
+        return this.api(`repos/${repo.github}/issues/${task.pr}/comments`, 'POST', {
           body: `${marker}\n## ${{ standards: 'Standards', spec: 'Spec', primary: 'Comprehensive Review', secondary: 'Independent Risk Review' }[review.axis]}\n${review.approved ? 'Pass' : 'Changes requested'}\n\n${review.summary}\n${review.findings.map((x) => `- ${x}`).join('\n')}\n\nReviewed head: ${review.head}; base: ${review.base}. AI review evidence; not a GitHub approval.`,
-        }),
+        });
+      },
     );
   }
   private async checkPages(endpoint: string, field: 'check_runs' | 'statuses'): Promise<unknown[]> {

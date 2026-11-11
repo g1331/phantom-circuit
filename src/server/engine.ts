@@ -4,7 +4,14 @@ import {
   retrospectivePrompt,
 } from './retrospective.ts';
 import { Providers } from './providers.ts';
-import { historicalCompletionReason, legacyCompletionGap } from '../shared/task-history.ts';
+import {
+  historicalCompletionReason,
+  legacyCompletionGap,
+  pendingExternalMerge,
+  externalDevelopmentHeld,
+  isExternalDelivery,
+  externalDeliveryHold,
+} from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -1164,8 +1171,13 @@ export class Engine {
     if (!oldRun) return this.store.get('recovery', item.id);
     const task = item.taskId ? this.store.get('task', item.taskId) : undefined;
     if (task && ['done', 'cancelled'].includes(task.stage)) {
+      if (isExternalDelivery(task)) return current;
       this.store.finishRecovery(item.id, 'cancelled');
       return this.store.get('recovery', item.id);
+    }
+    if (task && oldRun.role !== 'pm') {
+      await this.checkExternalMerge(task);
+      if (externalDevelopmentHeld(this.store.task(task.id))) return current;
     }
     // `oncall` Runs predate the Dev handling its own validation failures; both resume as the Dev.
     const validationDuty =
@@ -1466,6 +1478,10 @@ export class Engine {
     const incident = this.store.get('incident', incidentId);
     if (!incident || incident.projectId !== projectId)
       throw new Fault('Incident 不属于当前项目', 403);
+    if (incident.supersededByExternalCompletionAt) {
+      const reason = '远端交付已经结案，原工程记录保留供查阅';
+      throw new Fault(reason, 409, { code: 'external_delivery_completed', detail: reason });
+    }
     const next = this.store.updateIncident(incidentId, {
       status: action === 'paused' ? 'assessing' : action,
       ...(guidance ? { message: guidance } : {}),
@@ -1473,6 +1489,8 @@ export class Engine {
     });
     if (next.taskId) {
       const task = this.store.task(next.taskId);
+      // A follow-up decision updates its Incident, never the original delivery checkpoint.
+      if (externalDevelopmentHeld(task)) return next;
       if (
         (incident.phase === 'validation' ||
           (incident.assessmentRunId &&
@@ -1663,6 +1681,8 @@ export class Engine {
             const old = this.store.task(input.taskId);
             if (old.projectId !== projectId || ['done', 'cancelled'].includes(old.stage))
               throw new Fault('任务不在可修改范围');
+            await this.checkExternalMerge(old);
+            this.store.assertTaskExecutable(old.id);
             const naming = {
               changeType: input.changeType,
               scope: input.scope,
@@ -2014,6 +2034,7 @@ export class Engine {
       }
       for (const task of this.store.list('task')) {
         if (historicalCompletionReason(task)) continue;
+        if (externalDevelopmentHeld(task)) continue;
         if (
           task.stage === 'done' &&
           !task.retrospectiveChecked &&
@@ -2114,6 +2135,7 @@ export class Engine {
     context: TaskControlContext = { source: 'host', reason: 'task_blocked' },
   ) {
     const t = this.store.task(taskId);
+    if (externalDevelopmentHeld(t)) return;
     if (t.stage === 'cancelled' || t.stage === 'done') return;
     this.store.updateTaskControl(
       taskId,
@@ -2129,6 +2151,7 @@ export class Engine {
     this.store.event('blocked', reason, { projectId: t.projectId, taskId });
   }
   private async incidentForRun(run: Run, error: unknown, phase: string, incidentId?: string) {
+    if (run.taskId && externalDevelopmentHeld(this.store.task(run.taskId))) return;
     if (run.role === 'pm') return;
     const detail = redact(String(error));
     const incident = incidentId
@@ -2246,6 +2269,7 @@ export class Engine {
     return incident;
   }
   private async incidentForTask(task: Task, error: unknown, phase: string) {
+    if (externalDevelopmentHeld(this.store.task(task.id))) return;
     const detail = redact(String(error));
     const incident = this.store.createIncident({
       projectId: task.projectId,
@@ -2397,6 +2421,7 @@ export class Engine {
    * host tools (ADR 0013). Returns false when no such Run can start, so the caller keeps plain rework.
    */
   private startOncall(task: Task, failure: string) {
+    if (externalDevelopmentHeld(this.store.task(task.id))) return false;
     const detail = redact(failure).slice(-16000);
     const incident = this.store.createIncident({
       projectId: task.projectId,
@@ -2577,7 +2602,12 @@ export class Engine {
       return;
     }
     const current = this.store.task(task.id);
-    if (current.pausedByUser || ['done', 'cancelled'].includes(current.stage)) return;
+    if (
+      externalDevelopmentHeld(current) ||
+      current.pausedByUser ||
+      ['done', 'cancelled'].includes(current.stage)
+    )
+      return;
     const outcome = settled!;
     this.store.event('oncall', `${outcome.action}：${outcome.diagnosis}`, {
       projectId: task.projectId,
@@ -2618,7 +2648,13 @@ ${detail}`,
   private async handoffValidation(run: Run, incidentId: string, reason: string) {
     const task = this.store.task(run.taskId!);
     // Shutdown retains an interrupted Run for phase recovery. User controls remain authoritative.
-    if (this.stopping || task.pausedByUser || ['done', 'cancelled'].includes(task.stage)) return;
+    if (
+      this.stopping ||
+      externalDevelopmentHeld(task) ||
+      task.pausedByUser ||
+      ['done', 'cancelled'].includes(task.stage)
+    )
+      return;
     const incident = this.store.get('incident', incidentId);
     if (
       incident?.assessmentRunId !== run.id ||
@@ -2634,6 +2670,7 @@ ${detail}`,
   }
   private recoverValidationFailures() {
     for (const incident of this.store.list('incident')) {
+      if (incident.taskId && externalDevelopmentHeld(this.store.task(incident.taskId))) continue;
       if (incident.phase !== 'validation' || incident.status !== 'assessing') continue;
       const run = incident.assessmentRunId
         ? this.store.get('run', incident.assessmentRunId)
@@ -2826,6 +2863,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     spend = true,
     phase: 'implement' | 'finalize' = 'implement',
   ) {
+    if (externalDevelopmentHeld(this.store.task(task.id))) return;
     const retries = task.retries + (spend ? 1 : 0);
     const exhausted = spend && retries >= FAILURE_LIMIT;
     this.store.updateTaskControl(
@@ -2864,15 +2902,23 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     const abort = new AbortController();
     const signal = abort.signal;
     this.active.set(run.id, { abort });
+    const ensureExecutable = () => {
+      this.store.assertTaskExecutable(run.taskId!);
+      if (signal.aborted) throw new Fault('执行已暂停', 409);
+    };
     try {
+      ensureExecutable();
       let task = this.store.task(run.taskId!);
       const originalRevision = { head: task.head, base: task.base };
       const recoveringMerge = !!task.pendingMerge;
       if (task.devPhase !== 'finalize') task = await this.workspaces.prepare(task);
+      ensureExecutable();
       if (!task.issue) await this.github.publishIssue(task);
       task = this.store.task(task.id);
       if (task.pr) {
         const pr = await this.github.pull(task);
+        this.holdExternalMerge(task.id);
+        ensureExecutable();
         task = this.verifyMergeSource(task, pr);
       }
       let coordinated = await this.workspaces.prepareBase(
@@ -2881,6 +2927,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         task.devPhase !== 'finalize',
       );
       let repaired = false;
+      ensureExecutable();
       let rounds = 0;
       while (coordinated.status === 'conflicted') {
         // Each round merges the target ref once. Only a target ref that keeps moving can produce
@@ -2901,6 +2948,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
             abort,
             `Resolve only these actual conflict files: ${JSON.stringify(merge.conflictPaths)}. This is merge coordination, not product rework. Old HEAD: ${merge.oldHead}; incoming ${merge.sourceRef}: ${merge.sourceHead}; target base: ${merge.targetBase}. Read both histories and the Task requirements; preserve the existing implementation and all still-valid behavior from both sides. Do not choose ours/theirs wholesale. Edit files only in this worktree. Do not install dependencies, stage, commit, run merge, or access the shared mirror. The host will clear the unmerged index after checking your edits.`,
           );
+          ensureExecutable();
           const current = this.store.task(task.id).pendingMerge!;
           this.store.updateTask(task.id, { pendingMerge: { ...current, phase: 'edited' } });
         } else if (
@@ -2911,15 +2959,19 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           throw new Fault('原冲突 Dev Run 仍活跃，不能收尾');
         }
         await this.workspaces.finalize(this.store.task(task.id), signal);
+        ensureExecutable();
         task = this.store.updateTask(task.id, { devPhase: 'finalize' });
         coordinated = await this.workspaces.prepareBase(task, signal);
+        ensureExecutable();
       }
       if (coordinated.status === 'blocked')
         throw new Fault(`基线协调阻塞：${coordinated.reason}`, coordinated.code);
       task = this.store.task(task.id);
       if (task.devPhase !== 'finalize' && !repaired) {
         await this.workspaces.install(task, signal);
+        ensureExecutable();
         await this.editTask(run, task, abort);
+        ensureExecutable();
         this.store.updateTask(task.id, { devPhase: 'finalize' });
       }
       if (signal.aborted) throw new Fault('执行已暂停');
@@ -2946,6 +2998,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         }
       }
       const { head, changed } = finalized;
+      ensureExecutable();
       base = this.store.task(task.id).base!;
       this.store.updateTask(task.id, { head, base });
       this.store.pinRunRevision(run.id, { head, base });
@@ -2985,8 +3038,10 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         await this.workspaces.install(this.store.task(task.id), signal);
         tests = await this.workspaces.verify(this.store.task(task.id), signal);
       }
+      ensureExecutable();
       task = this.store.updateTask(task.id, { tests, head, base });
       const ensureActive = () => {
+        ensureExecutable();
         const latest = this.store.task(task.id);
         if (signal.aborted || latest.control !== 'active' || latest.stage !== 'developing')
           throw new Fault('执行已暂停', 409);
@@ -3016,7 +3071,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       this.store.finishRun(run.id, paused ? 'paused' : 'failed', String(e), {
         descriptor: diagnosticDescriptor('dev_failed', String(e)),
       });
-      if (paused) return;
+      if (paused || externalDevelopmentHeld(this.store.task(run.taskId!))) return;
       this.block(run.taskId!, String(e), {
         source: 'host',
         reason: 'task_blocked',
@@ -3094,7 +3149,8 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         });
         // Without a reply block the previous text, or the host's default format, still applies.
         const deliveryText = conventions && parseStructuredReply(deliveryTextInput, reply);
-        if (deliveryText) this.store.updateTask(task.id, { deliveryText });
+        if (deliveryText && !externalDevelopmentHeld(this.store.task(task.id)))
+          this.store.updateTask(task.id, { deliveryText });
       },
       abort,
     );
@@ -3316,6 +3372,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       // The model supplies only the verdict, by tool or JSON reply. Revision, tests and identity
       // are host-owned evidence attached from the current pinned Task; echoed copies must match.
       const pin = <T extends { head?: string; base?: string; tests?: unknown[] }>(input: T) => {
+        this.store.assertTaskExecutable(task.id);
         const current = this.store.task(task.id);
         if (
           current.head !== task.head ||
@@ -3432,6 +3489,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       };
       const current = this.store.task(task.id);
       if (
+        externalDevelopmentHeld(current) ||
         current.head !== task.head ||
         current.base !== task.base ||
         current.control !== 'active' ||
@@ -3446,6 +3504,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       // The other axis may finish while GitHub is receiving this comment.
       const latest = this.store.task(task.id);
       if (
+        externalDevelopmentHeld(latest) ||
         latest.head !== task.head ||
         latest.base !== task.base ||
         latest.control !== 'active' ||
@@ -3505,6 +3564,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     await this.completed(task);
   }
   private async retrospective(task: Task) {
+    if (isExternalDelivery(task)) return;
     if (task.retrospectiveChecked || this.store.get('suggestion', `retrospective:${task.id}`))
       return;
     const evidence = retrospectiveEvidence(this.store, task);
@@ -3603,6 +3663,30 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       );
     }
   }
+  private async completeExternal(task: Task, issue: unknown) {
+    const current = this.store.task(task.id);
+    if (!externalDeliveryHold(current)) return;
+    try {
+      if (
+        this.store
+          .list('run')
+          .some(
+            (run) =>
+              run.taskId === task.id &&
+              run.role !== 'pm' &&
+              (this.active.has(run.id) || run.status === 'running' || run.status === 'waiting'),
+          )
+      )
+        throw new Fault('远端已合并，等待原工程运行停止后核实交付', 409);
+      const evidence = await this.github.externalCompletionEvidence(current, issue);
+      this.store.completeExternalTask(task.id, evidence);
+    } catch (error) {
+      const reason = redact(String(error)).slice(0, 1500);
+      const latest = this.store.task(task.id);
+      if (externalDeliveryHold(latest) && latest.externalCompletionPendingReason !== reason)
+        this.store.updateTask(task.id, { externalCompletionPendingReason: reason });
+    }
+  }
   private async completed(task: Task) {
     task = this.store.task(task.id);
     if (task.stage !== 'merging' || task.control !== 'active') return;
@@ -3631,6 +3715,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     }
     this.store.updateTask(task.id, {
       stage: 'done',
+      completion: { source: 'host', head: task.head!, base: task.base!, completedAt: now() },
       blocked: undefined,
       blockedDescriptor: undefined,
       completionDeliveryPending: true,
@@ -3641,6 +3726,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
   }
   private async cleanupCompleted(task: Task) {
     const current = this.store.task(task.id);
+    if (isExternalDelivery(current)) return;
     if (historicalCompletionReason(current)) return;
     if (current.stage !== 'done' || current.completionDeliveryPending !== false) return;
     try {
@@ -3741,6 +3827,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     if (Date.now() < this.syncRetryAt) return;
     for (const task of this.store.list('task')) {
       if (Date.now() < this.syncRetryAt) return;
+      if (isExternalDelivery(task)) continue;
       if (historicalCompletionReason(task)) continue;
       if (!this.store.repo(task.repoId).authorized || task.stage === 'cancelled') continue;
       try {
@@ -3766,19 +3853,54 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           }
           continue;
         }
-        if (!task.issue) {
+        if (!task.issue && !pendingExternalMerge(task)) {
           // A queued retry authorization must remain unused while the user or host holds work.
           if (this.store.task(task.id).control === 'paused') continue;
           await this.github.publishIssue(task);
         }
         const t = this.store.task(task.id);
-        const pr = t.pr ? await this.github.pull(t) : undefined;
+        let pr: PullState | undefined;
+        try {
+          pr = t.pr ? await this.github.pull(t) : undefined;
+        } catch (error) {
+          if (pendingExternalMerge(this.store.task(t.id))) {
+            this.holdExternalMerge(t.id);
+            if (t.issue) await this.github.issue(t);
+          }
+          throw error;
+        }
         if (pr?.merged) {
+          if (this.store.task(t.id).prState !== 'merged')
+            this.store.updateTask(t.id, { prState: 'merged' });
+          this.holdExternalMerge(t.id);
           await this.completed(t);
+          const current = this.store.task(t.id);
+          if (current.stage !== 'done' && current.issue) {
+            const issue = await this.github.issue(current);
+            if (Date.now() >= this.syncRetryAt) await this.completeExternal(current, issue);
+          }
+          continue;
+        }
+        if (pendingExternalMerge(this.store.task(t.id))) {
+          this.holdExternalMerge(t.id);
+          if (t.issue) {
+            const issue = await this.github.issue(t);
+            if (!t.pr) {
+              if (this.store.task(t.id).issueState === 'not_planned')
+                this.control(t.id, 'cancel', { source: 'host', reason: 'sync_issue_closed' });
+              else await this.completeExternal(t, issue);
+            }
+          }
           continue;
         }
         if (t.issue && t.stage !== 'done') {
           const issue = await this.github.issue(t);
+          const current = this.store.task(t.id);
+          if (!t.pr && current.issueState === 'completed') {
+            this.holdExternalMerge(t.id);
+            await this.completeExternal(current, issue);
+            continue;
+          }
           if (t.issueBody && issue.body !== t.issueBody) {
             if (t.control === 'paused' && t.blocked === 'GitHub 需求发生变化，PM 正在核对')
               continue;
@@ -3808,6 +3930,12 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         await this.github.syncStatus(this.store.task(task.id));
       } catch (e) {
         if (this.deferSync(task, e)) return;
+        if (externalDevelopmentHeld(this.store.task(task.id))) {
+          const previous = this.store
+            .taskEvents(task.id)
+            .findLast((event) => event.type === 'sync');
+          if (previous?.message === redact(String(e))) continue;
+        }
         if (task.stage === 'done') {
           const blocked = redact(String(e));
           const blockedDescriptor = e instanceof Fault ? e.descriptor : undefined;
@@ -3892,7 +4020,11 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
    * previous conversation, and a new rework budget. The current developer must have stopped.
    */
   async reassign(taskId: string, context: TaskControlContext) {
-    const t = this.store.task(taskId);
+    let t = this.store.task(taskId);
+    if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束', 409);
+    await this.checkExternalMerge(t);
+    this.store.assertTaskExecutable(taskId);
+    t = this.store.task(taskId);
     if (['done', 'cancelled'].includes(t.stage)) throw new Fault('任务已经结束', 409);
     if (!t.worktree) throw new Fault('这项工作还没有开发接手', 409);
     if (
@@ -3906,6 +4038,8 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         )
     )
       throw new Fault('开发还在工作，先暂停这项工作再换人接手', 409);
+    if (t.control === 'paused') await this.resume(taskId, undefined, context);
+    this.store.assertTaskExecutable(taskId);
     this.store.updateTask(taskId, {
       devThreadId: undefined,
       ownerRunId: undefined,
@@ -3919,7 +4053,6 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       projectId: t.projectId,
       taskId: t.id,
     });
-    if (t.control === 'paused') await this.resume(taskId, undefined, context);
   }
   async reconcileTaskIssue(projectId: string, taskId: string, context?: TaskControlContext) {
     const task = this.store.task(taskId);
@@ -3951,6 +4084,37 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       return { action: 'blocked' as const, resumed: false, reason: redact(String(error)) };
     }
   }
+  /** Abort only engineering work; pause, Owner and previous evidence stay untouched. */
+  private holdExternalMerge(taskId: string) {
+    if (!externalDevelopmentHeld(this.store.task(taskId))) return;
+    for (const run of this.store.activeRuns())
+      if (run.taskId === taskId && run.role !== 'pm') this.active.get(run.id)?.abort.abort();
+  }
+  /** Remote reads precede every action that could release pause or replace the old Owner. */
+  private async checkExternalMerge(task: Task) {
+    if (task.pr && this.store.repo(task.repoId).authorized) {
+      try {
+        const pr = await this.github.pull(task);
+        if (pr.merged && this.store.task(task.id).prState !== 'merged')
+          this.store.updateTask(task.id, { prState: 'merged' });
+      } catch (error) {
+        // Unknown remote state never releases a previously observed or cached merged hold.
+        if (!pendingExternalMerge(this.store.task(task.id))) throw error;
+      }
+    } else if (task.issue && this.store.repo(task.repoId).authorized) {
+      try {
+        const issue = await this.github.issue(task);
+        const current = this.store.task(task.id);
+        if (externalDeliveryHold(current)) {
+          this.holdExternalMerge(task.id);
+          await this.completeExternal(current, issue);
+        }
+      } catch (error) {
+        if (!externalDevelopmentHeld(this.store.task(task.id))) throw error;
+      }
+    }
+    this.holdExternalMerge(task.id);
+  }
   async resume(
     taskId: string,
     guidance?: { guidance: string; upgrade: boolean },
@@ -3969,6 +4133,15 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       )
         throw new Fault('任务已暂停或结束，保留核对结果并等待原控制入口恢复', 409);
     };
+    try {
+      await this.checkExternalMerge(t);
+    } catch (error) {
+      const current = this.store.task(taskId);
+      if (!current.pausedByUser && !['done', 'cancelled'].includes(current.stage))
+        this.block(taskId, `任务恢复环境阻塞：${String(error)}`);
+      throw error;
+    }
+    this.store.assertTaskExecutable(taskId);
     assertResumeAllowed();
     const gate = this.store.clarificationGate(t.sourceMessageId);
     if (gate)
@@ -4020,9 +4193,9 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         if (t.pr) {
           const pr = await this.github.pull(t);
           if (pr.merged) {
-            assertResumeAllowed();
-            this.store.control(taskId, 'resume', context);
-            await this.completed(this.store.task(taskId));
+            if (this.store.task(taskId).prState !== 'merged')
+              this.store.updateTask(taskId, { prState: 'merged' });
+            this.store.assertTaskExecutable(taskId);
             return;
           }
           t = this.verifyMergeSource(t, pr);
