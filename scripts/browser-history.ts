@@ -250,23 +250,27 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
     await composer.fill('Draft survives history and retry');
     const latestPattern = `**/api/projects/${project.id}/messages`;
     await page.locator('.history-control [role="status"]').waitFor({ state: 'hidden' });
-    await page.route(latestPattern, (route) =>
-      route.fulfill({ status: 503, json: { error: 'Synthetic refresh failure' } }),
-    );
-    store.changes.emit('change');
-    await page.getByRole('button', { name: '历史加载失败，重试' }).waitFor();
-    assert.equal(await composer.inputValue(), 'Draft survives history and retry');
-    assert.equal(await retained(), 50, 'refresh failure retains the message window');
-    await page.unroute(latestPattern);
-    const retriedRefresh = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === `/api/projects/${project.id}/messages` &&
-        response.ok(),
-    );
-    await page.getByRole('button', { name: '历史加载失败，重试' }).click();
-    await retriedRefresh;
-    await page.getByRole('button', { name: '加载更早消息' }).waitFor();
-    assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+    for (const recovery of ['manual', 'automatic']) {
+      await page.route(latestPattern, (route) =>
+        route.fulfill({ status: 503, json: { error: 'Synthetic refresh failure' } }),
+      );
+      store.changes.emit('change');
+      await page.getByRole('button', { name: '历史加载失败，重试' }).waitFor();
+      assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+      assert.equal(await retained(), 50, 'refresh failure retains the message window');
+      await page.unroute(latestPattern);
+      const recoveredRefresh = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === `/api/projects/${project.id}/messages` &&
+          response.ok(),
+      );
+      if (recovery === 'manual')
+        await page.getByRole('button', { name: '历史加载失败，重试' }).click();
+      else store.changes.emit('change');
+      await recoveredRefresh;
+      await page.getByRole('button', { name: '加载更早消息' }).waitFor();
+      assert.equal(await composer.inputValue(), 'Draft survives history and retry');
+    }
     let releaseRefresh!: () => void;
     let refreshEntered!: () => void;
     let refreshReleased!: () => void;
