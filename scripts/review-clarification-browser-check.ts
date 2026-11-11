@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { openPage } from './browser-pages.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,6 +76,7 @@ export async function checkReviewClarification() {
     page.on('pageerror', (error) => errors.push(error.message));
     // The host serves the built UI itself, as in the main check, so 5173 stays free for `npm run dev`.
     await page.goto('http://127.0.0.1:4329');
+    await openPage(page, 'conversation');
     const projectCard = page.locator('.conversation-content .clarification-card');
     await projectCard.getByText('需要用户', { exact: true }).waitFor();
     await projectCard

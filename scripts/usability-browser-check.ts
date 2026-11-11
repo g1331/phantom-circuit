@@ -209,6 +209,9 @@ export async function checkUsability() {
       ),
     });
   });
+  await page.route('**/api/projects/*/workflow?*', (route) =>
+    route.fulfill({ json: { sources: [], admissionPaused: false, inputs: [] } }),
+  );
   await page.route('**/api/events', (route) =>
     route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' }),
   );
@@ -250,6 +253,7 @@ export async function checkUsability() {
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: 'Conversation fixture', exact: true }).click();
+    await openPage(page, 'conversation');
     for (const collapsed of [false, true]) {
       await page.setViewportSize({ width: 1366, height: 768 });
       if (collapsed) await page.locator('.sidebar-toggle').click();
@@ -882,7 +886,8 @@ export async function checkUsability() {
       recursive: true,
     });
     const views = [
-      { page: 'home', name: 'Conversation' },
+      { page: 'home', name: 'Workbench' },
+      { page: 'conversation', name: 'Conversation' },
       { page: 'brief', name: 'Brief' },
       { page: 'work', name: 'Work' },
       { page: 'team', name: 'Team' },
@@ -907,7 +912,7 @@ export async function checkUsability() {
             viewport.width <= 660,
             'workspace menu appears only on phone',
           );
-          if (view.page === 'home') {
+          if (view.page === 'conversation') {
             assert.equal(await page.locator('.home-brief').count(), 0);
             assert.equal(await page.locator('.message .mini-avatar').count(), 0);
           } else if (view.page === 'brief') {
@@ -924,7 +929,7 @@ export async function checkUsability() {
               true,
               `${view.name} must fit desktop height`,
             );
-            if (view.page === 'home') {
+            if (view.page === 'conversation') {
               const composer = await page.locator('.composer').boundingBox();
               assert.ok(composer && composer.y + composer.height <= viewport.height);
               assert.equal(
@@ -981,7 +986,7 @@ export async function checkUsability() {
                 Math.abs(rowsBox.x - titleBox.x) < 1,
               'page title, group headings and rows share the same page gutter',
             );
-          } else if (view.page === 'home') {
+          } else if (view.page === 'conversation') {
             await page.getByLabel('Message to PM').focus();
             await page.locator('.composer').scrollIntoViewIfNeeded();
           }

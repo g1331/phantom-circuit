@@ -2,7 +2,7 @@ import type { Page } from 'playwright';
 import { pagesEn, pagesZh } from '../src/web/locale/pages.ts';
 
 /** The project's addressable pages (ADR 0014), as named in the page navigation. */
-export type ProjectPage = 'home' | 'brief' | 'work' | 'team' | 'project';
+export type ProjectPage = 'home' | 'conversation' | 'brief' | 'work' | 'team' | 'project';
 
 async function copy(page: Page) {
   return (await page.locator('html').getAttribute('lang')) === 'en' ? pagesEn : pagesZh;

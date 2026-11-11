@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { openPage } from './browser-pages.ts';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
@@ -194,6 +195,7 @@ async function checkScenario(
     await page.getByRole('button', { name: '创建项目', exact: true }).click();
     await page.getByLabel('项目名称', { exact: true }).fill(`PM steering ${scenario}`);
     await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
+    await openPage(page, 'conversation');
     await page.getByLabel('给 PM 的消息', { exact: true }).fill('ping');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await reach(preparing, 'native start preparation');

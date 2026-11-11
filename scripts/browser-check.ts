@@ -33,6 +33,7 @@ import { checkMaintenance } from './maintenance-browser-check.ts';
 import { checkReviewClarification } from './review-clarification-browser-check.ts';
 import { checkReconnect } from './browser-reconnect.ts';
 import { checkHistory } from './browser-history.ts';
+import { checkIntakeWorkbench } from './browser-intake.ts';
 import {
   backToWork,
   clickInSidebar,
@@ -144,8 +145,9 @@ try {
   await page.getByLabel('项目名称', { exact: true }).fill('Orbit Studio');
   await page.getByLabel('项目目标').fill('让每一次产品迭代，都从明确的需求开始。');
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
-  await page.getByRole('heading', { name: 'Orbit Studio', exact: true }).waitFor();
+  await page.getByRole('heading', { name: '工作台', exact: true }).waitFor();
   const project = store.list('project')[0];
+  await openPage(page, 'conversation');
   const activityRun = store.run('pm', project.id, 'pm');
   const diagnosticPath =
     String.raw`D:\Orbit Studio\token tools\secret notes` + String.raw`\task-alpha\src\entry.ts`;
@@ -688,7 +690,7 @@ try {
     fullPage: true,
   });
   await documents.getByText('CONTEXT.md', { exact: true }).click();
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   await page.screenshot({ path: resolve(artifacts, '02-workspace-dark.png'), fullPage: true });
   await page.setViewportSize({ width: 1366, height: 768 });
   const conversationSize = await page.locator('.conversation').boundingBox();
@@ -702,7 +704,7 @@ try {
   assert.equal(await page.locator('.workspace-menu').isVisible(), false);
   await openPage(page, 'brief');
   await page.locator('.brief-page .brief').waitFor();
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   await page.screenshot({ path: resolve(artifacts, 'pm-desktop-1366.png') });
   for (let index = 0; index < 8; index++)
     store.addMessage(
@@ -844,7 +846,7 @@ try {
     });
     assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
     await openPage(page, 'work');
-    await openPage(page, 'home');
+    await openPage(page, 'conversation');
     await page.getByLabel('给 PM 的消息').waitFor();
     await page.waitForFunction(() => {
       const element = document.querySelector('.conversation');
@@ -973,7 +975,7 @@ try {
   const deliveredTitle = await taskPage.getByRole('heading', { level: 1 }).innerText();
   await page.locator('.task-controls > summary').click();
   await taskPage.getByRole('button', { name: '撤销这次交付', exact: true }).click();
-  await page.waitForURL(/#\/p\/[^/]+$/);
+  await page.waitForURL(/#\/p\/[^/]+\/conversation$/);
   const rollbackDraft = page.getByLabel('给 PM 的消息', { exact: true });
   assert.ok((await rollbackDraft.inputValue()).includes(`撤销已交付的「${deliveredTitle}」`));
   assert.equal(
@@ -994,7 +996,7 @@ try {
   await search.fill('持续迭代');
   assert.equal(await page.locator('.work-page').getByRole('link').count(), 1);
   await search.fill('');
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   const markdown = [
     '# 交付说明',
     '',
@@ -1293,7 +1295,7 @@ try {
       }
 
       await documents.getByText('CONTEXT.md', { exact: true }).click();
-      await openPage(page, 'home');
+      await openPage(page, 'conversation');
     }
   }
   assert.equal(store.task(task.id).spec, longMarkdown);
@@ -1365,7 +1367,7 @@ try {
   const pmProfiles = structuredClone(store.project(project.id).profiles);
   pmProfiles.pm = { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' };
   store.saveProjectProfiles(project.id, pmProfiles);
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   await page.reload();
   await checkPMModels(page, store, project.id);
   await checkLocale(page, artifacts);
@@ -1384,6 +1386,7 @@ try {
     'C:/Users/admin/AppData/Local/Temp/opencode/pm-steer-browser',
     await freePort(),
   );
+  await checkIntakeWorkbench(page, store, engine, artifacts);
   const historyPage = await browser.newPage({
     locale: 'zh-CN',
     viewport: { width: 1280, height: 900 },

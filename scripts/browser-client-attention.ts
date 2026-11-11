@@ -97,7 +97,7 @@ export async function checkClientAttention({
     questions: [{ id: 'scope', question: '本次先向哪些用户开放？' }],
   });
   await page.reload();
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   await page.locator('.project-actions .clarification-card textarea').waitFor();
   assert.equal(
     await page
@@ -129,7 +129,7 @@ export async function checkClientAttention({
             path: resolve(artifacts, `attention-${view}-${width}-${locale}-${theme}.png`),
           });
         };
-        await openPage(page, 'home');
+        await openPage(page, 'conversation');
         await page.locator('.project-actions .clarification-card textarea').waitFor();
         assert.equal(
           await page
@@ -334,7 +334,7 @@ export async function checkProjectQuestion(page: Page, store: Store, artifacts: 
   const openQuestionEntry = async (entryPoint: 'work' | 'brief' | 'team') => {
     // Start from a mounted conversation at its latest messages, then leave and follow the
     // request link. A cold page with no reading anchor misses this regression.
-    await page.goto(`${origin}/?question-entry=${++visit}#/p/${project.id}`);
+    await page.goto(`${origin}/?question-entry=${++visit}#/p/${project.id}/conversation`);
     await page.getByText('Earlier discussion 79', { exact: true }).waitFor();
     await page.locator('.history-control [role="status"]').waitFor({ state: 'detached' });
     await page.waitForFunction(() => {

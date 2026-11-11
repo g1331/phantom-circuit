@@ -322,7 +322,7 @@ export async function checkExternalDelivery(
       }
     }
     await choosePreference(page, 'language', 'en');
-    await openPage(page, 'home');
+    await openPage(page, 'conversation');
     await page
       .getByText(/was delivered externally/i)
       .first()
@@ -330,7 +330,7 @@ export async function checkExternalDelivery(
     await openTask(page, fixtures.done.title);
     await openSection(page, 'task.tab.process');
     assert.equal(await page.locator('.task-owner-context textarea').count(), 0);
-    await openPage(page, 'home');
+    await openPage(page, 'conversation');
     await page
       .locator('.project-actions > details > summary')
       .getByText('Technical records', { exact: true })

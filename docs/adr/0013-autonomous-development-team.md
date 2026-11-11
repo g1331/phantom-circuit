@@ -1,5 +1,9 @@
 # Operate as an autonomous development team behind a requirements conversation
 
+Direction update: ADR 0019 M1 delivers the visual primary workbench and opt-in, explicitly
+addressed GitHub Issue requests through original-Issue result replies. The user remains the team's
+client. Owner-led platform follow-ups and proactive maintenance remain later milestones.
+
 Status: accepted direction, partly implemented: these parts have landed:
 
 - the Dev handling its own failed host validation, amending ADR 0005;
@@ -33,7 +37,7 @@ The product ships as one core service in two packages. The desktop application i
 
 Direction under discussion, not decided: one deployment of the service is one team, and its members are combinations of harness, account and machine that the user makes available, possibly spanning several machines. Several people sharing one deployment is a later question.
 
-The redesign is led by the operator rather than by Phantom itself, because it changes how the team organizes its own work; Phantom receives well-bounded slices once the skeleton exists. The planned order is:
+The redesign is led by the operator rather than by Phantom itself, because it changes how the team organizes its own work; Phantom receives well-bounded slices once the skeleton exists. The original delivery order, superseded by ADR 0019, was:
 
 1. team autonomy and a rebuilt interface (conversation, team view, direct owner conversations, intervention);
 2. the service form: separation from the checkout, background and system service, Linux support;

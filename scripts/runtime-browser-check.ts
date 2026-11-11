@@ -156,6 +156,8 @@ export async function checkRuntimeUI() {
     let result: unknown = {};
     if (path === '/session') result = { csrf: 'fixture' };
     else if (path === '/state') result = { ...snapshot, messages: [], activities: [] };
+    else if (path.endsWith('/workflow'))
+      result = { sources: [], admissionPaused: false, inputs: [] };
     else if (path.endsWith('/messages') && request.method() === 'GET') {
       for (const message of snapshot.messages) store.put('message', message.id, message);
       for (const activity of snapshot.activities) store.put('activity', activity.id, activity);
@@ -299,6 +301,7 @@ export async function checkRuntimeUI() {
       recursive: true,
     });
     await page.goto('http://127.0.0.1:4330');
+    await openPage(page, 'conversation');
     const unconfiguredModel = page.locator('.pm-model-trigger');
     await unconfiguredModel.waitFor();
     assert.equal((await unconfiguredModel.innerText()).trim(), 'Not configured');
@@ -433,7 +436,7 @@ export async function checkRuntimeUI() {
     assert.deepEqual(current.agentSelection, { mode: 'override', agent: 'omp' });
     assert.equal(current.profileModes?.pm, 'pinned');
     assert.equal(current.recoveryPolicy, 'manual');
-    await openPage(page, 'home');
+    await openPage(page, 'conversation');
     const globalBeforePM = structuredClone(snapshot.settings);
     const otherRoleBeforePM = structuredClone(current.ompProfiles?.review);
     const pmTrigger = page.getByRole('button', {

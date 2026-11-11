@@ -13,6 +13,7 @@ import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { Previews } from '../src/server/preview.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
+import { openPage } from './browser-pages.ts';
 
 export async function checkReconnect() {
   const probe = createPortProbe();
@@ -58,6 +59,9 @@ export async function checkReconnect() {
       proxy: {
         '/api': {
           target: `http://127.0.0.1:${port}`,
+          // The isolated frontend port is outside the production dev-origin allowlist.
+          changeOrigin: true,
+          headers: { origin: `http://127.0.0.1:${port}` },
           configure(proxy) {
             proxy.on('proxyRes', (response, _request, outgoing) => {
               response.on('aborted', () => outgoing.destroy());
@@ -86,6 +90,7 @@ export async function checkReconnect() {
     assert.ok(origin);
     await page.goto(origin);
     await page.locator('.connection .live').waitFor();
+    await openPage(page, 'conversation');
     const oldSession = (await page.context().cookies()).find(
       (cookie) => cookie.name === 'phantom_session',
     );
@@ -153,6 +158,7 @@ export async function checkReconnect() {
     app = makeApp();
     await app.listen({ host: '127.0.0.1', port });
     await initial.locator('.connection .live').waitFor({ timeout: 12_000 });
+    await openPage(initial, 'conversation');
     await initial.getByRole('heading', { name: 'Restart fixture', exact: true }).waitFor();
     assert.equal(
       await initial.getByRole('alert').count(),
@@ -166,6 +172,7 @@ export async function checkReconnect() {
       route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' }),
     );
     await interruptedStream.goto(origin);
+    await openPage(interruptedStream, 'conversation');
     await interruptedStream
       .getByRole('heading', { name: 'Restart fixture', exact: true })
       .waitFor();

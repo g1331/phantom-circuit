@@ -244,7 +244,7 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
     'Draft survives model switching',
   );
   await openPage(page, 'work');
-  await openPage(page, 'home');
+  await openPage(page, 'conversation');
   assert.equal(
     await page.getByLabel('给 PM 的消息', { exact: true }).inputValue(),
     'Draft survives model switching',

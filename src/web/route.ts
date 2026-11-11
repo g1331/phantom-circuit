@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 
-/** The addressable pages (ADR 0014). Hash routes keep links and the back button working anywhere. */
-export type Page = 'home' | 'brief' | 'work' | 'task' | 'team' | 'project';
+/** Hash routes preserve work, input, and conversation links across navigation (ADRs 0014/0019). */
+export type Page =
+  'home' | 'conversation' | 'input' | 'brief' | 'work' | 'task' | 'team' | 'project';
 export interface Route {
   page: Page;
   projectId?: string;
   taskId?: string;
+  inputId?: string;
   /** A section or conversation request within the page; absent means the default view. */
   view?: string;
 }
 
-const pages: Page[] = ['brief', 'work', 'team', 'project'];
+const pages: Page[] = ['conversation', 'brief', 'work', 'team', 'project'];
 
 export function parseRoute(hash: string): Route {
   let parts: string[];
@@ -22,18 +24,21 @@ export function parseRoute(hash: string): Route {
   }
   const [p, projectId, section, a, b] = parts;
   if (p !== 'p' || !projectId) return { page: 'home' };
-  if (section === 'requests' && a) return { page: 'home', projectId, view: a };
+  if (section === 'requests' && a) return { page: 'conversation', projectId, view: a };
+  if (section === 'inputs' && a) return { page: 'input', projectId, inputId: a };
   if (section === 'work' && a) return { page: 'task', projectId, taskId: a, ...(b && { view: b }) };
   const page = pages.includes(section as Page) ? (section as Page) : 'home';
   return { page, projectId, ...(page === 'project' && a && { view: a }) };
 }
 
-export function routeHref({ page, projectId, taskId, view }: Route) {
+export function routeHref({ page, projectId, taskId, inputId, view }: Route) {
   if (!projectId) return '#/';
   const base = `#/p/${encodeURIComponent(projectId)}`;
   const tail = view ? `/${encodeURIComponent(view)}` : '';
   if (page === 'task' && taskId) return `${base}/work/${encodeURIComponent(taskId)}${tail}`;
+  if (page === 'input' && inputId) return `${base}/inputs/${encodeURIComponent(inputId)}`;
   if (page === 'project') return `${base}/project${tail}`;
+  if (page === 'conversation' && view) return `${base}/requests${tail}`;
   return page === 'home' ? (view ? `${base}/requests${tail}` : base) : `${base}/${page}`;
 }
 

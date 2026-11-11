@@ -8,10 +8,11 @@ import {
   X,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import type { Evidence, ReviewResult, Snapshot, Task } from '../shared/types.ts';
+import type { ReviewResult, Snapshot, Task } from '../shared/types.ts';
 import {
   externalDeliveryHold,
   isExternalDelivery,
+  latestPerCommand,
   pendingExternalMerge,
   taskDeliveryHead,
   taskDeliveryPR,
@@ -23,17 +24,6 @@ import { EngineeringReference } from './engineering-reference.tsx';
 
 type Tone = 'pass' | 'fail' | 'pending' | 'merged' | 'attention';
 const short = (sha?: string) => sha?.slice(0, 7) ?? '';
-
-/** The newest result per command at one revision: reruns replace older attempts. */
-function latestPerCommand(tests: Evidence[], head?: string) {
-  const at = head ? tests.filter((e) => e.head === head) : tests;
-  const byCommand = new Map<string, Evidence>();
-  for (const evidence of at) {
-    const seen = byCommand.get(evidence.command);
-    if (!seen || seen.at <= evidence.at) byCommand.set(evidence.command, evidence);
-  }
-  return [...byCommand.values()];
-}
 
 /** Reviews still applicable to the work, preferring those at its current revision. */
 function currentReviews(task: Task) {

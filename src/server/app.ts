@@ -288,6 +288,51 @@ export function createApp(
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return store.setTaskPriority(id, req.body, { actor: 'user' });
   });
+  app.get('/api/projects/:id/workflow', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const query = z
+      .object({
+        before: z.string().min(1).optional(),
+        limit: z.coerce.number().int().min(1).max(50).default(30),
+      })
+      .strict()
+      .parse(req.query);
+    return engine.intake.workflow(id, query.before, query.limit);
+  });
+  app.get('/api/projects/:id/workflow/inputs', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { ids } = z
+      .object({
+        ids: z
+          .string()
+          .transform((value) => value.split(','))
+          .pipe(z.array(z.string().min(1)).min(1).max(50)),
+      })
+      .strict()
+      .parse(req.query);
+    return engine.intake.summaries(id, ids);
+  });
+  app.get('/api/inputs/:id', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.intake.detail(id);
+  });
+  app.put('/api/repos/:id/intake', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.intake.configure(id, req.body);
+  });
+  app.post('/api/repos/:id/intake/refresh', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const source = await engine.intake.refresh(id);
+    return source;
+  });
+  app.post('/api/inputs/:id/retry', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.intake.retry(id);
+  });
+  app.post('/api/inputs/:id/reconcile-reply', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.intake.reconcileReply(id);
+  });
   app.get('/api/state', async (req) => {
     await agentSettingsReady;
     const { messages } = z.object({ messages: z.literal('none').optional() }).parse(req.query);

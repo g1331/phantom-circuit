@@ -1,3 +1,4 @@
+import type { IntakeSource, SourceInput, InputAssessment, SourceReply } from '../shared/intake.ts';
 import { TEAM_INSTRUCTIONS_LIMIT, teamInstructionsLength } from '../shared/team-instructions.ts';
 import {
   comparePriority,
@@ -143,6 +144,11 @@ export const defaults: Settings = {
   secondaryReviewProfiles: { omp: structuredClone(ompSecondaryReviewProfile) },
 };
 type Entities = {
+  intakeSource: IntakeSource;
+  sourceInput: SourceInput;
+  inputAssessment: InputAssessment;
+  sourceReply: SourceReply;
+  inputIdentity: { id: string; databaseId: number; nodeId: string };
   event: Event;
   activity: PMActivity;
   provider: Provider;
@@ -273,7 +279,8 @@ export class Store {
       const settings = normalizeSettings(storedSettings ?? structuredClone(defaults));
       this.put('settings', 'global', settings);
       for (const project of this.list('project')) {
-        let changed = false;
+        let changed = project.admissionPaused === undefined;
+        project.admissionPaused ??= false;
         const hadProfiles = !!project.profiles;
         if (!project.profiles) {
           project.profiles = structuredClone(settings.profiles);
@@ -527,6 +534,11 @@ export class Store {
     ).map((x) => JSON.parse(x.body));
   }
   put<K extends keyof Entities>(kind: K, key: string, value: Entities[K]) {
+    if (kind === 'sourceInput' || kind === 'inputIdentity') {
+      const previous = this.get(kind, key);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(value))
+        throw new Fault('外部输入证据不可修改', 409);
+    }
     this.db
       .prepare(
         'INSERT INTO documents VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body',
@@ -1080,7 +1092,10 @@ export class Store {
 
   createClarification(input: unknown): Clarification {
     const parsed = clarificationInput.parse(input);
-    const source = this.get('message', parsed.sourceMessageId);
+    const authority = this.sourceAuthority(parsed.sourceMessageId, parsed.projectId);
+    if (authority.external?.assessment.disposition.status === 'no_action')
+      throw new Fault('此请求已记录无需行动判断', 409);
+    const source = authority.message;
     if (!source || source.projectId !== parsed.projectId)
       throw new Fault('Clarification 来源消息不属于当前项目', 403);
     if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
@@ -1445,9 +1460,15 @@ export class Store {
       providers: [{ ...officialProvider }, ...this.list('provider')],
       projects: this.list('project'),
       repos: this.list('repo'),
-      tasks: this.list('task'),
+      tasks: this.list('task').map((task) =>
+        task.issueOrigin ? { ...task, issueBody: undefined } : task,
+      ),
       runs: this.list('run'),
-      messages: options ? [] : this.list('message'),
+      messages: options
+        ? []
+        : this.list('message').map((message) =>
+            message.origin ? { ...message, content: '' } : message,
+          ),
       events: this.events(),
       settings: this.settings(),
       documents: this.list('document'),
@@ -1581,6 +1602,7 @@ export class Store {
         secondaryReviewProfiles: this.settings().secondaryReviewProfiles
           ? structuredClone(this.settings().secondaryReviewProfiles)
           : undefined,
+        admissionPaused: false,
         recoveryPolicy: 'automatic',
         profileVersion: 0,
       };
@@ -1681,6 +1703,12 @@ export class Store {
   updateMessage(key: string, patch: Partial<Message>) {
     const previous = this.get('message', key);
     if (!previous) throw new Fault('消息不存在', 404);
+    if (
+      previous.origin &&
+      ['origin', 'content', 'intent', 'role', 'projectId', 'id'].some((field) => field in patch)
+    )
+      throw new Fault('外部来源及原始正文不可修改', 409);
+    if (!previous.origin && patch.origin) throw new Fault('不能伪造外部来源', 403);
     const next: Message = {
       ...previous,
       ...patch,
@@ -1725,7 +1753,7 @@ export class Store {
     }
     if (run.taskId) {
       const task = this.get('task', run.taskId);
-      if (task)
+      if (task && !task.issueOrigin)
         this.put('task', task.id, {
           ...task,
           sourceMessageId: message.id,
@@ -1864,6 +1892,97 @@ export class Store {
       draftStatus: 'draft',
     });
   }
+  workflowInputs(projectId: string, before?: string, limit = 30) {
+    const size = Math.max(1, Math.min(50, limit));
+    const boundary = before
+      ? (this.db
+          .prepare(
+            "SELECT rowid FROM documents WHERE kind='sourceInput' AND id=? AND json_extract(body,'$.projectId')=?",
+          )
+          .get(before, projectId) as { rowid: number } | undefined)
+      : undefined;
+    if (before && !boundary) throw new Fault('输入分页位置不存在', 400);
+    const rows = this.db
+      .prepare(
+        "SELECT json_remove(body,'$.body') AS body FROM documents WHERE kind='sourceInput' AND json_extract(body,'$.projectId')=? AND rowid<? ORDER BY rowid DESC LIMIT ?",
+      )
+      .all(projectId, boundary?.rowid ?? Number.MAX_SAFE_INTEGER, size + 1) as { body: string }[];
+    const inputs = rows
+      .slice(0, size)
+      .map((row) => JSON.parse(row.body) as Omit<SourceInput, 'body'>);
+    return { inputs, ...(rows.length > size ? { next: inputs.at(-1)?.id } : {}) };
+  }
+  workflowInputSummaries(projectId: string, ids: string[]): Omit<SourceInput, 'body'>[] {
+    const rows = this.db
+      .prepare(
+        "SELECT json_remove(body,'$.body') AS body FROM documents WHERE kind='sourceInput' " +
+          `AND id IN (${ids.map(() => '?').join(',')}) ` +
+          "AND json_extract(body,'$.projectId')=? ORDER BY rowid DESC",
+      )
+      .all(...ids, projectId) as { body: string }[];
+    return rows.map((row) => JSON.parse(row.body));
+  }
+  workflowReplies(inputId: string): Omit<SourceReply, 'body'>[] {
+    const rows = this.db
+      .prepare(
+        "SELECT json_remove(body,'$.body') AS body FROM documents WHERE kind='sourceReply' " +
+          "AND json_extract(body,'$.inputId')=? ORDER BY rowid",
+      )
+      .all(inputId) as { body: string }[];
+    return rows.map((row) => JSON.parse(row.body));
+  }
+  sourceAuthority(messageId: string, projectId: string, repoId?: string) {
+    const message = this.get('message', messageId);
+    if (!message || message.projectId !== projectId) throw new Fault('来源消息不属于当前项目', 403);
+    if (!message.origin) {
+      if (message.role !== 'user') throw new Fault('只有明确实施的用户需求可以派生任务', 403);
+      return { message, external: undefined };
+    }
+    const origin = message.origin;
+    const input = this.get('sourceInput', origin.inputId);
+    const assessment = this.get('inputAssessment', origin.assessmentId);
+    const grant = assessment?.admission;
+    const source = input ? this.get('intakeSource', input.sourceId) : undefined;
+    if (
+      !source ||
+      source.projectId !== projectId ||
+      source.repoId !== input?.repoId ||
+      !input ||
+      !assessment ||
+      !grant ||
+      input.id !== assessment.inputId ||
+      assessment.sourceId !== input.sourceId ||
+      input.projectId !== projectId ||
+      assessment.projectId !== projectId ||
+      input.repoId !== assessment.repoId ||
+      (repoId !== undefined && input.repoId !== repoId) ||
+      this.repo(input.repoId).projectId !== projectId ||
+      grant.inputId !== input.id ||
+      grant.actorId !== input.actor.id ||
+      grant.policyVersion !== assessment.policyVersion ||
+      input.actor.kind !== 'user' ||
+      !input.body.startsWith(grant.command) ||
+      !/^(?:\s|$)/.test(input.body.slice(grant.command.length)) ||
+      message.role !== 'system' ||
+      message.intent !== 'implement' ||
+      message.content !== input.body ||
+      origin.issue !== input.number ||
+      origin.url !== input.url ||
+      origin.kind !== input.kind ||
+      JSON.stringify(origin.actor) !== JSON.stringify(input.actor) ||
+      !('messageId' in assessment.disposition) ||
+      assessment.disposition.messageId !== message.id
+    )
+      throw new Fault('外部来源授权证据不完整或绑定不一致', 403);
+    return { message, external: { input, assessment } };
+  }
+  sourceTask(messageId: string, projectId: string, taskId: string) {
+    const task = this.task(taskId);
+    const { external } = this.sourceAuthority(messageId, projectId, task.repoId);
+    if (external && task.sourceMessageId !== messageId)
+      throw new Fault('外部来源不能操作其他请求的任务', 403);
+    return task;
+  }
   createTask(
     input: Pick<
       Task,
@@ -1899,14 +2018,14 @@ export class Store {
         `${(error as Error).message}（changeType、scope、summaryEn 必须同时提供或都不提供）`,
       );
     }
-    const source = this.get('message', input.sourceMessageId);
-    if (
-      !source ||
-      source.projectId !== input.projectId ||
-      source.role !== 'user' ||
-      !['implement', 'feedback'].includes(source.intent ?? '')
-    )
+    const authority = this.sourceAuthority(input.sourceMessageId, input.projectId, input.repoId);
+    const source = authority.message;
+    if (!['implement', 'feedback'].includes(source.intent ?? ''))
       throw new Fault('只有明确实施的用户需求可以派生任务');
+    if (authority.external?.assessment.disposition.status === 'no_action')
+      throw new Fault('已记录无需行动，不能再派生任务', 409);
+    if (authority.external && this.project(input.projectId).admissionPaused)
+      throw new Fault('团队已暂停接收工作', 409);
     const sourceClarification = this.list('clarification').find(
       (clarification) =>
         clarification.sourceMessageId === input.sourceMessageId &&
@@ -1934,12 +2053,58 @@ export class Store {
         t.title.trim().toLowerCase() === input.title.trim().toLowerCase(),
     );
     if (existing) return existing;
+    if (authority.external) {
+      const prior = this.list('task').find((task) => task.sourceMessageId === source.id);
+      if (prior) {
+        const clarification = this.createClarification({
+          projectId: input.projectId,
+          sourceMessageId: source.id,
+          sourceIntent: source.intent,
+          taskId: prior.id,
+          questions: [
+            { question: '此 Issue 请求需要多个独立交付，请先决定单项交付范围；现有任务已暂停。' },
+          ],
+        });
+        this.updateTaskControl(
+          prior.id,
+          { control: 'paused', pausedByUser: false, blocked: '多个独立交付需要先确认范围' },
+          'pause',
+          { source: 'host', reason: 'intake_scope' },
+        );
+        this.put('inputAssessment', authority.external.assessment.id, {
+          ...authority.external.assessment,
+          updatedAt: now(),
+          disposition: {
+            status: 'awaiting_decision',
+            messageId: source.id,
+            clarificationId: clarification.id,
+            reason: '多个独立交付需要先确认范围',
+          },
+        });
+        throw new Fault('一个外部请求只允许一个独立交付，已暂停并请求范围决定', 409);
+      }
+    }
     for (const dep of input.dependencies) {
       if (this.task(dep).projectId !== input.projectId) throw new Fault('依赖必须属于当前项目');
     }
     const profile: ProfileName = input.complexity === 'complex' ? 'complex' : input.kind;
     const task: Task = {
       ...input,
+      ...(authority.external
+        ? {
+            issueOrigin: {
+              kind: 'external' as const,
+              inputId: authority.external.input.id,
+              assessmentId: authority.external.assessment.id,
+            },
+            issue: authority.external.input.number,
+            issueUrl: authority.external.input.url,
+            issueNodeId: authority.external.input.nativeId,
+            issueDatabaseId: this.get('inputIdentity', authority.external.input.id)?.databaseId,
+            issueBody: authority.external.input.body,
+            issueState: 'open' as const,
+          }
+        : {}),
       priority,
       priorityVersion: 0,
       priorityReason: priorityInput.priorityReason,
@@ -1974,7 +2139,15 @@ export class Store {
       createdAt: now(),
       updatedAt: now(),
     };
-    this.put('task', task.id, task);
+    this.transaction(() => {
+      this.put('task', task.id, task);
+      if (authority.external)
+        this.put('inputAssessment', authority.external.assessment.id, {
+          ...authority.external.assessment,
+          updatedAt: now(),
+          disposition: { status: 'accepted', messageId: source.id, taskId: task.id },
+        });
+    });
     this.event('task', `任务已准备：${task.title}`, { projectId: task.projectId, taskId: task.id });
     return task;
   }
@@ -1987,6 +2160,12 @@ export class Store {
     return this.transaction(() => {
       const task = this.task(input.taskId);
       if (task.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
+      if (
+        source.actor === 'pm' &&
+        source.sourceMessageId &&
+        this.get('message', source.sourceMessageId)?.origin
+      )
+        this.sourceTask(source.sourceMessageId, projectId, task.id);
       const previous = task.priorityHistory?.find((entry) => entry.requestId === input.requestId);
       if (previous) {
         if (
@@ -2552,6 +2731,16 @@ export class Store {
           const reasons: SchedulingExplanation['tasks'][number]['reasons'] = [];
           const repo = snapshot.repos.find((r) => r.id === task.repoId)!;
           const attention = taskAttention(task);
+          if (task.issueOrigin) {
+            const source = this.get('message', task.sourceMessageId);
+            const assessment = this.get('inputAssessment', task.issueOrigin.assessmentId);
+            if (
+              project.admissionPaused ||
+              source?.status !== 'completed' ||
+              assessment?.disposition.status !== 'accepted'
+            )
+              reasons.push({ code: 'blocked', detail: '外部请求判断未完成或团队暂停' });
+          }
           if (attention.paused) reasons.push({ code: 'paused' });
           if (attention.blocked) reasons.push({ code: 'blocked', detail: attention.blocked });
           if (task.pendingFeedback?.length && !attention.historicalReason)
@@ -2638,6 +2827,21 @@ export class Store {
   /** Shared execution gate; observing a remote merge never rewrites engineering history. */
   assertTaskExecutable(key: string) {
     const task = this.task(key);
+    if (task.issueOrigin) {
+      const authority = this.sourceAuthority(task.sourceMessageId, task.projectId, task.repoId);
+      if (
+        !authority.external ||
+        authority.external.input.id !== task.issueOrigin.inputId ||
+        authority.external.assessment.id !== task.issueOrigin.assessmentId ||
+        task.issue !== authority.external.input.number ||
+        task.issueNodeId !== authority.external.input.nativeId ||
+        task.issueUrl !== authority.external.input.url
+      )
+        throw new Fault('外部任务来源绑定不一致', 409);
+      if (authority.external.assessment.disposition.status !== 'accepted')
+        throw new Fault('外部请求等待判断或范围决定', 409);
+      if (this.project(task.projectId).admissionPaused) throw new Fault('团队已暂停接收工作', 409);
+    }
     if (externalDevelopmentHeld(task)) {
       const completed = task.completion?.source === 'external';
       const reason = completed
@@ -2698,7 +2902,7 @@ export class Store {
         },
         deliveryRevision: { head: evidence.primary.head, commit: evidence.primary.mergeCommit },
         externalCompletionPendingReason: undefined,
-        completionDeliveryPending: false,
+        completionDeliveryPending: !!task.issueOrigin,
         completionSyncedAt: at,
       });
       for (const incident of this.list('incident'))
@@ -2901,7 +3105,7 @@ export class Store {
         });
     const steers = this.list('operation').filter((operation) => operation.kind === 'steer');
     for (const m of this.list('message'))
-      if (m.role === 'user' && m.status === 'running') {
+      if ((m.role === 'user' || m.origin) && m.status === 'running') {
         const operation = steers.find((op) => op.clientUserMessageId === m.id);
         if (operation && ['pending', 'uncertain'].includes(operation.status)) {
           this.updateMessage(m.id, {

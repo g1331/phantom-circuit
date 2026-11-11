@@ -1,3 +1,4 @@
+import type { ExternalMessageOrigin } from './intake.ts';
 import type { PriorityChange } from './priority.ts';
 
 export type Stage =
@@ -64,6 +65,7 @@ export interface Settings {
   secondaryReviewProfiles?: Partial<Record<AgentKind, Profile>>;
 }
 export interface Project {
+  admissionPaused?: boolean;
   autoAdoptInstructions?: boolean;
   profiles: Settings['profiles'];
   ompProfiles?: Settings['ompProfiles'];
@@ -128,6 +130,7 @@ export interface ImageAttachment {
   height: number;
 }
 export interface Message {
+  origin?: ExternalMessageOrigin;
   timelineOrder?: number;
   id: string;
   projectId: string;
@@ -190,6 +193,7 @@ export type TaskCompletion =
       >;
     };
 export interface Task {
+  issueOrigin?: { kind: 'external'; inputId: string; assessmentId: string };
   retrospectiveChecked?: boolean;
   id: string;
   projectId: string;

@@ -132,7 +132,9 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
   const visit = async (id: string) => {
     await Promise.all(responseChecks);
     // Hash-only navigation can normalize against a snapshot from before fixture creation.
-    await page.goto(`${new URL(page.url()).origin}/?history-fixture=${++navigation}#/p/${id}`);
+    await page.goto(
+      `${new URL(page.url()).origin}/?history-fixture=${++navigation}#/p/${id}/conversation`,
+    );
     await page
       .getByRole('heading', { name: store.project(id).name, exact: true, includeHidden: true })
       .waitFor({ state: 'attached' });
@@ -877,7 +879,7 @@ export async function checkHistory(page: Page, store: Store, artifacts: string) 
     await top();
     await waiting;
     await page.evaluate((id) => {
-      location.hash = `#/p/${id}`;
+      location.hash = `#/p/${id}/conversation`;
     }, short.id);
     await page.getByText('Short fixture reply', { exact: true }).waitFor();
     release();
