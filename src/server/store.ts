@@ -2207,8 +2207,15 @@ export class Store {
     input: Pick<DesignDocument, 'repoId' | 'path' | 'content' | 'accepted'>,
   ) {
     if (this.repo(input.repoId).projectId !== projectId) throw new Fault('文档仓库不属于项目');
-    if (!/^(CONTEXT\.md|CONTEXT-MAP\.md|docs\/adr\/\d{4}-[a-z0-9-]+\.md)$/.test(input.path))
-      throw new Fault('领域文档路径必须使用已约定的词汇表或 ADR 格式');
+    const parts = input.path.split(/[/\\]/);
+    if (
+      !input.path.trim() ||
+      /^[/\\]/.test(input.path) ||
+      /[:\0]/.test(input.path) ||
+      parts.some((part) => part === '..' || part.replace(/[ .]+$/, '').toLowerCase() === '.git') ||
+      !parts.at(-1)?.replace(/[ .]+$/, '')
+    )
+      throw new Fault('文档路径必须位于仓库内，且不得指向 Git 元数据');
     const old = this.list('document').find(
       (d) => d.repoId === input.repoId && d.path === input.path,
     );

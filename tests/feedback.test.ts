@@ -119,23 +119,19 @@ test('design discussion records are durable but never authorize task claims', ()
   });
   const doc = s.recordDocument(p.id, {
     repoId: r.id,
-    path: 'docs/adr/0001-storage.md',
+    path: 'documentation/decisions/storage.md',
     content: '# Storage\nKeep execution state local.',
     accepted: true,
   });
   assert.equal(s.snapshot().documents[0].id, doc.id);
   assert.equal(s.list('task').length, 0);
   assert.equal(s.claimNext(), undefined);
-  assert.throws(
-    () =>
-      s.recordDocument(p.id, {
-        repoId: r.id,
-        path: '../../outside',
-        content: 'bad',
-        accepted: true,
-      }),
-    /路径/,
-  );
+  for (const path of ['../../outside', '..\\outside', '/outside', 'C:\\outside', '.git/config']) {
+    assert.throws(
+      () => s.recordDocument(p.id, { repoId: r.id, path, content: 'bad', accepted: true }),
+      /路径/,
+    );
+  }
   s.close();
 });
 
