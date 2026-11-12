@@ -31,7 +31,7 @@ export function MaintenancePanel({ repoId }: { repoId: string }) {
           `/repos/${repoId}/maintenance${
             refresh ? '/refresh' : before ? `?before=${encodeURIComponent(before)}` : ''
           }`,
-          undefined,
+          refresh ? {} : undefined,
           refresh ? 'POST' : 'GET',
         ),
       );

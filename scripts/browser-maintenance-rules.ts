@@ -21,8 +21,8 @@ export async function checkMaintenanceRules(
       const repo = store.createRepo({
         projectId: project.id,
         name: 'Maintenance fixture',
-        path: '/synthetic/maintenance',
-        github: 'synthetic/maintenance',
+        path: `/synthetic/maintenance-${width}`,
+        github: `synthetic/maintenance-${width}`,
         defaultBranch: 'main',
         authorized: true,
       });
@@ -36,7 +36,7 @@ export async function checkMaintenanceRules(
         revision: 'fixed',
         title: 'Documentation correction',
         body: 'Correct the installation command.',
-        url: 'https://github.com/synthetic/maintenance/issues/100',
+        url: `https://github.com/${repo.github}/issues/100`,
         sourceAt: observedAt,
         observedAt,
         selectorValues: ['docs'],
@@ -48,7 +48,9 @@ export async function checkMaintenanceRules(
       };
       engine.github.readMaintenanceCandidates = async () => [candidate];
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(`${origin}/#/p/${project.id}/sources`);
+      // Reload the snapshot after creating each isolated project; a hash-only navigation
+      // can resolve against the preceding fixture's still-loaded project list.
+      await page.goto(`${origin}/?maintenance-fixture=${width}#/p/${project.id}/sources`);
       await choosePreference(page, 'language', 'zh-CN');
       const panel = page.getByRole('region', { name: '维护规则', exact: true });
       await panel.getByText('新增观察规则以读取候选。', { exact: true }).waitFor();
@@ -56,7 +58,9 @@ export async function checkMaintenanceRules(
       await page.screenshot({ path: resolve(artifacts, `maintenance-empty-${width}.png`) });
       await panel.getByRole('button', { name: '新增规则', exact: true }).click();
       const form = panel.locator('form');
-      assert.equal(await form.getByLabel('模式', { exact: true }).inputValue(), 'observe');
+      // The wrapping label's text includes options; use the select's accessible name.
+      const mode = panel.getByRole('combobox', { name: '模式', exact: true });
+      assert.equal(await mode.inputValue(), 'observe');
       await form.getByLabel('规则名称', { exact: true }).fill('Documentation rule');
       await form.getByLabel('Issue 标签（完整名称）', { exact: true }).fill('docs');
       await form
@@ -79,7 +83,7 @@ export async function checkMaintenanceRules(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
       );
       await panel.locator('.maintenance-rule > summary').click();
-      await panel.locator('form').getByLabel('模式', { exact: true }).selectOption('auto');
+      await mode.selectOption('auto');
       await panel.locator('form').getByRole('button', { name: '保存新版本', exact: true }).click();
       await panel.getByText('历史规则版本', { exact: false }).waitFor();
       assert.equal(engine.maintenance.rules(repo.id)[0].mode, 'auto');
@@ -91,7 +95,7 @@ export async function checkMaintenanceRules(
         .filter({ hasText: 'v1' })
         .waitFor();
       assert.match(await panel.innerText(), /自动（当前仅观察，执行待实现）/);
-      await panel.locator('form').getByLabel('模式', { exact: true }).selectOption('off');
+      await mode.selectOption('off');
       await panel.locator('form').getByRole('button', { name: '保存新版本', exact: true }).click();
       await panel.locator('.maintenance-rule > summary').filter({ hasText: 'v3' }).waitFor();
       assert.equal(
