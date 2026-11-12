@@ -11,6 +11,7 @@ The owner may commission bounded temporary contributions with an objective, capa
 profile, and read/write mode. Private worktrees and existing Run capacity support these
 assignments; results return to the owner, who explicitly integrates code contributions
 (`src/server/collaboration.ts`). Ownership stays with the owner.
+Contributors cannot expand the owner's authorization.
 
 Authorized bound feedback retains its native identity and revision and is judged in the
 owner's work session. In-scope corrections continue the same work; scope changes seek
