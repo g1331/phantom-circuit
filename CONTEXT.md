@@ -4,14 +4,20 @@ A local software-engineering team whose workbench shows requests, decisions, ong
 
 ## Language
 
-**Project**: A product context managed by one PM and associated with one or more repositories.
+**Project**: A product context with shared coordination and one or more repositories.
 _Avoid_: Repository, workspace
 
-**PM**: The agent responsible for a project's requirements, technical decisions, coordination and acceptance.
-_Avoid_: Dispatcher, coding worker
+**Coordinator**: The execution that judges new requests and handles product clarification or cross-work routing. Historical records call this PM.
+_Avoid_: Work owner, merge approver
 
-**Dev**: An agent assigned to implement and revise one task in its own branch and worktree.
-_Avoid_: PM, reviewer
+**Owner**: The agent continuously responsible for one Task, including implementation, feedback, verification, and delivery. Historical records call this Dev.
+_Avoid_: Temporary contributor, coordinator
+
+**Collaboration**: A bounded contribution commissioned by an owner, with a concrete objective, permitted actions, and a result returned to that owner.
+_Avoid_: Permanent role, ownership transfer
+
+**Follow-up**: A source-linked input belonging to existing work, retained with its revision, judgment, and reply outcome.
+_Avoid_: New authorization, read-only question
 
 **Task**: An independently verifiable slice of an explicit implementation request, with acceptance criteria and blocking dependencies.
 _Avoid_: Run, conversation
@@ -19,7 +25,7 @@ _Avoid_: Run, conversation
 **On-call**: Historical role for diagnosing a failed host validation. The Task's Dev now does this in its own thread and settles it as a retry, a fix, a trunk resync or a question for the user.
 _Avoid_: PM, Dev
 
-**Owner conversation**: The user's direct exchange with the Dev who owns an unfinished Task, in an independent read-only branch of that Dev's saved work session. Each question uses the records saved when it was asked; a change of direction goes to the PM before anything changes, and the PM's conversation records a summary of each exchange.
+**Owner conversation**: A direct question to a Task's owner in an independent read-only branch of its saved work session. An explicit request to act enters the work's follow-ups separately.
 _Avoid_: Dev chat, steer
 
 **Reassign**: Handing an unfinished Task to a fresh Dev. The worktree and branch stay; the previous Dev's conversation does not, and the rework budget restarts.
@@ -31,7 +37,7 @@ _Avoid_: dashboard, feed
 **Receipt**: A Task's delivery record as the user reads it: acceptance, recorded validation and review at their fixed versions, the merge, and the delivery source.
 _Avoid_: report, evidence log
 
-**Run**: One bounded execution of a PM, Dev, Review or On-call role.
+**Run**: One bounded execution for coordination, ownership, a temporary contribution, or an independent check.
 _Avoid_: Task
 
 **Work switch**: The repository's permission to claim new tasks; existing task lifecycles continue when it is closed.
@@ -49,7 +55,7 @@ _Avoid_: Code review
 **Provider**: An authenticated model upstream available to Phantom Circuit, either through the existing Codex login or a saved custom connection.
 _Avoid_: Model, profile
 
-**Project model profile**: A role's Provider, model and reasoning effort, either following the global assignment or pinned by its Project.
+**Project model profile**: A capability's Provider, model and reasoning effort, either following the global assignment or pinned by its Project.
 _Avoid_: Agent backend, Provider
 
 **PM activity**: A durable, user-visible record of why the PM started acting and which observable step it is performing.
@@ -61,7 +67,7 @@ _Avoid_: Event, Review finding
 **Clarification**: A request for the user to supply a necessary external fact, access decision or product choice, raised by the PM before Task publication or revision, or by a Review of an affected Task.
 _Avoid_: Technical question, confirmation
 
-**Agent backend**: The execution system that hosts a Project's PM, Dev and Review sessions.
+**Agent backend**: The execution system that hosts coordination, owner, contributor, and independent-check sessions.
 _Avoid_: Model, Provider
 
 **Run usage**: Resource consumption attributable to one Run, including reported tokens and elapsed execution time.

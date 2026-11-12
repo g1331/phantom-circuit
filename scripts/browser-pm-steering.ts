@@ -196,7 +196,7 @@ async function checkScenario(
     await page.getByLabel('项目名称', { exact: true }).fill(`PM steering ${scenario}`);
     await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
     await openPage(page, 'conversation');
-    await page.getByLabel('给 PM 的消息', { exact: true }).fill('ping');
+    await page.getByLabel('给协调者的消息', { exact: true }).fill('ping');
     await page.getByRole('button', { name: '发送消息', exact: true }).click();
     await reach(preparing, 'native start preparation');
     if (scenario !== 'before-thread') await reach(threadReturned, 'saved thread preparation');
@@ -212,8 +212,8 @@ async function checkScenario(
       await reach(nativeStarted, 'native onTurn');
       assert.equal(store.get('run', run.id)?.turnId, 'browser-turn-1');
     }
-    await page.getByLabel('给 PM 的消息', { exact: true }).fill('pong steer');
-    await page.getByRole('button', { name: '交给 PM 做', exact: true }).click();
+    await page.getByLabel('给协调者的消息', { exact: true }).fill('pong steer');
+    await page.getByRole('button', { name: '交给协调者做', exact: true }).click();
     if (scenario === 'ended-after-click') {
       await page.route('**/api/projects/*/messages', async (route) => {
         if (route.request().method() !== 'POST') return route.continue();

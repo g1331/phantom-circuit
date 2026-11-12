@@ -431,7 +431,7 @@ export async function checkUsability() {
     await firstProcess.locator(':scope > summary').click();
     assert.equal(await page.getByText('Intermediate 50', { exact: true }).isVisible(), true);
     const firstQuestion = page
-      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByRole('region', { name: '与协调者讨论', exact: true })
       .getByText('Question 50', { exact: true });
     const before = await firstQuestion.boundingBox();
     store.finishRun(pendingRun.id, 'completed');
@@ -497,7 +497,7 @@ export async function checkUsability() {
     });
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
     await page
-      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByRole('region', { name: '与协调者讨论', exact: true })
       .getByText('Reading a live reply', { exact: true })
       .waitFor();
     await page.locator('.turn-mark').last().click();
@@ -505,7 +505,7 @@ export async function checkUsability() {
     assert.equal(await readingProcess.evaluate((el: HTMLDetailsElement) => el.open), false);
     await readingProcess.locator(':scope > summary').click();
     const liveExplanation = page
-      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByRole('region', { name: '与协调者讨论', exact: true })
       .getByText('Live explanation being read', { exact: true });
     await liveExplanation.scrollIntoViewIfNeeded();
     store.addMessage(
@@ -519,7 +519,7 @@ export async function checkUsability() {
     store.finishRun(readingRun.id, 'completed');
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-change')));
     await page
-      .getByRole('region', { name: '与 PM 讨论', exact: true })
+      .getByRole('region', { name: '与协调者讨论', exact: true })
       .getByText('New final answer', { exact: true })
       .waitFor();
     assert.equal(
@@ -557,7 +557,7 @@ export async function checkUsability() {
     await directory.waitFor({ state: 'hidden' });
     assert.ok(
       await page
-        .getByRole('region', { name: '与 PM 讨论', exact: true })
+        .getByRole('region', { name: '与协调者讨论', exact: true })
         .getByText('Question 50', { exact: true })
         .isVisible(),
     );
@@ -930,7 +930,7 @@ export async function checkUsability() {
               'page title, group headings and rows share the same page gutter',
             );
           } else if (view.page === 'conversation') {
-            await page.getByLabel('Message to PM').focus();
+            await page.getByLabel('Message to Coordinator').focus();
             await page.locator('.composer').scrollIntoViewIfNeeded();
           }
           await page.screenshot({

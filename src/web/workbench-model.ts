@@ -42,7 +42,9 @@ export function workNodes(
   const { t } = copy;
   const external = task.completion?.source === 'external';
   const runs = state.runs.filter((run) => run.taskId === task.id);
-  const latestDev = runs.findLast((run) => run.role === 'dev');
+  const latestDev = runs.findLast(
+    (run) => run.role === 'dev' && !run.purpose && !run.ownerMessageId,
+  );
   const inputId = entry?.input.id ?? task.issueOrigin?.inputId;
   const issue = entry?.input.number ?? task.issue;
   const nodes: FlowNode[] = [

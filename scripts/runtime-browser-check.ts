@@ -413,10 +413,10 @@ export async function checkRuntimeUI() {
     await dialog.getByText('Effective agent: Codex', { exact: true }).waitFor();
     await settingsPage(dialog, 'models', 'omp');
     await dialog
-      .getByLabel('Project PM OMP model', { exact: true })
+      .getByLabel('Intake coordination OMP model', { exact: true })
       .selectOption(JSON.stringify(['fixture', 'omp-fixture']));
     await dialog
-      .getByLabel('Project PM OMP reasoning effort', { exact: true })
+      .getByLabel('Intake coordination OMP reasoning effort', { exact: true })
       .selectOption('high');
     await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
@@ -429,7 +429,7 @@ export async function checkRuntimeUI() {
     await dialog.getByLabel('Project agent', { exact: true }).selectOption('omp');
     await dialog.getByLabel('Interruption recovery policy').selectOption('manual');
     await settingsPage(dialog, 'models', 'omp');
-    await dialog.getByLabel('Project PM assignment mode').selectOption('pinned');
+    await dialog.getByLabel('Intake coordination assignment mode').selectOption('pinned');
     await dialog.getByLabel('Set OMP secondary review model').check();
     await dialog.getByRole('button', { name: 'Save settings', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
@@ -440,11 +440,11 @@ export async function checkRuntimeUI() {
     const globalBeforePM = structuredClone(snapshot.settings);
     const otherRoleBeforePM = structuredClone(current.ompProfiles?.review);
     const pmTrigger = page.getByRole('button', {
-      name: 'Switch PM model and reasoning effort',
+      name: 'Switch Coordinator model and reasoning effort',
       exact: true,
     });
     const pmMenu = page.getByRole('menu', {
-      name: 'Switch PM model and reasoning effort',
+      name: 'Switch Coordinator model and reasoning effort',
       exact: true,
     });
     await pmTrigger.click();
@@ -510,9 +510,9 @@ export async function checkRuntimeUI() {
     });
     await page.reload();
     await page.getByRole('button', { name: 'Adjust now', exact: true }).waitFor();
-    await page.getByLabel('Message to PM').fill('Queued input');
+    await page.getByLabel('Message to Coordinator').fill('Queued input');
     await page.getByRole('button', { name: 'Queue message', exact: true }).click();
-    await page.getByLabel('Message to PM').fill('Shortcut message');
+    await page.getByLabel('Message to Coordinator').fill('Shortcut message');
     await page.keyboard.press('Control+Enter');
     const deliveryImage = await page.screenshot();
     await page.getByLabel('Choose images').setInputFiles({
@@ -521,7 +521,7 @@ export async function checkRuntimeUI() {
       buffer: deliveryImage,
     });
     await page.locator('.image-drafts img').waitFor();
-    await page.getByLabel('Message to PM').fill('Steered image input');
+    await page.getByLabel('Message to Coordinator').fill('Steered image input');
     await page.getByRole('button', { name: 'Adjust now', exact: true }).click();
     assert.deepEqual(deliveries, ['queue', 'queue', 'steer']);
     assert.deepEqual(imageDeliveries, [false, false, true]);
@@ -585,7 +585,7 @@ export async function checkRuntimeUI() {
     await choosePreference(page, 'language', 'en');
     snapshot.runs = snapshot.runs.filter((run) => run.id !== 'active-pm');
     await page.reload();
-    await page.getByLabel('Message to PM').waitFor();
+    await page.getByLabel('Message to Coordinator').waitFor();
     assert.equal(await page.getByRole('button', { name: 'Adjust now', exact: true }).count(), 0);
     const idleSendButton = page.locator('.send-button');
     assert.equal(await idleSendButton.count(), 1, await page.locator('body').innerText());
@@ -595,7 +595,7 @@ export async function checkRuntimeUI() {
       1,
       `Idle send button: ${await idleSendButton.innerText()}`,
     );
-    await page.getByLabel('Message to PM').fill('Idle input');
+    await page.getByLabel('Message to Coordinator').fill('Idle input');
     await idleSendButton.click();
     assert.deepEqual(deliveries, ['queue', 'queue', 'steer', 'queue']);
     assert.deepEqual(

@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import { Store, Fault, redact } from './store.ts';
 import { Engine } from './engine.ts';
+import { FollowUps } from './follow-ups.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
 import { OmpBackend } from './omp.ts';
@@ -616,6 +617,7 @@ export function createApp(
         devLimit: limit.optional(),
         commands: commandSchema.optional(),
         requiredChecks: z.array(z.string()).optional(),
+        followUpsEnabled: z.boolean().optional(),
       })
       .strict()
       .parse(req.body);
@@ -798,6 +800,75 @@ export function createApp(
       .parse(req.params);
     store.project(id);
     return { changed: await engine.team(id, action) };
+  });
+  app.get('/api/tasks/:id/collaboration', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    store.task(id);
+    const { offset } = z
+      .object({ offset: z.coerce.number().int().nonnegative().default(0) })
+      .parse(req.query);
+    const assignments = store
+      .list('collaboration')
+      .filter((item) => item.taskId === id)
+      .reverse();
+    const followUps = store
+      .list('followUp')
+      .filter((item) => item.taskId === id)
+      .reverse();
+    return {
+      assignments: assignments.slice(offset, offset + 30).map((item) => ({
+        ...item,
+        objective: item.objective.slice(0, 500),
+        result: undefined,
+      })),
+      followUps: followUps.slice(offset, offset + 30).map((item) => ({
+        ...item,
+        body: item.body.slice(0, 500),
+        disposition: item.disposition && {
+          ...item.disposition,
+          reason: item.disposition.reason.slice(0, 500),
+        },
+      })),
+      hasMore: Math.max(assignments.length, followUps.length) > offset + 30,
+    };
+  });
+  app.get('/api/tasks/:id/collaboration/:kind/:key', async (req) => {
+    const { id, kind, key } = z
+      .object({
+        id: z.string(),
+        kind: z.enum(['collaboration', 'followUp']),
+        key: z.string(),
+      })
+      .parse(req.params);
+    const item = store.get(kind, key);
+    if (!item || item.taskId !== id) throw new Fault('记录不存在', 404);
+    return item;
+  });
+  app.post('/api/tasks/:id/follow-ups', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const input = z
+      .object({
+        content: z.string().trim().min(1).max(8000),
+        requestId: z.string().uuid(),
+      })
+      .strict()
+      .parse(req.body);
+    const task = store.task(id);
+    if (['done', 'cancelled'].includes(task.stage))
+      throw new Fault('这项工作已经结束，请提交关联的新需求', 409);
+    reply.code(202);
+    return new FollowUps(store).receive(id, {
+      source: 'web',
+      kind: 'comment',
+      nativeId: input.requestId,
+      revision: input.requestId,
+      author: 'user',
+      body: input.content,
+    });
+  });
+  app.post('/api/follow-ups/:id/reply', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.retryFollowUpReply(id);
   });
   // The user talks directly with the member who owns a Task; the engine answers queued lines.
   app.post('/api/tasks/:id/owner-messages', async (req, reply) => {

@@ -143,7 +143,8 @@ export function Brief({
                       )}
                       {member && !work.teamHold && (
                         <span>
-                          {t(`team.role.${member.role}`)} · {t(`team.doing.${member.activity}`)}
+                          {t(member.contribution ? 'flow.contributor' : `team.role.${member.role}`)}{' '}
+                          · {t(`team.doing.${member.activity}`)}
                         </span>
                       )}
                       {work.rounds > 0 && (

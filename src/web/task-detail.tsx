@@ -6,6 +6,7 @@ import { PriorityEditor, ClaimConditions } from './task-priority.tsx';
 import { ProjectActions, TaskRuntimeBadges } from './project-actions.tsx';
 import { TaskProcess } from './process-record.tsx';
 import { OwnerConversation } from './owner-conversation.tsx';
+import { WorkCollaboration } from './work-collaboration.tsx';
 import { Receipt } from './receipt.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { incidentAttention, isExternalDelivery, taskAttention } from '../shared/task-history.ts';
@@ -203,6 +204,7 @@ function TaskOverview({
         )}
       </div>
       {experience}
+      <WorkCollaboration key={detail.id} task={detail} state={state} />
       {(conversation || (!finished && !isExternalDelivery(detail))) && (
         <div className="task-owner-context">
           {conversation ? (

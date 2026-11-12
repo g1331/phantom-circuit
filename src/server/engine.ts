@@ -1,4 +1,8 @@
 import { Intake } from './intake.ts';
+import { FollowUps } from './follow-ups.ts';
+import { Collaborations, delegationInput, collaborationAction } from './collaboration.ts';
+import type { Collaboration } from '../shared/collaboration.ts';
+import { GitHubFollowUps } from './github-follow-ups.ts';
 import { bounded } from './redaction.ts';
 import {
   retrospectiveEvidence,
@@ -704,17 +708,23 @@ export class Engine {
         // The native fork must be the independent process's first session, with owner tools only.
       } else if (run.agentKind === 'omp' && !(c instanceof Codex)) {
         const cwd =
-          run.purpose === 'retrospective' || run.purpose === 'conventions'
+          run.workspacePath ??
+          (run.purpose === 'retrospective' || run.purpose === 'conventions'
             ? this.store.repo(run.repoId!).path
             : run.taskId
               ? this.store.task(run.taskId).worktree
-              : join(this.dataDir, 'projects', run.projectId);
+              : join(this.dataDir, 'projects', run.projectId));
         if (!run.taskId) await mkdir(cwd!, { recursive: true });
         await c.start({
           cwd,
           profile: this.agentProfile(run),
           dataDir: this.dataDir,
-          allowedTools: run.purpose ? [] : ROLE_ALLOWED_TOOLS[run.role],
+          allowedTools:
+            run.purpose === 'followup'
+              ? ['read', 'grep', 'glob']
+              : run.purpose && run.purpose !== 'collaboration'
+                ? []
+                : ROLE_ALLOWED_TOOLS[run.role],
         } as any);
       } else {
         const connection = await new Providers(this.store).connection(
@@ -2229,7 +2239,7 @@ not new authorization.
           continue;
         }
         if (
-          task.pendingFeedback?.length &&
+          (task.pendingFeedback?.length || new FollowUps(this.store).queued(task.id).length) &&
           !this.store.activeRuns().some((r) => r.taskId === task.id) &&
           !this.mergeBusy.has(task.repoId)
         ) {
@@ -2497,22 +2507,53 @@ not new authorization.
     return incident;
   }
   private async evaluateFeedback(task: Task) {
-    const feedback = [...(task.pendingFeedback ?? [])];
-    let feedbackRunId: string | undefined;
-    const verdict = await this.pmQueue(task.projectId, async () => {
-      const source = this.store.get('message', task.sourceMessageId);
-      const run = this.store.run('pm', task.projectId, 'pm', task, {
-        ...(source ? { sourceMessageId: source.id } : {}),
+    const inbox = new FollowUps(this.store);
+    const input = inbox.queued(task.id)[0];
+    if (input?.kind === 'check' && input.head !== task.head) {
+      const reason = '此检查属于先前版本，已保留记录；当前版本使用新的检查结果。';
+      this.store.put('followUp', input.id, {
+        ...input,
+        status: 'resolved',
+        disposition: { action: 'ignore', reason, at: new Date().toISOString() },
       });
-      feedbackRunId = run.id;
-      this.pmTrigger(run, '宿主事件：评估外部反馈', source, feedback.join('\n'));
+      this.store.event('feedback', reason, { taskId: task.id, projectId: task.projectId });
+      return;
+    }
+    const feedback = input
+      ? [
+          JSON.stringify({
+            source: input.source,
+            kind: input.kind,
+            author: input.author,
+            url: input.url,
+            head: input.head,
+            body: input.body,
+          }),
+        ]
+      : [...(task.pendingFeedback ?? [])];
+    const ownerId = task.ownerRunId;
+    const evaluate = async () => {
+      const source = this.store.get('message', task.sourceMessageId);
+      const run = this.store.run(
+        ownerId ? 'dev' : 'pm',
+        task.projectId,
+        ownerId ? task.profile : 'pm',
+        task,
+        {
+          ...(ownerId ? { purpose: 'followup' } : {}),
+          ...(source ? { sourceMessageId: source.id } : {}),
+        },
+      );
+      if (input) inbox.claim(input.id, run.id);
+      if (!ownerId) this.pmTrigger(run, '宿主事件：评估外部反馈', source, feedback.join('\n'));
       return this.withAgent(run, async (c, signal) => {
         const profile = run.profileConfig!;
         const thread = await c.thread({
           cwd: task.worktree ?? this.store.repo(task.repoId).path,
           profile,
           threadId: run.resumeThreadId,
-          instructions: `${await instructions('pm', { team: this.store.runTeamInstructions(run) })}\nThis turn only evaluates external feedback. Return the requested JSON; no tool mutations.`,
+          instructions: `${await instructions(ownerId ? 'dev' : 'pm', { team: this.store.runTeamInstructions(run) })}\nYou remain responsible for this work. Evaluate the follow-up against the approved scope. Return the requested JSON; this turn is read-only. Rework continues in your session. Explain scope changes for coordination.`,
+          ...(run.agentKind === 'omp' ? { allowedTools: ['read', 'grep', 'glob'] } : {}),
           writable: false,
           tools: [recallTool],
           toolHandler: async (name: string, args: unknown) => {
@@ -2532,51 +2573,70 @@ not new authorization.
           '反馈判定回合',
           this.onTurn(run),
         );
-      });
-    });
+      })
+        .then((verdict) => ({ verdict, runId: run.id }))
+        .catch((error) => {
+          inbox.release(run.id);
+          throw error;
+        });
+    };
+    const { verdict, runId: feedbackRunId } = ownerId
+      ? await evaluate()
+      : await this.pmQueue(task.projectId, evaluate);
     const current = this.store.task(task.id);
-    if (current.control !== 'active' || ['done', 'cancelled'].includes(current.stage)) return;
-    this.store.updateTask(task.id, {
-      pendingFeedback: (current.pendingFeedback ?? []).filter((x) => !feedback.includes(x)),
-    });
-    if (verdict.action === 'rework')
-      this.rework(this.store.task(task.id), `PM 判定的范围内返工：${verdict.reason}`);
-    else if (verdict.action === 'clarify') {
-      const source = this.store.get('message', task.sourceMessageId);
-      if (source?.intent) {
-        try {
-          this.store.createClarification({
-            projectId: task.projectId,
-            taskId: task.id,
-            sourceMessageId: source.id,
-            sourceIntent: source.intent,
-            questions: [
-              {
-                id: 'feedback',
-                question: `外部反馈可能改变产品要求：${verdict.reason}`,
-                recommendation: '请明确是否接受该产品变化，再继续此 Task。',
-              },
-            ],
-          });
-        } catch (error) {
-          this.block(task.id, this.pauseReason(error));
+    if (
+      current.control !== 'active' ||
+      ['done', 'cancelled'].includes(current.stage) ||
+      current.ownerRunId !== ownerId
+    ) {
+      inbox.release(feedbackRunId);
+      return;
+    }
+    this.store.transaction(() => {
+      this.store.updateTask(task.id, {
+        pendingFeedback: (current.pendingFeedback ?? []).filter((x) => !feedback.includes(x)),
+      });
+      if (input) inbox.settle(input.id, feedbackRunId, verdict);
+      if (verdict.action === 'rework')
+        this.rework(this.store.task(task.id), `范围内反馈：${verdict.reason}`);
+      else if (verdict.action === 'clarify') {
+        const source = this.store.get('message', task.sourceMessageId);
+        if (source?.intent) {
+          try {
+            this.store.createClarification({
+              projectId: task.projectId,
+              taskId: task.id,
+              sourceMessageId: source.id,
+              sourceIntent: source.intent,
+              questions: [
+                {
+                  id: 'feedback',
+                  question: `外部反馈可能改变产品要求：${verdict.reason}`,
+                  recommendation: '请明确是否接受该产品变化，再继续此 Task。',
+                },
+              ],
+            });
+          } catch (error) {
+            this.block(task.id, this.pauseReason(error));
+          }
         }
-      }
-      this.block(task.id, `需要产品澄清：${verdict.reason}`, {
-        source: 'pm',
-        reason: 'feedback_clarification',
-        runId: feedbackRunId,
-      });
-      this.store.addMessage(
-        task.projectId,
-        'assistant',
-        `「${task.title}」收到可能改变产品要求的反馈：${verdict.reason}`,
-      );
-    } else
-      this.store.event('feedback', `PM 未要求返工：${verdict.reason}`, {
-        projectId: task.projectId,
-        taskId: task.id,
-      });
+        this.block(task.id, `需要产品澄清：${verdict.reason}`, {
+          source: 'pm',
+          reason: 'feedback_clarification',
+          runId: feedbackRunId,
+        });
+        this.store.addMessage(
+          task.projectId,
+          'assistant',
+          `「${task.title}」收到可能改变产品要求的反馈：${verdict.reason}`,
+        );
+      } else
+        this.store.event('feedback', `反馈处理：${verdict.reason}`, {
+          projectId: task.projectId,
+          taskId: task.id,
+        });
+    });
+    if (input) await new GitHubFollowUps(this.store, this.github).reply(input.id);
   }
   /**
    * Opens a validation Incident and hands it back to the Task's Dev, resumed in its own thread with
@@ -3275,9 +3335,21 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           instructions: await instructions('dev', {
             team: this.store.runTeamInstructions(run),
           }),
-          threadId: conflict ? undefined : run.resumeThreadId,
+          threadId: run.resumeThreadId,
           writable: true,
           tools: [
+            {
+              name: 'delegate_work',
+              description:
+                'Delegate a bounded contribution in a private workspace. Choose a capability profile. Returns its result; you remain responsible for integration and delivery. Reuse requestKey after recovery.',
+              inputSchema: jsonSchema(delegationInput),
+            },
+            {
+              name: 'collaboration',
+              description:
+                'Read, integrate, cancel or retry one of your task-scoped contributions.',
+              inputSchema: jsonSchema(collaborationAction),
+            },
             {
               name: 'ask_pm',
               description:
@@ -3286,7 +3358,25 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
             },
           ],
           toolHandler: async (name: string, args: unknown) => {
-            if (name !== 'ask_pm') throw new Fault('Dev 没有此操作权限', 403);
+            const collaborations = new Collaborations(this.store, this.workspaces.root);
+            if (name === 'delegate_work') {
+              const assignment = await collaborations.create(run, args);
+              return assignment.status === 'queued'
+                ? this.executeCollaboration(run, assignment, signal)
+                : assignment;
+            }
+            if (name === 'collaboration') {
+              const action = collaborationAction.parse(args);
+              const assignment = collaborations.get(run, action.id);
+              if (action.action === 'result') return assignment;
+              if (action.action === 'integrate') return collaborations.integrate(run, action.id);
+              if (action.action === 'cancel') {
+                if (assignment.runId) this.active.get(assignment.runId)?.abort.abort();
+                return collaborations.update(action.id, { status: 'cancelled' });
+              }
+              return this.executeCollaboration(run, collaborations.retry(run, action.id), signal);
+            }
+            if (name !== 'ask_pm') throw new Fault('负责人没有此操作权限', 403);
             const { question } = z.object({ question: z.string() }).parse(args);
             return {
               answer: await this.technical(task, question, '宿主事件：Dev 技术提问', true),
@@ -3316,6 +3406,89 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       },
       abort,
     );
+  }
+  private async executeCollaboration(owner: Run, assignment: Collaboration, parent: AbortSignal) {
+    const collaborations = new Collaborations(this.store, this.workspaces.root);
+    const current = collaborations.get(owner, assignment.id);
+    if (current.status === 'running') return current;
+    assignment = collaborations.update(assignment.id, { status: 'running', error: undefined });
+    try {
+      assignment = await collaborations.prepare(assignment);
+      if (parent.aborted) throw new Fault('负责人已经暂停', 409);
+      collaborations.get(owner, assignment.id);
+      const task = this.store.task(assignment.taskId);
+      const run = this.store.run('dev', task.projectId, assignment.profile, task, {
+        purpose: 'collaboration',
+        collaborationId: assignment.id,
+        workspacePath: assignment.worktree,
+      });
+      const previous = assignment.runId ? this.store.get('run', assignment.runId) : undefined;
+      if (previous?.threadId) {
+        Object.assign(run, {
+          resumeThreadId: previous.threadId,
+          profileConfig: previous.profileConfig,
+          agentKind: previous.agentKind,
+          provider: previous.provider,
+          model: previous.model,
+          modelIdentity: previous.modelIdentity,
+        });
+        this.store.put('run', run.id, run);
+      }
+      collaborations.update(assignment.id, { status: 'running', runId: run.id, error: undefined });
+      const cancel = () => this.active.get(run.id)?.abort.abort();
+      parent.addEventListener('abort', cancel, { once: true });
+      try {
+        const result = await this.track(
+          this.withAgent(run, async (agent, signal) => {
+            if (parent.aborted) throw new Fault('负责人已经暂停', 409);
+            const profile = run.profileConfig!;
+            const thread = await agent.thread({
+              cwd: assignment.worktree!,
+              profile,
+              threadId: run.resumeThreadId,
+              writable: assignment.mode === 'write',
+              instructions: `${await instructions('dev', { team: this.store.runTeamInstructions(run) })}\nYou are a temporary contributor. Complete only the delegated objective below. Return findings, changes and verification to the owner. You cannot delegate, change scope, commit, push, publish or merge.`,
+              tools: [],
+              ...(run.agentKind === 'omp'
+                ? {
+                    allowedTools:
+                      assignment.mode === 'write'
+                        ? ROLE_ALLOWED_TOOLS.dev
+                        : ['read', 'grep', 'glob'],
+                  }
+                : {}),
+            });
+            this.saveThread(run, thread);
+            return agent.turn(
+              thread,
+              `${taskPrompt(task)}\nDelegated objective:\n${assignment.objective}\n` +
+                `Mode: ${assignment.mode}. Leave code changes in this private worktree.\n` +
+                (await domainContext([assignment.worktree!])),
+              profile,
+              signal,
+              undefined,
+              this.onTurn(run),
+            );
+          }),
+        );
+        if (
+          parent.aborted ||
+          this.store.get('collaboration', assignment.id)?.status === 'cancelled'
+        )
+          return collaborations.update(assignment.id, { status: 'cancelled' });
+        collaborations.get(owner, assignment.id);
+        return collaborations.update(assignment.id, {
+          status: 'completed',
+          result: redact(result),
+        });
+      } finally {
+        parent.removeEventListener('abort', cancel);
+      }
+    } catch (error) {
+      if (parent.aborted || this.store.get('collaboration', assignment.id)?.status === 'cancelled')
+        return collaborations.update(assignment.id, { status: 'cancelled' });
+      return collaborations.fail(assignment.id, error);
+    }
   }
   private async primaryPaths(task: Task) {
     const p = this.store.project(task.projectId);
@@ -3687,7 +3860,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
   private async finalize(task: Task) {
     await this.collectFeedback(task);
     task = this.store.task(task.id);
-    if (task.pendingFeedback?.length) return;
+    if (task.pendingFeedback?.length || new FollowUps(this.store).queued(task.id).length) return;
     if (!mergeReady(task)) throw new Fault('缺少当前版本的测试或 Policy 2 评审证据');
     const pr = await this.github.pull(task);
     if (pr.merged) {
@@ -3711,6 +3884,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     const accepted = this.store.task(task.id);
     if (
       accepted.pendingFeedback?.length ||
+      new FollowUps(this.store).queued(task.id).length > 0 ||
       accepted.control !== 'active' ||
       accepted.stage !== 'merging' ||
       accepted.head !== task.head ||
@@ -3967,6 +4141,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     this.store.transaction(() => {
       if (!this.store.task(task.id).completionDeliveryPending) return;
       this.intake.outcome(task, notice.content);
+      new FollowUps(this.store).complete(task.id);
       if (!external) {
         const message = this.store.addMessage(task.projectId, 'assistant', notice.content);
         this.store.updateMessage(message.id, { descriptor: notice.descriptor });
@@ -4036,7 +4211,15 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       result.data.base.sha === task.base
     );
   }
+  async retryFollowUpReply(id: string) {
+    if (!this.store.get('followUp', id)) throw new Fault('反馈不存在', 404);
+    await new GitHubFollowUps(this.store, this.github).reply(id, true);
+    return this.store.get('followUp', id);
+  }
   async sync() {
+    for (const input of this.store.list('followUp'))
+      if (input.reply?.status === 'pending')
+        await new GitHubFollowUps(this.store, this.github).reply(input.id);
     void this.track(this.intake.pump()).catch((error) => this.store.event('intake', String(error)));
     if (Date.now() < this.syncRetryAt) return;
     for (const task of this.store.list('task')) {
@@ -4143,7 +4326,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
             this.store.updateTask(t.id, { blocked: '远端提交变化，需恢复后重新核对' });
           }
           if (!pr.merged && pr.state !== 'closed') await this.collectFeedback(t);
-        }
+        } else if (t.issue) await this.collectFeedback(t);
         await this.github.syncStatus(this.store.task(task.id));
       } catch (e) {
         if (this.deferSync(task, e)) return;
@@ -4173,21 +4356,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
     this.syncRetryAt = 0;
   }
   private async collectFeedback(task: Task) {
-    const feedback = await this.github.feedback(task);
-    this.store.transaction(() => {
-      const t = this.store.task(task.id);
-      const pending = [...(t.pendingFeedback ?? [])];
-      for (const item of feedback)
-        if (!this.store.get('operation', item.key)) {
-          this.store.put('operation', item.key, {
-            id: item.key,
-            kind: 'external-review',
-            status: 'done',
-          });
-          pending.push(item.text);
-        }
-      this.store.updateTask(task.id, { pendingFeedback: pending });
-    });
+    await new GitHubFollowUps(this.store, this.github).collect(task);
   }
   /**
    * Pauses every unfinished Task of a Project, or resumes only the Tasks a team pause held, so a

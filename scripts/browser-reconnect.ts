@@ -96,7 +96,7 @@ export async function checkReconnect() {
     );
     const process = page.locator(`.pm-process[data-run-id="${run.id}"]`);
     await process.waitFor();
-    const draft = page.getByLabel('给 PM 的消息', { exact: true });
+    const draft = page.getByLabel('给协调者的消息', { exact: true });
     await draft.fill('重启期间保留这份草稿');
     await draft.focus();
     await draft.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(2, 5));

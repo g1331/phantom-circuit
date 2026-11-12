@@ -98,7 +98,7 @@ try {
       '--input-type=module',
       '-e',
       `const {instructions}=await import(${JSON.stringify(pathToFileURL(join(release, 'src/server/prompts.ts')).href)});
-       if (!(await instructions('dev')).includes('Task Developer')) process.exit(2);`,
+       if (!(await instructions('dev')).includes('Work Owner')) process.exit(2);`,
     ],
     { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
   );

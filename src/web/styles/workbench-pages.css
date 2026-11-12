@@ -1,3 +1,136 @@
+/* Work-scoped contributions and feedback. */
+.work-collaboration {
+  margin: 20px 0;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.contribution-row {
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+
+.contribution-row + .contribution-row {
+  border-top: 1px solid var(--line);
+}
+
+.contribution-row header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.contribution-row header strong {
+  min-width: 0;
+  flex: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.contribution-row .record-result {
+  flex: none;
+  font-size: 12px;
+}
+
+.contribution-row .muted {
+  margin: 6px 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.contribution-row.state-running .record-result,
+.contribution-row.state-processing .record-result {
+  color: var(--progress);
+}
+
+.contribution-row.state-failed .record-result {
+  color: var(--danger);
+}
+
+.contribution-row.state-handed_back .record-result {
+  color: var(--warning);
+}
+
+.contribution-row.state-completed .record-result,
+.contribution-row.state-resolved .record-result {
+  color: var(--success);
+}
+
+.contribution-row summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.contribution-reply,
+.contribution-pagination,
+.owner-conversation .segmented-control,
+.followup-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.owner-conversation .segmented-control {
+  width: fit-content;
+  padding: 4px;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.owner-conversation .segmented-control button {
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+}
+
+.owner-conversation .segmented-control button[aria-pressed='true'] {
+  background: var(--panel);
+  box-shadow: 0 1px 4px #00000012;
+}
+
+.followup-toggle {
+  margin-bottom: 20px;
+  min-height: 44px;
+}
+
+.followup-toggle input {
+  appearance: none;
+  width: 36px;
+  height: 22px;
+  border-radius: 12px;
+  background: var(--muted);
+  cursor: pointer;
+}
+
+.followup-toggle input::before {
+  content: '';
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 3px;
+  border-radius: 50%;
+  background: var(--panel);
+  transition: transform 120ms;
+}
+
+.followup-toggle input:checked {
+  background: var(--progress);
+}
+
+.followup-toggle input:checked::before {
+  transform: translateX(14px);
+}
+
+.followup-toggle input:disabled {
+  opacity: 0.5;
+}
+
 /* Searchable records, source permissions and project settings. */
 .record-workspace {
   display: flex;

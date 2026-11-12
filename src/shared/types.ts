@@ -108,6 +108,7 @@ export interface Repo {
   devLimit: number;
   commands: Commands;
   requiredChecks: string[];
+  followUpsEnabled?: boolean;
   milestone?: number;
   blocked?: string;
   preview?: {
@@ -364,7 +365,9 @@ export interface InstructionSuggestion {
 }
 
 export interface Run {
-  purpose?: 'retrospective' | 'conventions';
+  purpose?: 'retrospective' | 'conventions' | 'followup' | 'collaboration';
+  collaborationId?: string;
+  workspacePath?: string;
   /** 0 means empty instructions; absent means a legacy Run with no recorded version. */
   teamInstructionsVersion?: number;
   id: string;

@@ -1,7 +1,8 @@
 # An event-driven development team with a visual workbench
 
 Status: M1 implemented and accepted through the real-platform loop below, after independent
-implementation review. M2 through M4 remain planned. Existing installations require an explicit
+implementation review. M2 is being implemented as owner-led dynamic collaboration;
+M3 and M4 remain planned. Existing installations require an explicit
 update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
@@ -37,8 +38,9 @@ documents.
 
 Phantom Circuit retains these deliberate differences:
 
-- PM remains the product liaison for requirements, clarification, and cross-task coordination.
-  Dev owns technical choices and, after M2, judgment of its work's in-scope follow-ups.
+- Intake coordination handles new requests, clarification, and cross-work routing. Each work has
+  one persistent owner who decides technical methods and judges in-scope follow-ups. Temporary
+  contributors are commissioned for bounded results rather than assigned permanent team seats.
 - The host retains commits, validation, publication, and fixed-revision merge authorization under
   ADRs 0003 and 0009. Agent instructions and platform approvals do not replace those checks.
 - Engineering failures first enter bounded internal diagnosis and recovery. Exhausted recovery
@@ -158,7 +160,22 @@ rejected. A subsequent model-run failure or interruption preserves that judgment
 automatic and manual recovery do not reassess it. Unresolved steering retains its reconciliation
 hold. Correcting a final judgment requires a new explicitly authorized request.
 
-### M2: Owner-led follow-ups and event-driven repair
+### M2: Persistent owners, dynamic collaboration, and feedback
+
+Each Task keeps one owner with its real native session, workspace, and recorded backend/profile.
+Configuration changes apply to new ownership; explicit reassignment fences the previous owner.
+The owner chooses a capability profile and a concrete objective when commissioning a contributor.
+Each assignment records its requester, permission mode, private workspace, Run, result, and
+integration outcome. The owner remains responsible for delivery and explicitly integrates code.
+Read-only assistance, implementation contributions, and host-triggered independent checks are
+bounded executions, without fixed PM/Dev/Review staffing. Existing stored role and profile keys
+remain readable and retain their adapter permission meaning.
+
+Contributions use Task-scoped records and existing Run capacity rather than a second workforce
+scheduler. A delegated call returns its result to the owner; concurrent calls can execute within
+available capacity. Interruption retains the workspace and native session for an explicit retry.
+Cancellation stops the contributor, and old-owner results cannot change reassigned work.
+Separate worktrees prevent accidental shared editing; they are not security sandboxes.
 
 Extend the same workflow to originating Issue discussion, bound PR comments, inline reviews,
 review decisions including bodyless approvals, and bound-PR CI changes. Keep owner/input binding
@@ -166,7 +183,7 @@ independent of an individual Run and fence it on reassignment. Deliver at a safe
 new mid-turn steering is not required for every backend.
 
 An owner judges in-scope follow-ups, takes no action when appropriate, or hands them back with a
-reason. PM handles new scope and cross-work routing after that hand-back. Explicit object links
+reason. Intake coordination handles new scope and cross-work routing after that hand-back. Explicit object links
 can establish ownership; similarity and context-only following do not. Acknowledgment or delivery
 alone does not prove the owner read or dispositioned an input. Ambiguous native delivery holds
 for reconciliation. An unavailable owner history cannot silently become an empty new session.
@@ -174,6 +191,13 @@ for reconciliation. An unavailable owner history cannot silently become an empty
 The independent read-only owner conversation keeps its existing permission contract. Authorized
 work follow-ups use the actual work-session path, not a writable version of that question fork.
 Existing validation diagnosis, review, recovery, and merge gates continue to perform the work.
+
+Repository feedback reception is opt-in and can be disabled locally while retaining received
+records. Human repository owners, members, collaborators, and explicitly admitted sender IDs may
+supply bound feedback; bot comments and host reply markers do not start feedback loops. CI inputs
+are tied to the checked revision. Old-version CI stays historical after the work advances.
+Original-platform result replies use the Operation ledger and verified native comment identity;
+an uncertain response requires remote reconciliation before another write.
 
 Acceptance:
 
@@ -184,6 +208,8 @@ Acceptance:
    fixed-version merge, and original-thread disposition without human engineering intervention.
 3. Restart and reassignment preserve input order and fence late callbacks; pauses and necessary
    answer holds survive automatic feedback, and changed PR heads cannot reuse old merge evidence.
+4. A real owner delegates a bounded contribution, receives and integrates its result, and delivers
+   without a permanent collaborator seat or transferring its ownership to the contributor.
 
 ### M3: Written-rule proactive maintenance
 

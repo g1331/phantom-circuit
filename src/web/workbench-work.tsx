@@ -71,7 +71,9 @@ export function WorkTrajectory({
         </time>
         {live.map((run) => (
           <span key={run.id} className="flow-role">
-            {t(`team.role.${run.role}`)} · {t('ui.running')}
+            {t(run.purpose === 'collaboration' ? 'flow.contributor' : `team.role.${run.role}`)}
+            {' · '}
+            {t('ui.running')}
           </span>
         ))}
       </div>

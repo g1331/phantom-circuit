@@ -79,7 +79,7 @@ async function fixture(axis: 'primary' | 'secondary', replyMode: 'tool' | 'json'
     override async stop() {}
     override async thread(o: Parameters<Codex['thread']>[0]) {
       this.cwd = o.cwd;
-      this.role = o.instructions.includes('Task Developer')
+      this.role = o.instructions.includes('Work Owner')
         ? 'dev'
         : o.instructions.includes('Independent Review')
           ? 'review'

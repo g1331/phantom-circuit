@@ -77,7 +77,7 @@ async function fixture() {
     }
     override async stop() {}
     override async thread(options: Parameters<Codex['thread']>[0]) {
-      this.developer = options.instructions.includes('Task Developer');
+      this.developer = options.instructions.includes('Work Owner');
       this.tool = options.toolHandler;
       return 'fixture';
     }

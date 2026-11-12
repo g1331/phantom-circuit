@@ -416,7 +416,7 @@ try {
     .setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') });
   await page.getByText('仅支持 PNG、JPEG、WebP 图片', { exact: true }).waitFor();
   assert.equal(await page.locator('.image-drafts img').count(), 0);
-  await page.getByLabel('给 PM 的消息').fill('图片说明');
+  await page.getByLabel('给协调者的消息').fill('图片说明');
   await page.getByLabel('选择图片').setInputFiles(imageFile);
   await page.getByRole('button', { name: '发送消息' }).click();
   await page
@@ -454,11 +454,11 @@ try {
       path: resolve(artifacts, 'delivery-busy-desktop.png'),
       fullPage: true,
     });
-    await page.getByLabel('给 PM 的消息').fill('真实服务排队文本');
-    await page.getByRole('button', { name: '交给 PM 做', exact: true }).click();
+    await page.getByLabel('给协调者的消息').fill('真实服务排队文本');
+    await page.getByRole('button', { name: '交给协调者做', exact: true }).click();
     await page.getByLabel('选择图片').setInputFiles(imageFile);
     await checkComposerLayout(page, artifacts, 'busy-input');
-    await page.getByLabel('给 PM 的消息').evaluate((element) => {
+    await page.getByLabel('给协调者的消息').evaluate((element) => {
       element.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'Enter',
@@ -468,7 +468,7 @@ try {
         }),
       );
     });
-    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '真实服务排队文本');
+    assert.equal(await page.getByLabel('给协调者的消息').inputValue(), '真实服务排队文本');
     assert.equal(await page.locator('.image-drafts img').count(), 1, 'IME keeps the draft');
     const modelBefore = await page.locator('.pm-model-trigger').getAttribute('title');
     await page.route('**/api/projects/*/messages', async (route) => {
@@ -479,11 +479,11 @@ try {
     });
     await steer.click();
     await page.getByText('Fixture delivery failed', { exact: true }).waitFor();
-    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '真实服务排队文本');
+    assert.equal(await page.getByLabel('给协调者的消息').inputValue(), '真实服务排队文本');
     assert.equal(await page.locator('.image-drafts img').count(), 1);
     assert.equal(
       await page
-        .getByRole('button', { name: '交给 PM 做', exact: true })
+        .getByRole('button', { name: '交给协调者做', exact: true })
         .getAttribute('aria-pressed'),
       'true',
     );
@@ -521,7 +521,7 @@ try {
       fullPage: true,
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.getByLabel('给 PM 的消息').fill('运行结束时的引导图片');
+    await page.getByLabel('给协调者的消息').fill('运行结束时的引导图片');
     await page.getByRole('button', { name: '体验反馈', exact: true }).click();
     await page.getByLabel('选择图片').setInputFiles(imageFile);
     await page.locator('.image-drafts img').waitFor();
@@ -558,9 +558,9 @@ try {
       .waitFor();
     await steer.waitFor({ state: 'hidden' });
     await checkComposerLayout(page, artifacts, 'idle-empty');
-    await page.getByLabel('给 PM 的消息').fill('空闲时继续排队');
+    await page.getByLabel('给协调者的消息').fill('空闲时继续排队');
     await page.keyboard.press('Enter');
-    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '空闲时继续排队\n');
+    assert.equal(await page.getByLabel('给协调者的消息').inputValue(), '空闲时继续排队\n');
     await page.keyboard.press('Meta+Enter');
     await page.locator('.message.user').filter({ hasText: '空闲时继续排队' }).waitFor();
     const idleText = store
@@ -830,14 +830,14 @@ try {
       if (route.request().method() !== 'POST') return route.continue();
       return route.fulfill({ status: 503, json: { error: 'Browser fixture: send failure' } });
     });
-    await page.getByLabel('给 PM 的消息').fill('失败发送保留阅读位置');
+    await page.getByLabel('给协调者的消息').fill('失败发送保留阅读位置');
     await page.getByRole('button', { name: '排队发送', exact: true }).click();
     await page.getByRole('alert').waitFor();
     assert.equal(await conversation.evaluate((element: HTMLElement) => element.scrollTop), 0);
     assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 1);
-    assert.equal(await page.getByLabel('给 PM 的消息').inputValue(), '失败发送保留阅读位置');
+    assert.equal(await page.getByLabel('给协调者的消息').inputValue(), '失败发送保留阅读位置');
     await page.unroute('**/api/projects/*/messages');
-    await page.getByLabel('给 PM 的消息').fill('成功发送恢复跟随');
+    await page.getByLabel('给协调者的消息').fill('成功发送恢复跟随');
     await page.getByRole('button', { name: '排队发送', exact: true }).click();
     await page.locator('.message.user').filter({ hasText: '成功发送恢复跟随' }).waitFor();
     await page.waitForFunction(() => {
@@ -847,7 +847,7 @@ try {
     assert.equal(await page.getByRole('button', { name: '回到最新消息', exact: true }).count(), 0);
     await openPage(page, 'work');
     await openPage(page, 'conversation');
-    await page.getByLabel('给 PM 的消息').waitFor();
+    await page.getByLabel('给协调者的消息').waitFor();
     await page.waitForFunction(() => {
       const element = document.querySelector('.conversation');
       return !!element && element.scrollHeight - element.clientHeight - element.scrollTop <= 64;
@@ -901,7 +901,7 @@ try {
   );
   await receipt.getByRole('heading', { name: 'Review 总结' }).waitFor();
   await receipt.getByText('需要修改', { exact: true }).waitFor();
-  const finding = receipt.getByRole('region', { name: 'spec Review 发现 1', exact: true });
+  const finding = receipt.getByRole('region', { name: 'spec 检查发现 1', exact: true });
   assert.equal(await finding.isVisible(), false, 'review findings start folded');
   await receipt.getByText('1 条意见', { exact: true }).click();
   assert.equal(await finding.locator('blockquote').innerText(), 'Review 发现');
@@ -976,11 +976,11 @@ try {
   await page.locator('.task-controls > summary').click();
   await taskPage.getByRole('button', { name: '撤销这次交付', exact: true }).click();
   await page.waitForURL(/#\/p\/[^/]+\/conversation$/);
-  const rollbackDraft = page.getByLabel('给 PM 的消息', { exact: true });
+  const rollbackDraft = page.getByLabel('给协调者的消息', { exact: true });
   assert.ok((await rollbackDraft.inputValue()).includes(`撤销已交付的「${deliveredTitle}」`));
   assert.equal(
     await page
-      .getByRole('button', { name: '交给 PM 做', exact: true })
+      .getByRole('button', { name: '交给协调者做', exact: true })
       .getAttribute('aria-pressed'),
     'true',
     'a rollback becomes new work, so it is sent as an implementation request',
@@ -1308,7 +1308,7 @@ try {
   await choosePreference(page, 'theme', 'light');
   await page.screenshot({ path: resolve(artifacts, '04-workspace-light.png'), fullPage: true });
   await page.getByRole('button', { name: '运行设置' }).click();
-  await page.getByLabel('全局 Dev 上限').fill('3');
+  await page.getByLabel('全局并行执行上限').fill('3');
   await page.getByRole('button', { name: '保存设置' }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   assert.equal(store.settings().globalDevLimit, 3);
@@ -1328,7 +1328,7 @@ try {
     fullPage: true,
   });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await page.getByLabel('给 PM 的消息').fill('窄屏图片反馈');
+  await page.getByLabel('给协调者的消息').fill('窄屏图片反馈');
   await page.getByRole('button', { name: '发送消息' }).click();
   await page.getByText('窄屏图片反馈', { exact: true }).waitFor();
   await page.screenshot({ path: resolve(artifacts, '05-mobile-light.png'), fullPage: true });

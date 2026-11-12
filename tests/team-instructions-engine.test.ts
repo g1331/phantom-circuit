@@ -67,7 +67,7 @@ test('Dev receives the pinned team text before Task and keeps host tools and pub
     assert.match(options[0].instructions!, /Host.*permissions.*tools/s);
     assert.deepEqual(
       options[0].tools?.map((t) => t.name),
-      ['ask_pm'],
+      ['delegate_work', 'collaboration', 'ask_pm'],
     );
     assert.match(prompts[0], /Do not stage, commit or push/);
     const run = store.list('run').find((r) => r.role === 'dev')!;

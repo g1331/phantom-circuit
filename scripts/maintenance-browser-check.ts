@@ -138,7 +138,7 @@ export async function checkMaintenance() {
     });
     await page.goto(origin);
     await openPage(page, 'conversation');
-    await page.getByLabel('Message to PM').waitFor();
+    await page.getByLabel('Message to Coordinator').waitFor();
     assert.equal(
       await page.locator('.project-actions .action-record').count(),
       0,
@@ -151,7 +151,7 @@ export async function checkMaintenance() {
       'neither low-frequency module is fetched by the production entry',
     );
     const pmDraft = 'Keep this PM draft 中文';
-    await page.getByLabel('Message to PM').fill(pmDraft);
+    await page.getByLabel('Message to Coordinator').fill(pmDraft);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -164,7 +164,7 @@ export async function checkMaintenance() {
     await page.getByRole('status').getByText('Loading panel…', { exact: true }).waitFor();
     await page.screenshot({ path: resolve(artifacts, 'maintenance-loading.png') });
     release();
-    await page.getByLabel('Global Dev limit').waitFor();
+    await page.getByLabel('Global execution limit').waitFor();
     assert.ok(
       scripts.some((url) => /\/settings-panel-/.test(url)),
       'opening settings fetches its production module',
@@ -174,8 +174,8 @@ export async function checkMaintenance() {
       false,
     );
     await page.unroute('**/assets/settings-panel-*.js');
-    await page.getByLabel('Global Dev limit').fill('9');
-    const settingsInput = await page.getByLabel('Global Dev limit').elementHandle();
+    await page.getByLabel('Global execution limit').fill('9');
+    const settingsInput = await page.getByLabel('Global execution limit').elementHandle();
     const refreshed = page.waitForResponse(
       (response) => new URL(response.url()).pathname === '/api/state',
     );
@@ -188,7 +188,7 @@ export async function checkMaintenance() {
     await refreshed;
     // Wait for the refreshed snapshot to reach React, then check the exact focused DOM input.
     await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Global Dev limit').inputValue(), '9');
+    assert.equal(await page.getByLabel('Global execution limit').inputValue(), '9');
     assert.equal(
       await settingsInput!.evaluate(
         (element) => document.activeElement === element && element.isConnected,
@@ -196,10 +196,10 @@ export async function checkMaintenance() {
       true,
     );
     await page.keyboard.press('Escape');
-    assert.equal(await page.getByLabel('Message to PM').inputValue(), pmDraft);
+    assert.equal(await page.getByLabel('Message to Coordinator').inputValue(), pmDraft);
     const loaded = scripts.length;
     await page.getByRole('button', { name: 'Runtime settings', exact: true }).click();
-    await page.getByLabel('Global Dev limit').waitFor();
+    await page.getByLabel('Global execution limit').waitFor();
     assert.equal(scripts.length, loaded, 'reopening uses the loaded module');
     await page.keyboard.press('Escape');
 
@@ -345,7 +345,9 @@ export async function checkMaintenance() {
           });
           await backToWork(page);
           await clickInSidebar(page, locale === 'en' ? 'Runtime settings' : '运行设置');
-          await page.getByLabel(locale === 'en' ? 'Global Dev limit' : '全局 Dev 上限').waitFor();
+          await page
+            .getByLabel(locale === 'en' ? 'Global execution limit' : '全局并行执行上限')
+            .waitFor();
           await page.screenshot({
             path: resolve(artifacts, `maintenance-settings-${width}-${locale}-${theme}.png`),
           });
@@ -495,8 +497,11 @@ export async function checkMaintenance() {
     await openTechnicalActions();
     assert.equal(await page.locator('.project-actions').count(), 1);
     assert.equal(await page.locator('.project-actions .action-record').count(), currentIncidents);
-    await page.getByLabel('Message to PM').fill('Draft after project switch');
-    assert.equal(await page.getByLabel('Message to PM').inputValue(), 'Draft after project switch');
+    await page.getByLabel('Message to Coordinator').fill('Draft after project switch');
+    assert.equal(
+      await page.getByLabel('Message to Coordinator').inputValue(),
+      'Draft after project switch',
+    );
     const raw = await (await page.request.get(`${origin}/api/state`)).json();
     assert.deepEqual(
       raw.incidents.find((item: { id: string }) => item.id === incident.id),
@@ -538,7 +543,7 @@ export async function checkMaintenance() {
         await failure.goto(origin);
         await openPage(failure, 'conversation');
         const retainedDraft = `Draft survives ${panel} ${recovery}`;
-        await failure.getByLabel('Message to PM').fill(retainedDraft);
+        await failure.getByLabel('Message to Coordinator').fill(retainedDraft);
         const open = async () => {
           if (panel === 'settings-panel')
             await failure.getByRole('button', { name: 'Runtime settings', exact: true }).click();
@@ -567,7 +572,10 @@ export async function checkMaintenance() {
         assert.ok(recoveredRequests > 0, 'recovery fetches a fresh production module URL');
         if (panel === 'settings-panel') {
           await failure.keyboard.press('Escape');
-          assert.equal(await failure.getByLabel('Message to PM').inputValue(), retainedDraft);
+          assert.equal(
+            await failure.getByLabel('Message to Coordinator').inputValue(),
+            retainedDraft,
+          );
         }
         await failure.close();
       }
