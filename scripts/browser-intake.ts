@@ -10,6 +10,7 @@ import { choosePreference } from './browser-preferences.ts';
 import { openPage } from './browser-pages.ts';
 import { checkLiveInputSettlement, checkPagedInputReplies } from './browser-intake-history.ts';
 import { checkVisualWorkspace } from './browser-visual-workspace.ts';
+import { checkMaintenanceRules } from './browser-maintenance-rules.ts';
 
 /** Synthetic GitHub-boundary fixtures; live-platform acceptance remains a separate gate. */
 export async function checkIntakeWorkbench(
@@ -207,6 +208,7 @@ export async function checkIntakeWorkbench(
     store.finishRun(run.id, 'completed');
     await checkLiveInputSettlement(history);
     await checkVisualWorkspace(page, store, project.id, task.id, artifacts);
+    await checkMaintenanceRules(page, store, engine, artifacts);
     console.log(
       'Workbench browser fixture passed: source configuration, admission states, ' +
         'original text/reply, history navigation, durable pause, failed-source retention, ' +

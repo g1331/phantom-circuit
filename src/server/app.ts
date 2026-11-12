@@ -320,6 +320,41 @@ export function createApp(
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return engine.intake.detail(id);
   });
+  app.get('/api/repos/:id/maintenance', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { before } = z.object({ before: z.string().optional() }).strict().parse(req.query);
+    return engine.maintenance.page(id, before);
+  });
+  app.post('/api/repos/:id/maintenance/rules', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    return engine.maintenance.save(id, req.body);
+  });
+  app.get('/api/repos/:id/maintenance/rules/:ruleId/history', async (req) => {
+    const { id, ruleId } = z.object({ id: z.string(), ruleId: z.string() }).parse(req.params);
+    const { before } = z
+      .object({ before: z.coerce.number().int().positive().optional() })
+      .strict()
+      .parse(req.query);
+    return engine.maintenance.history(id, ruleId, before);
+  });
+  app.put('/api/repos/:id/maintenance/rules/:ruleId', async (req) => {
+    const { id, ruleId } = z.object({ id: z.string(), ruleId: z.string() }).parse(req.params);
+    return engine.maintenance.save(id, req.body, ruleId);
+  });
+  app.post('/api/repos/:id/maintenance/refresh', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    await engine.maintenance.refresh(id);
+    return engine.maintenance.page(id);
+  });
+  app.get('/api/repos/:id/maintenance/observations/:observationId', async (req) => {
+    const { id, observationId } = z
+      .object({
+        id: z.string(),
+        observationId: z.string(),
+      })
+      .parse(req.params);
+    return engine.maintenance.detail(id, observationId);
+  });
   app.put('/api/repos/:id/intake', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     return engine.intake.configure(id, req.body);
