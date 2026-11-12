@@ -674,6 +674,85 @@ export async function checkRuntimeUI() {
         }
       }
     }
+    const completedRuns = structuredClone(snapshot.runs);
+    const timingRun = {
+      ...historical,
+      id: 'timing-live',
+      startedAt: new Date(Date.now() - 65_000).toISOString(),
+      endedAt: undefined,
+      durationMs: undefined,
+      status: 'running' as const,
+      usage: { totalTokens: 100 },
+    };
+    const timingValues = page.locator('.usage-panel .duration-stat dd');
+    const openTiming = async () => {
+      await page.reload();
+      await openTask(page, task.title);
+      await openSection(page, 'task.tab.process');
+      await page.locator('.usage-panel').scrollIntoViewIfNeeded();
+      await timingValues.first().waitFor();
+    };
+    for (const locale of ['en', 'zh-CN']) {
+      await choosePreference(page, 'language', locale);
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+        snapshot.runs = [...completedRuns, timingRun];
+        await openTiming();
+        await page
+          .locator('.usage-panel dt')
+          .getByText(locale === 'en' ? 'Cumulative execution time' : '累计执行时间', {
+            exact: true,
+          })
+          .waitFor();
+        await page
+          .locator('.usage-panel dt')
+          .getByText(locale === 'en' ? 'Total elapsed (including waiting)' : '总历时（含等待）', {
+            exact: true,
+          })
+          .waitFor();
+        const before = await timingValues.first().innerText();
+        assert.notEqual(before, locale === 'en' ? '0 sec' : '0秒');
+        await page.waitForFunction(
+          (text) => document.querySelector('.usage-panel .duration-stat dd')?.textContent !== text,
+          before,
+        );
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `timing-live-${locale}-${width}.png`,
+          ),
+        });
+        const missing = { ...timingRun, startedAt: 'unrecorded', status: 'interrupted' as const };
+        snapshot.runs = [missing];
+        await openTiming();
+        const unknown = locale === 'en' ? 'No timing data' : '暂无计时数据';
+        assert.deepEqual(await timingValues.allTextContents(), [unknown, unknown]);
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `timing-missing-${locale}-${width}.png`,
+          ),
+        });
+        snapshot.runs = [...completedRuns, missing];
+        await openTiming();
+        for (const value of await timingValues.allTextContents())
+          assert.ok(value.includes(locale === 'en' ? 'Known portion' : '已知部分'), value);
+        const fixed = await timingValues.allTextContents();
+        await page.waitForTimeout(1200);
+        assert.deepEqual(await timingValues.allTextContents(), fixed);
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `timing-partial-${locale}-${width}.png`,
+          ),
+        });
+        await backToWork(page);
+      }
+    }
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

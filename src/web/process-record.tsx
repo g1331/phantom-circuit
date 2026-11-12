@@ -18,6 +18,7 @@ import { isRunning } from './sidebar.tsx';
 import { unset } from './ui.tsx';
 import { useWhen } from './work-list.tsx';
 import { eventText } from './event-text.ts';
+import { runTiming, taskTiming } from '../shared/run-timing.ts';
 
 const tokenFields = {
   inputTokens: 'usage.input',
@@ -110,6 +111,7 @@ function RunFacts({ run, cost }: { run: Run; cost?: CostEstimate }) {
   const shown = useShown();
   const identity = run.modelIdentity ?? run.model;
   const price = run.priceSnapshot ?? run.price;
+  const timing = runTiming(run, Date.now());
   const count = (value?: number) => (value === undefined ? t('usage.unknown') : number(value));
   return (
     <>
@@ -122,16 +124,25 @@ function RunFacts({ run, cost }: { run: Run; cost?: CostEstimate }) {
           [t('usage.version'), run.agentVersion ?? identity?.agentVersion ?? t('usage.unknown')],
           [t('usage.profileVersion'), run.profileVersion ?? t('usage.unknown')],
           [t('usage.contextWindow'), count(run.usage?.contextWindow)],
-          [t('process.started'), date(run.startedAt, { dateStyle: 'short', timeStyle: 'medium' })],
+          [
+            t('process.started'),
+            Number.isFinite(timing.started)
+              ? date(run.startedAt, { dateStyle: 'short', timeStyle: 'medium' })
+              : t('usage.noTiming'),
+          ],
           [
             t('process.ended'),
             run.endedAt
-              ? date(run.endedAt, { dateStyle: 'short', timeStyle: 'medium' })
-              : t('delivery.running'),
+              ? Number.isFinite(timing.ended)
+                ? date(run.endedAt, { dateStyle: 'short', timeStyle: 'medium' })
+                : t('usage.noTiming')
+              : timing.active
+                ? t('delivery.running')
+                : t('usage.noTiming'),
           ],
           [
             t('usage.duration'),
-            run.durationMs === undefined ? t('usage.unknown') : duration(run.durationMs / 1000),
+            timing.durationMs === null ? t('usage.noTiming') : duration(timing.durationMs / 1000),
           ],
           ...Object.entries(tokenFields).map(
             ([field, label]) =>
@@ -173,9 +184,8 @@ export function RunRow({ state, run, cost }: { state: Snapshot; run: Run; cost?:
       : run.provider?.kind === 'custom'
         ? run.provider.name
         : undefined;
-  const elapsed = run.endedAt
-    ? (Date.parse(run.endedAt) - Date.parse(run.startedAt)) / 1000
-    : undefined;
+  const timing = runTiming(run, Date.now());
+  const elapsed = run.endedAt ? timing.durationMs : null;
   const tokens = run.usage?.totalTokens;
   return (
     <li className="run-row">
@@ -183,7 +193,9 @@ export function RunRow({ state, run, cost }: { state: Snapshot; run: Run; cost?:
         className={`run-record status-${run.status}`}
         title={
           <>
-            <time dateTime={run.startedAt}>{when(run.startedAt)}</time>
+            <time dateTime={Number.isFinite(timing.started) ? run.startedAt : undefined}>
+              {Number.isFinite(timing.started) ? when(run.startedAt) : t('usage.noTiming')}
+            </time>
             <strong>
               {t(run.purpose === 'collaboration' ? 'flow.contributor' : `team.role.${run.role}`)}
             </strong>
@@ -201,7 +213,7 @@ export function RunRow({ state, run, cost }: { state: Snapshot; run: Run; cost?:
                 </>
               )}
             </span>
-            <span className="run-num">{elapsed === undefined ? '' : duration(elapsed)}</span>
+            <span className="run-num">{elapsed === null ? '' : duration(elapsed / 1000)}</span>
             <span className="run-num">
               {tokens === undefined
                 ? ''
@@ -359,9 +371,34 @@ type TaskUsageResult = {
   runCosts?: Record<string, CostEstimate | undefined>;
   runs?: Run[];
   coverage?: { available: number; total: number };
-  durationMs?: number;
-  elapsedMs?: number | null;
 };
+
+function TimingStats({ runs }: { runs: Run[] }) {
+  const { t, duration } = useLocale();
+  const [, tick] = useState(0);
+  const timing = taskTiming(runs, Date.now());
+  useEffect(() => {
+    if (!timing.active) return;
+    const timer = window.setInterval(() => tick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [timing.active]);
+  const value = (ms: number | null, partial: boolean) =>
+    ms === null
+      ? t('usage.noTiming')
+      : `${duration(ms / 1000)}${partial ? ` (${t('usage.knownTiming')})` : ''}`;
+  return (
+    <>
+      <div className="duration-stat" title={t('usage.cumulativeHint')}>
+        <dt>{t('usage.cumulative')}</dt>
+        <dd>{value(timing.durationMs, timing.durationPartial)}</dd>
+      </div>
+      <div className="duration-stat">
+        <dt>{t('usage.elapsed')}</dt>
+        <dd>{value(timing.elapsedMs, timing.elapsedPartial)}</dd>
+      </div>
+    </>
+  );
+}
 
 /** The task's process: what it cost, every model run, then the host's event record. */
 export function TaskProcess({
@@ -373,10 +410,14 @@ export function TaskProcess({
   revision: string;
   state: Snapshot;
 }) {
-  const { t, duration, number } = useLocale();
+  const { t, number } = useLocale();
   const [result, setResult] = useState<TaskUsageResult>();
   const [error, setError] = useState<string | Error>('');
   const latestEvent = state.events.find((event) => event.taskId === taskId)?.id;
+  const currentRuns = state.runs.filter((run) => run.taskId === taskId);
+  const runRevision = currentRuns
+    .map((run) => [run.id, run.status, run.startedAt, run.endedAt, run.durationMs].join(':'))
+    .join('|');
   useEffect(() => {
     let current = true;
     setError('');
@@ -390,11 +431,14 @@ export function TaskProcess({
     return () => {
       current = false;
     };
-  }, [taskId, revision, latestEvent]);
+  }, [taskId, revision, latestEvent, runRevision]);
   const usage = result?.usage;
   const costs = result?.costs ?? (result?.cost ? [result.cost] : []);
   const count = (value?: number) => (value === undefined ? t('usage.unknown') : number(value));
-  const runs = (result?.runs ?? []).slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const runs = [...new Map([...(result?.runs ?? []), ...currentRuns].map((run) => [run.id, run]))]
+    .map(([, run]) => run)
+    .filter((run) => run.taskId === taskId)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   return (
     <div className="task-process">
       <section className="usage-panel" aria-label={t('usage.title')}>
@@ -405,20 +449,7 @@ export function TaskProcess({
           </p>
         )}
         <dl className="stat-strip">
-          <div className="duration-stat">
-            <dt>{t('usage.duration')}</dt>
-            <dd>
-              {result?.durationMs === undefined
-                ? t('usage.unknown')
-                : duration(result.durationMs / 1000)}
-            </dd>
-          </div>
-          <div className="duration-stat">
-            <dt>{t('usage.elapsed')}</dt>
-            <dd>
-              {result?.elapsedMs == null ? t('usage.unknown') : duration(result.elapsedMs / 1000)}
-            </dd>
-          </div>
+          <TimingStats runs={runs} />
           <div>
             <dt>{t('usage.total')}</dt>
             <dd>{count(usage?.totalTokens)}</dd>

@@ -35,6 +35,7 @@ import type {
 import type { AgentBackend } from './agent-backend.ts';
 import { commandSchema, limit, profileSchema, profileSetSchema } from './schemas.ts';
 import { runtimePath } from './runtime-paths.ts';
+import { taskTiming } from '../shared/run-timing.ts';
 
 type RuntimeEngineContract = Engine & {
   answerClarification(
@@ -736,22 +737,7 @@ export function createApp(
     const usageFields = modelCountCoverage(usage as Record<string, unknown>);
     const pricedFields = new Set(costs.flatMap((estimate) => estimate.coverage ?? []));
     const missing = usageFields.filter((field) => !pricedFields.has(field));
-    const durationMs = runs.reduce((total, run) => {
-      if (run.durationMs !== undefined) return total + Math.max(0, run.durationMs);
-      if (!run.endedAt) return total;
-      const duration = Date.parse(run.endedAt) - Date.parse(run.startedAt);
-      return total + (Number.isFinite(duration) && duration > 0 ? duration : 0);
-    }, 0);
-    const started = runs
-      .map((run) => Date.parse(run.startedAt))
-      .filter((value) => Number.isFinite(value))
-      .sort((a, b) => a - b)[0];
-    const ended = runs
-      .map((run) => (run.endedAt ? Date.parse(run.endedAt) : Date.now()))
-      .filter((value) => Number.isFinite(value))
-      .sort((a, b) => b - a)[0];
-    const elapsedMs =
-      started === undefined || ended === undefined ? null : Math.max(0, ended - started);
+    const timing = taskTiming(runs, Date.now());
     const available = usageFields.length - missing.length;
     return {
       usage,
@@ -761,8 +747,7 @@ export function createApp(
       runs,
       events: store.taskEvents(id),
       coverage: { available, total: usageFields.length, missing },
-      durationMs,
-      elapsedMs,
+      ...timing,
     };
   });
   app.get(
