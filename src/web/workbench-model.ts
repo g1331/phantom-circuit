@@ -147,7 +147,7 @@ export function workRecords(
     const { input, assessment } = entry;
     const href = routeHref({ page: 'input', projectId, inputId: input.id, view: 'records' });
     rows.push({
-      id: input.id,
+      id: `input:${input.id}`,
       at: input.observedAt,
       kind: 'input',
       inputId: input.id,
@@ -159,7 +159,7 @@ export function workRecords(
       original: input.url,
     });
     rows.push({
-      id: assessment.id,
+      id: `judgment:${assessment.id}`,
       at: assessment.updatedAt,
       kind: 'judgment',
       inputId: input.id,
@@ -172,7 +172,7 @@ export function workRecords(
     });
     for (const reply of entry.replies) {
       rows.push({
-        id: reply.id,
+        id: `reply:${reply.id}`,
         at: reply.state.status === 'sent' ? reply.state.sentAt : reply.createdAt,
         kind: 'reply',
         inputId: input.id,
