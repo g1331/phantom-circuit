@@ -10,13 +10,15 @@ function localDate(value: string) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 19);
 }
 
-function ReceivingForm({
+export function ReceivingForm({
   repo,
   source,
   onSaved,
+  autoFocus = true,
 }: {
   repo: Repo;
   source?: IntakeSource;
+  autoFocus?: boolean;
   onSaved: () => Promise<void>;
 }) {
   const { t, host } = useLocale();
@@ -69,7 +71,7 @@ function ReceivingForm({
       <label>
         {t('flow.command')}
         <input
-          autoFocus
+          autoFocus={autoFocus}
           required
           value={command}
           pattern={'/[a-z][a-z0-9\\-]*'}

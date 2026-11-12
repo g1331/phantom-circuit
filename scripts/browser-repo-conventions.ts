@@ -150,7 +150,7 @@ export async function checkRepoConventions() {
     page.setDefaultTimeout(15000);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto(`${origin}/#/p/${project.id}/project`);
+    await page.goto(`${origin}/#/p/${project.id}/project/instructions`);
     const panel = page.getByRole('region', { name: '团队说明', exact: true });
     await panel.getByRole('button', { name: '重新读取仓库约定' }).click();
     await panel

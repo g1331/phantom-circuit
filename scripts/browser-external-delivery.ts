@@ -213,7 +213,7 @@ export async function checkExternalDelivery(
     });
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`${origin}/#/p/${fixtures.project.id}`);
-    await page.locator('.workspace-header > strong').waitFor();
+    await page.locator('.workspace-project-picker select').waitFor();
     for (const locale of ['zh-CN', 'en'] as const) {
       await choosePreference(page, 'language', locale);
       const copy = locale === 'en' ? pagesEn : pagesZh;

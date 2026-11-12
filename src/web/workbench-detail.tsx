@@ -10,10 +10,12 @@ export function InputDetail({
   inputId,
   projectId,
   onChange,
+  backTo = 'home',
 }: {
   inputId: string;
   projectId: string;
   onChange: () => Promise<void>;
+  backTo?: 'home' | 'records';
 }) {
   const { t, host, date } = useLocale();
   const dialog = useRef<HTMLDialogElement>(null);
@@ -47,7 +49,7 @@ export function InputDetail({
         section.getBoundingClientRect().top - element.getBoundingClientRect().top - saved.offset;
     }
   }, [detail]);
-  const home = routeHref({ page: 'home', projectId });
+  const home = routeHref({ page: backTo, projectId });
   useEffect(() => {
     dialog.current?.showModal();
     dialog.current?.focus();
@@ -68,7 +70,11 @@ export function InputDetail({
     >
       <header className="flow-detail-header">
         <h2>{current?.input.title ?? t('flow.inputDetails')}</h2>
-        <a className="icon-button" href={home} aria-label={t('flow.close')}>
+        <a
+          className="icon-button"
+          href={home}
+          aria-label={t(backTo === 'records' ? 'flow.backRecords' : 'flow.close')}
+        >
           <X size={18} />
         </a>
       </header>

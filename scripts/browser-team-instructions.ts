@@ -58,7 +58,7 @@ export async function checkTeamInstructions() {
     page.setDefaultTimeout(8000);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto(`${origin}/#/p/${project.id}/project`);
+    await page.goto(`${origin}/#/p/${project.id}/project/instructions`);
     const panel = page.getByRole('region', { name: '团队说明', exact: true });
     await panel.locator('summary').filter({ hasText: '版本历史' }).click();
     await panel.getByText('尚无已保存版本。', { exact: true }).waitFor();

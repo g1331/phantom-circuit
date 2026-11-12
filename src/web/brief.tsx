@@ -234,7 +234,10 @@ export function Brief({
       )}
 
       {hasSuggestions && (
-        <a className="brief-more" href={routeHref({ page: 'project', projectId: project.id })}>
+        <a
+          className="brief-more"
+          href={routeHref({ page: 'project', projectId: project.id, view: 'instructions' })}
+        >
           {t('suggestions.waiting')}
         </a>
       )}

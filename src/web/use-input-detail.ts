@@ -5,7 +5,7 @@ import { api } from './api.ts';
 export function useInputDetail(
   inputId: string,
   onChange: () => Promise<void>,
-  beforeUpdate: () => void,
+  beforeUpdate?: () => void,
 ) {
   const [detail, setDetail] = useState<WorkflowInputDetail>();
   const [error, setError] = useState('');
@@ -25,7 +25,7 @@ export function useInputDetail(
         controller.signal,
       );
       if (controller.signal.aborted) return;
-      beforeUpdate();
+      beforeUpdate?.();
       setDetail(result);
       setError('');
     } catch (cause) {
@@ -55,7 +55,7 @@ export function useInputDetail(
     setError('');
     try {
       const result = await api<WorkflowInputDetail>(`/inputs/${inputId}/${action}`, {});
-      beforeUpdate();
+      beforeUpdate?.();
       setDetail(result);
       await onChange();
     } catch (cause) {
