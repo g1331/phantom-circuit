@@ -62,15 +62,20 @@ test('task timing counts live execution once and freezes stopped records', async
   t.mock.timers.setTime(start + 70_000);
   assert.equal((await timing()).durationMs, 70_000);
   store.finishRun(run.id, 'paused');
+  store.control(task.id, 'pause');
   t.mock.timers.setTime(start + 170_000);
   assert.equal((await timing()).durationMs, 70_000);
-  assert.equal((await timing()).elapsedMs, 70_000);
+  assert.equal((await timing()).elapsedMs, 170_000, 'total elapsed includes paused waiting');
+  store.control(task.id, 'resume');
   const resumed = store.run('dev', project.id, 'frontend', task);
   t.mock.timers.setTime(start + 200_000);
   assert.equal((await timing()).durationMs, 100_000);
   assert.equal((await timing()).elapsedMs, 200_000);
   store.finishRun(resumed.id, 'completed');
   store.finishRun(resumed.id, 'completed');
+  assert.equal((await timing()).active, true, 'a finished Run does not finish its Task');
+  store.updateTask(task.id, { stage: 'done' });
+  assert.equal((await timing()).active, false, 'a finished Task freezes the elapsed clock');
   t.mock.timers.setTime(start + 300_000);
   assert.equal((await timing()).durationMs, 100_000);
   assert.equal((await timing()).elapsedMs, 200_000);
@@ -111,6 +116,10 @@ test('task timing counts live execution once and freezes stopped records', async
   assert.equal(parallel.durationMs, 500_000);
   assert.equal(parallel.elapsedMs, 200_000);
   assert.deepEqual(store.list('run'), beforeRead, 'timing reads preserve historical evidence');
+  store.updateTask(task.id, { stage: 'cancelled' });
+  t.mock.timers.setTime(start + 500_000);
+  assert.equal((await timing()).elapsedMs, 200_000);
+  assert.equal((await timing()).active, false, 'cancellation also freezes the elapsed clock');
 });
 
 test('state retains original historical evidence while scheduling excludes only settled known gaps', async () => {

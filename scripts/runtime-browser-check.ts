@@ -726,6 +726,34 @@ export async function checkRuntimeUI() {
             `timing-live-${locale}-${width}.png`,
           ),
         });
+        snapshot.tasks[0].control = 'paused';
+        snapshot.tasks[0].pausedByUser = true;
+        snapshot.runs = [
+          {
+            ...timingRun,
+            status: 'paused',
+            endedAt: new Date(Date.parse(timingRun.startedAt) + 10_000).toISOString(),
+            durationMs: 10_000,
+          },
+        ];
+        await openTiming();
+        const paused = await timingValues.allTextContents();
+        assert.equal(paused[0], locale === 'en' ? '10 sec' : '10秒');
+        assert.notEqual(paused[1], paused[0], 'total elapsed includes the pause');
+        await page.waitForFunction(
+          (text) =>
+            document.querySelectorAll('.usage-panel .duration-stat dd')[1]?.textContent !== text,
+          paused[1],
+        );
+        assert.equal(await timingValues.first().innerText(), paused[0]);
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `timing-paused-${locale}-${width}.png`,
+          ),
+        });
+        snapshot.tasks[0].control = 'active';
+        snapshot.tasks[0].pausedByUser = false;
         const missing = { ...timingRun, startedAt: 'unrecorded', status: 'interrupted' as const };
         snapshot.runs = [missing];
         await openTiming();
@@ -741,6 +769,8 @@ export async function checkRuntimeUI() {
         await openTiming();
         for (const value of await timingValues.allTextContents())
           assert.ok(value.includes(locale === 'en' ? 'Known portion' : '已知部分'), value);
+        snapshot.tasks[0].stage = 'done';
+        await openTiming();
         const fixed = await timingValues.allTextContents();
         await page.waitForTimeout(1200);
         assert.deepEqual(await timingValues.allTextContents(), fixed);
@@ -754,6 +784,8 @@ export async function checkRuntimeUI() {
             `timing-partial-${locale}-${width}.png`,
           ),
         });
+        snapshot.tasks[0].stage = task.stage;
+        await openTiming();
         await backToWork(page);
       }
     }

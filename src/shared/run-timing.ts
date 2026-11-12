@@ -1,4 +1,4 @@
-import type { Run } from './types.ts';
+import type { Run, Task } from './types.ts';
 
 export function runTiming(run: Run, now: number) {
   const started = Date.parse(run.startedAt);
@@ -18,20 +18,24 @@ export function runTiming(run: Run, now: number) {
 }
 
 /** Sum each Run once. Parallel execution can exceed the first-to-last wall clock. */
-export function taskTiming(runs: Run[], now: number) {
+export function taskTiming(runs: Run[], now: number, task: Pick<Task, 'stage'>) {
+  const finished = ['done', 'cancelled'].includes(task.stage);
   const records = runs.map((run) => runTiming(run, now));
   const durations = records.flatMap((record) =>
     record.durationMs === null ? [] : [record.durationMs],
   );
-  const intervals = records.filter((record) => record.interval !== null);
+  const intervals = records.filter((record) =>
+    finished ? record.interval !== null : Number.isFinite(record.started) && record.started <= now,
+  );
+  // Waiting ends with the Task, even when every Run has already stopped.
+  const ended = finished ? Math.max(...intervals.map((record) => record.ended)) : now;
   return {
     durationMs: durations.length ? durations.reduce((total, value) => total + value, 0) : null,
     durationPartial: durations.length < records.length,
     elapsedMs: intervals.length
-      ? Math.max(...intervals.map((record) => record.ended)) -
-        Math.min(...intervals.map((record) => record.started))
+      ? ended - Math.min(...intervals.map((record) => record.started))
       : null,
     elapsedPartial: intervals.length < records.length,
-    active: records.some((record) => record.active),
+    active: records.some((record) => record.active) || (!finished && intervals.length > 0),
   };
 }

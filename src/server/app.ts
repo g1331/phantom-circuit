@@ -728,7 +728,7 @@ export function createApp(
   });
   app.get('/api/tasks/:id/usage', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
-    store.task(id);
+    const task = store.task(id);
     const runs = store.list('run').filter((run) => run.taskId === id);
     const usage = store.taskUsage(id);
     const costs = store.taskCosts(id);
@@ -737,7 +737,7 @@ export function createApp(
     const usageFields = modelCountCoverage(usage as Record<string, unknown>);
     const pricedFields = new Set(costs.flatMap((estimate) => estimate.coverage ?? []));
     const missing = usageFields.filter((field) => !pricedFields.has(field));
-    const timing = taskTiming(runs, Date.now());
+    const timing = taskTiming(runs, Date.now(), task);
     const available = usageFields.length - missing.length;
     return {
       usage,

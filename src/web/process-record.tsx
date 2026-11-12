@@ -6,6 +6,7 @@ import type {
   PriceSnapshot,
   Run,
   Snapshot,
+  Task,
   UsageAggregate,
 } from '../shared/types.ts';
 import { api } from './api.ts';
@@ -373,10 +374,10 @@ type TaskUsageResult = {
   coverage?: { available: number; total: number };
 };
 
-function TimingStats({ runs }: { runs: Run[] }) {
+function TimingStats({ runs, task }: { runs: Run[]; task: Task }) {
   const { t, duration } = useLocale();
   const [, tick] = useState(0);
-  const timing = taskTiming(runs, Date.now());
+  const timing = taskTiming(runs, Date.now(), task);
   useEffect(() => {
     if (!timing.active) return;
     const timer = window.setInterval(() => tick((value) => value + 1), 1000);
@@ -414,6 +415,7 @@ export function TaskProcess({
   const [result, setResult] = useState<TaskUsageResult>();
   const [error, setError] = useState<string | Error>('');
   const latestEvent = state.events.find((event) => event.taskId === taskId)?.id;
+  const task = state.tasks.find((task) => task.id === taskId)!;
   const currentRuns = state.runs.filter((run) => run.taskId === taskId);
   const runRevision = currentRuns
     .map((run) => [run.id, run.status, run.startedAt, run.endedAt, run.durationMs].join(':'))
@@ -449,7 +451,7 @@ export function TaskProcess({
           </p>
         )}
         <dl className="stat-strip">
-          <TimingStats runs={runs} />
+          <TimingStats runs={runs} task={task} />
           <div>
             <dt>{t('usage.total')}</dt>
             <dd>{count(usage?.totalTokens)}</dd>
