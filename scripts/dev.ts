@@ -30,7 +30,13 @@ const node = (script: string, params: string[], env = process.env) =>
   spawn(process.execPath, [script, ...params], { stdio: 'inherit', env });
 
 const children: ChildProcess[] = [
-  node('node_modules/tsx/dist/cli.mjs', ['watch', '--clear-screen=false', ...backend, ...args]),
+  node('node_modules/tsx/dist/cli.mjs', [
+    'watch',
+    '--clear-screen=false',
+    ...backend,
+    '--dev-frontend',
+    ...args,
+  ]),
   node('node_modules/vite/bin/vite.js', ['--host', '127.0.0.1'], {
     ...process.env,
     // Private launcher handoff: keep the proxy on the backend's selected state directory.

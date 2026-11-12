@@ -46,6 +46,7 @@ try {
   previews = new Previews(store, workspaces);
   app = createApp(store, engine, previews, config.port, undefined, undefined, {
     logger: options.logger,
+    devFrontend: options.devFrontend,
   });
   app.log.info({ dataDir, port: config.port }, 'starting Phantom Circuit');
   // Bind before recovering or scheduling: a second instance must not touch running task state.
@@ -80,7 +81,8 @@ try {
             store!.event('preview', String(e), { projectId: store!.repo(repoId).projectId }),
           );
     });
-    app.log.info({ url: `http://127.0.0.1:${config.port}` }, 'Phantom Circuit ready');
+    const url = options.devFrontend ? 'http://127.0.0.1:5173' : `http://127.0.0.1:${config.port}`;
+    app.log.info({ url }, 'Phantom Circuit ready');
   }
 } catch (error) {
   if (app) app.log.fatal({ err: error }, 'startup failed');
