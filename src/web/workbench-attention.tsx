@@ -71,7 +71,8 @@ export function WorkbenchAttention({
               }
             >
               <strong>
-                {t(`team.role.${member.role}`)} · {t(`team.doing.${member.activity}`)}
+                {t(member.contribution ? 'flow.contributor' : `team.role.${member.role}`)} ·{' '}
+                {t(`team.doing.${member.activity}`)}
               </strong>
               {action && <span>{host(action)}</span>}
             </a>

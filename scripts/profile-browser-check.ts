@@ -35,7 +35,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   const original = project.profiles.pm.effort;
   await clickInSidebar(page, '运行设置');
   await settingsPage(page.locator('.modal'), 'models', 'codex');
-  await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('low');
+  await page.getByLabel('接入协调推理等级', { exact: true }).selectOption('low');
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor();
   assert.equal(checkRequests.length, 0, 'save does not execute connection checks');
@@ -44,15 +44,15 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
   assert.equal(store.project(project.id).profiles.pm.effort, original);
   await openProjectSettings();
   await page
-    .getByLabel('项目 PM模型', { exact: true })
+    .getByLabel('接入协调模型', { exact: true })
     .locator('option[value="gpt-5.6-luna"]')
     .waitFor({ state: 'attached' });
   const roles = page.getByRole('group', { name: '选择要配置的角色' });
   assert.equal(await roles.getByRole('button').count(), 6);
   await roles.getByRole('button').filter({ hasText: '前端' }).click();
   await page.getByLabel('前端模型', { exact: true }).waitFor();
-  await roles.getByRole('button').filter({ hasText: '项目 PM' }).click();
-  assert.equal(await page.getByLabel('项目 PM推理等级', { exact: true }).inputValue(), original);
+  await roles.getByRole('button').filter({ hasText: '接入协调' }).click();
+  assert.equal(await page.getByLabel('接入协调推理等级', { exact: true }).inputValue(), original);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 950 });
     assert.equal(
@@ -65,7 +65,7 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     );
     await page.screenshot({ path: resolve(artifacts, `project-profiles-${width}.png`) });
   }
-  await page.getByLabel('项目 PM推理等级', { exact: true }).selectOption('max');
+  await page.getByLabel('接入协调推理等级', { exact: true }).selectOption('max');
   await page.getByRole('button', { name: '检查 Codex 角色配置', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '配置检查通过。' }).waitFor();
   assert.equal(
@@ -97,21 +97,24 @@ export async function checkProfiles(page: Page, store: Store, artifacts: string)
     const providerId = await region.getByLabel('选择 Provider').inputValue();
     await page.getByRole('button', { name: '关闭窗口' }).click();
     await openProjectSettings();
-    await page.getByLabel('项目 PM Provider', { exact: true }).selectOption(providerId);
-    await page.getByLabel('项目 PM模型', { exact: true }).selectOption('listed-model');
-    await page.getByLabel('项目 PM推理等级', { exact: true }).fill('low');
-    const pm = page.getByRole('group', { name: '项目 PM', exact: true });
+    await page.getByLabel('接入协调 Provider', { exact: true }).selectOption(providerId);
+    await page.getByLabel('接入协调模型', { exact: true }).selectOption('listed-model');
+    await page.getByLabel('接入协调推理等级', { exact: true }).fill('low');
+    const pm = page.getByRole('group', { name: '接入协调', exact: true });
     await pm.getByRole('button', { name: '刷新模型列表' }).click();
     await pm.getByLabel('自定义模型 ID', { exact: true }).check();
-    await page.getByLabel('项目 PM自定义模型 ID', { exact: true }).fill('manual-model');
+    await page.getByLabel('接入协调自定义模型 ID', { exact: true }).fill('manual-model');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor();
     assert.equal(store.project(project.id).profiles.pm.model, 'manual-model');
-    await page.getByLabel('项目 PM推理等级', { exact: true }).fill('unknown');
+    await page.getByLabel('接入协调推理等级', { exact: true }).fill('unknown');
     await page.getByRole('status').filter({ hasText: '已保存。' }).waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '检查 Codex 角色配置', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '实际推理档位' }).waitFor();
-    assert.equal(await page.getByLabel('项目 PM推理等级', { exact: true }).inputValue(), 'unknown');
+    assert.equal(
+      await page.getByLabel('接入协调推理等级', { exact: true }).inputValue(),
+      'unknown',
+    );
     assert.equal(store.project(project.id).profiles.pm.effort, 'low');
     await page.screenshot({ path: resolve(artifacts, 'profile-custom-error-390.png') });
     await page.getByRole('button', { name: '关闭窗口' }).click();

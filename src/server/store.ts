@@ -143,7 +143,11 @@ export const defaults: Settings = {
   ompProfileInitialization: structuredClone(ompProfileInitialization),
   secondaryReviewProfiles: { omp: structuredClone(ompSecondaryReviewProfile) },
 };
+import type { Collaboration, FollowUp } from '../shared/collaboration.ts';
+
 type Entities = {
+  followUp: FollowUp;
+  collaboration: Collaboration;
   intakeSource: IntakeSource;
   sourceInput: SourceInput;
   inputAssessment: InputAssessment;
@@ -223,6 +227,9 @@ function normalizeSettings(value: Settings): Settings {
 export type OwnerSource = ReturnType<Store['ownerSource']>;
 
 export interface RunOptions {
+  purpose?: Run['purpose'];
+  collaborationId?: string;
+  workspacePath?: string;
   profile?: ProfileName;
   secondaryReview?: boolean;
   secondaryProfile?: Profile;
@@ -1649,6 +1656,7 @@ export class Store {
         | 'devLimit'
         | 'commands'
         | 'requiredChecks'
+        | 'followUpsEnabled'
         | 'blocked'
         | 'milestone'
         | 'preview'
@@ -1656,7 +1664,7 @@ export class Store {
     >,
   ) {
     const r = this.repo(key);
-    if (patch.enabled && !(patch.authorized ?? r.authorized))
+    if ((patch.enabled || patch.followUpsEnabled) && !(patch.authorized ?? r.authorized))
       throw new Fault('先授权此仓库的任务、PR、分支及合并操作');
     Object.assign(r, patch);
     this.put('repo', key, r);
@@ -2334,7 +2342,7 @@ export class Store {
     };
   }
 
-  private ownerRun(task: Task, ownerMessageId: string): Run {
+  private ownerRun(task: Task, ownerMessageId?: string, options: RunOptions = {}): Run {
     const source = this.ownerSource(task.id);
     const fixed = source.run;
     const run: Run = {
@@ -2357,6 +2365,19 @@ export class Store {
       status: 'running',
       startedAt: now(),
       ownerMessageId,
+      ...(!ownerMessageId
+        ? {
+            resumeThreadId: source.threadId,
+            purpose: options.purpose,
+            sourceMessageId: task.sourceMessageId,
+            sourceIntent: this.get('message', task.sourceMessageId)?.intent,
+            revision: { head: task.head, base: task.base },
+            recoveryItemId: options.recoveryItemId,
+            incidentId: options.incidentId,
+            incidentPhase: options.incidentPhase,
+            incidentEvidence: options.incidentEvidence,
+          }
+        : {}),
     };
     this.put('run', run.id, run);
     this.changes.emit('run-start', run);
@@ -2381,6 +2402,8 @@ export class Store {
       if (!taskRecord || role !== 'dev') throw new Fault('负责人对话需要已有工作', 409);
       return this.ownerRun(taskRecord, options.ownerMessageId);
     }
+    if (role === 'dev' && taskRecord?.ownerRunId && options.purpose !== 'collaboration')
+      return this.ownerRun(taskRecord, undefined, options);
     const project = this.project(projectId);
     const selected = this.resolveEffectiveProfile(projectId, options.profile ?? profile, options);
     const profileConfig = selected.profile;
@@ -2409,6 +2432,7 @@ export class Store {
       profileMatches(project.pmThreadProfile, profileConfig);
     const devThreadMatches =
       role === 'dev' &&
+      options.purpose !== 'collaboration' &&
       taskRecord?.devThreadId &&
       (taskRecord.devThreadProviderId ?? 'codex') === profileConfig.providerId &&
       (taskRecord.devThreadAgentKind === undefined ||
@@ -2443,6 +2467,9 @@ export class Store {
       id: id(),
       projectId,
       role,
+      purpose: options.purpose,
+      collaborationId: options.collaborationId,
+      workspacePath: options.workspacePath,
       profile: options.profile ?? profile,
       profileConfig: structuredClone(profileConfig),
       agentKind: selected.agentKind,
@@ -2624,7 +2651,7 @@ export class Store {
       }
       // A later clean Run of the same phase is the evidence that an operational Incident is over.
       const phase = r.role === 'dev' ? 'dev' : r.role === 'review' ? `review:${r.reviewAxis}` : '';
-      if (r.status === 'completed' && phase && !r.ownerMessageId)
+      if (r.status === 'completed' && phase && !r.ownerMessageId && !r.purpose)
         for (const incident of this.list('incident').filter(
           (i) => i.taskId === r.taskId && i.phase === phase && i.status !== 'resolved',
         )) {
@@ -2750,7 +2777,14 @@ export class Store {
           }
           if (attention.paused) reasons.push({ code: 'paused' });
           if (attention.blocked) reasons.push({ code: 'blocked', detail: attention.blocked });
-          if (task.pendingFeedback?.length && !attention.historicalReason)
+          if (
+            !attention.historicalReason &&
+            (task.pendingFeedback?.length ||
+              this.list('followUp').some(
+                (input) =>
+                  input.taskId === task.id && ['queued', 'processing'].includes(input.status),
+              ))
+          )
             reasons.push({ code: 'feedback' });
           if (!['ready', 'developing'].includes(task.stage))
             reasons.push({ code: 'stage', detail: task.stage });
@@ -3092,6 +3126,17 @@ export class Store {
   }
 
   recover(): RecoveryItem[] {
+    for (const input of this.list('followUp'))
+      if (input.status === 'processing')
+        this.put('followUp', input.id, { ...input, status: 'queued', runId: undefined });
+    for (const assignment of this.list('collaboration'))
+      if (assignment.status === 'running')
+        this.put('collaboration', assignment.id, {
+          ...assignment,
+          status: 'failed',
+          error: '服务重启中断协作，保留工作区与结果供负责人恢复。',
+          updatedAt: now(),
+        });
     for (const suggestion of this.list('suggestion')) {
       if (suggestion.status === 'running')
         this.put('suggestion', suggestion.id, {

@@ -87,6 +87,26 @@ export async function checkOwnerConversation(
     store.setOwnerMessage(failed.id, { status: 'failed', failureReason });
     await section.getByText(wording, { exact: true }).waitFor();
   }
+  const questions = store.list('ownerMessage').length;
+  await section.getByRole('button', { name: '交给负责人处理', exact: true }).click();
+  await draft.fill('Browser fixture: improve the existing error message.');
+  await section.locator('form').getByRole('button', { name: '交给负责人处理' }).click();
+  await page.getByRole('region', { name: '协作与后续反馈' }).waitFor();
+  const followUp = store.list('followUp').find((item) => item.taskId === task.id);
+  assert.equal(followUp?.body, 'Browser fixture: improve the existing error message.');
+  assert.equal(followUp?.status, 'queued', 'paused work retains the request without executing');
+  assert.equal(store.list('ownerMessage').length, questions);
+  const viewport = page.viewportSize()!;
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole('region', { name: '协作与后续反馈' }).scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await page.screenshot({ path: resolve(artifacts, `owner-followup-${width}.png`) });
+  }
+  await page.setViewportSize(viewport);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await section.scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(artifacts, 'owner-conversation.png') });

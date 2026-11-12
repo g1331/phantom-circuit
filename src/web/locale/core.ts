@@ -93,7 +93,12 @@ export function createLocale(locale: Locale, production = false) {
       'externalFeedback',
       'reviewAcceptance',
     ] as const;
-    const key = keys.map((name) => `activity.${name}` as const).find((key) => zhCN[key] === title);
+    const recordedTitle = title
+      .replace(/^PM (?=运行)/, '协调者')
+      .replace('宿主事件：Review 后验收', '宿主事件：检查后验收');
+    const key = keys
+      .map((name) => `activity.${name}` as const)
+      .find((key) => zhCN[key] === recordedTitle);
     if (key) return t(key);
     const prefix = zhCN['activity.tool'].split('{name}')[0];
     return title.startsWith(prefix)

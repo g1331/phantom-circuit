@@ -118,10 +118,10 @@ export async function checkWorkspace() {
     });
     await page.goto(origin);
     await openPage(page, 'conversation');
-    await page.getByLabel('给 PM 的消息', { exact: true }).waitFor();
+    await page.getByLabel('给协调者的消息', { exact: true }).waitFor();
     await openTask(page, task.title);
     await page.getByRole('button', { name: '讨论调整', exact: true }).click();
-    const draft = page.getByLabel('给 PM 的消息', { exact: true });
+    const draft = page.getByLabel('给协调者的消息', { exact: true });
     assert.ok((await draft.inputValue()).includes(task.title));
     assert.equal(
       await page.getByRole('button', { name: '聊一聊', exact: true }).getAttribute('aria-pressed'),
@@ -150,9 +150,9 @@ export async function checkWorkspace() {
         );
       }, actionSelector);
     assert.equal(
-      await sectionOrder('.task-collaborate'),
-      true,
-      'receipt, collaboration and owner follow reading order',
+      await page.locator('.task-receipt-details').count(),
+      0,
+      'work without a revision does not show an empty delivery receipt',
     );
     const ownerInput = page.locator('.owner-conversation textarea');
     await ownerInput.scrollIntoViewIfNeeded();
@@ -242,7 +242,7 @@ export async function checkWorkspace() {
     await page.getByRole('button', { name: '撤销这次交付', exact: true }).click();
     assert.equal(
       await page
-        .getByRole('button', { name: '交给 PM 做', exact: true })
+        .getByRole('button', { name: '交给协调者做', exact: true })
         .getAttribute('aria-pressed'),
       'true',
     );

@@ -130,8 +130,11 @@ export async function fixture(
       if (prompt.includes('## 正式验证失败')) {
         // The Dev fixes the product defect the host validation found in its own work.
         await writeFile(join(this.options!.cwd, 'validation-fix.txt'), `fix ${Date.now()}\n`);
-        await this.options!.toolHandler!('settle', { action: 'fixed', diagnosis: 'Product defect.' });
-      } else if (this.options!.instructions.includes('Task Developer')) {
+        await this.options!.toolHandler!('settle', {
+          action: 'fixed',
+          diagnosis: 'Product defect.',
+        });
+      } else if (this.options!.instructions.includes('Work Owner')) {
         turns++;
         await dev(this.options!.cwd);
       } else if (

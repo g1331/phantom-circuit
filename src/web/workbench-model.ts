@@ -42,7 +42,9 @@ export function workNodes(
   const { t } = copy;
   const external = task.completion?.source === 'external';
   const runs = state.runs.filter((run) => run.taskId === task.id);
-  const latestDev = runs.findLast((run) => run.role === 'dev');
+  const latestDev = runs.findLast(
+    (run) => run.role === 'dev' && !run.purpose && !run.ownerMessageId,
+  );
   const inputId = entry?.input.id ?? task.issueOrigin?.inputId;
   const issue = entry?.input.number ?? task.issue;
   const nodes: FlowNode[] = [
@@ -145,7 +147,7 @@ export function workRecords(
     const { input, assessment } = entry;
     const href = routeHref({ page: 'input', projectId, inputId: input.id, view: 'records' });
     rows.push({
-      id: input.id,
+      id: `input:${input.id}`,
       at: input.observedAt,
       kind: 'input',
       inputId: input.id,
@@ -157,7 +159,7 @@ export function workRecords(
       original: input.url,
     });
     rows.push({
-      id: assessment.id,
+      id: `judgment:${assessment.id}`,
       at: assessment.updatedAt,
       kind: 'judgment',
       inputId: input.id,
@@ -170,7 +172,7 @@ export function workRecords(
     });
     for (const reply of entry.replies) {
       rows.push({
-        id: reply.id,
+        id: `reply:${reply.id}`,
         at: reply.state.status === 'sent' ? reply.state.sentAt : reply.createdAt,
         kind: 'reply',
         inputId: input.id,

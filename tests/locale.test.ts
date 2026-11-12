@@ -63,7 +63,7 @@ test('locale resources share keys and format observable values', () => {
   assert.equal(english.duration(0), '0 sec');
   assert.equal(english.t('tasks.dependencies', { count: 1 }), '1 dependency');
   assert.equal(english.t('tasks.dependencies', { count: 2 }), '2 dependencies');
-  assert.equal(english.activityTitle('PM 运行完成'), 'PM run completed');
+  assert.equal(english.activityTitle('PM 运行完成'), 'Coordinator run completed');
   assert.equal(english.activityTitle('调用工具 read_file'), 'Call tool read_file');
   assert.equal(english.activityTitle('User-authored 中文内容'), 'User-authored 中文内容');
   assert.equal(

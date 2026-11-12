@@ -83,7 +83,7 @@ export async function checkTyping(page: Page, scenario = '50 turns') {
 }
 
 export async function checkComposer(page: Page, store: Store, projectId: string, png: Buffer) {
-  const input = page.getByLabel('给 PM 的消息', { exact: true });
+  const input = page.getByLabel('给协调者的消息', { exact: true });
   const send = page.getByRole('button', { name: '发送消息', exact: true });
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await input.fill('');
@@ -208,8 +208,8 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
   const globalBefore = structuredClone(store.settings());
   const run = store.run('pm', projectId, 'pm');
   const runBefore = structuredClone(store.get('run', run.id));
-  const trigger = page.getByRole('button', { name: '切换 PM 模型和思考等级', exact: true });
-  const menu = page.getByRole('menu', { name: '切换 PM 模型和思考等级', exact: true });
+  const trigger = page.getByRole('button', { name: '切换协调者模型和思考等级', exact: true });
+  const menu = page.getByRole('menu', { name: '切换协调者模型和思考等级', exact: true });
   const composerBefore = await page.locator('.composer').boundingBox();
   await trigger.click();
   await menu.waitFor();
@@ -224,7 +224,7 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
   await menu.getByRole('menuitemradio', { name: 'gpt-5.6-luna', exact: true }).click();
   await menu.waitFor({ state: 'hidden' });
   assert.equal(store.project(projectId).profiles.pm.model, 'gpt-5.6-luna');
-  await page.getByLabel('给 PM 的消息', { exact: true }).fill('Draft survives model switching');
+  await page.getByLabel('给协调者的消息', { exact: true }).fill('Draft survives model switching');
   await trigger.click();
   await menu.getByRole('menuitem').filter({ hasText: '推理档位' }).click();
   await menu.getByRole('menuitemradio', { name: 'low', exact: true }).click();
@@ -240,13 +240,13 @@ export async function checkPMModels(page: Page, store: Store, projectId: string)
     'active Run keeps its original configuration',
   );
   assert.equal(
-    await page.getByLabel('给 PM 的消息', { exact: true }).inputValue(),
+    await page.getByLabel('给协调者的消息', { exact: true }).inputValue(),
     'Draft survives model switching',
   );
   await openPage(page, 'work');
   await openPage(page, 'conversation');
   assert.equal(
-    await page.getByLabel('给 PM 的消息', { exact: true }).inputValue(),
+    await page.getByLabel('给协调者的消息', { exact: true }).inputValue(),
     'Draft survives model switching',
     'view switching preserves the draft',
   );

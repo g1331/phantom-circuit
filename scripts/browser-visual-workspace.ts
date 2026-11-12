@@ -110,6 +110,7 @@ export async function checkVisualWorkspace(
     await page
       .locator('.record-row')
       .filter({ hasText: 'Issue #18 · Synthetic live source assessment' })
+      .filter({ has: page.locator('.record-source', { hasText: /^GitHub$/ }) })
       .click();
     await page
       .locator('.record-detail')
@@ -126,6 +127,21 @@ export async function checkVisualWorkspace(
     await page.screenshot({ path: resolve(artifacts, `visual-records-${width}.png`) });
     await nav().getByRole('link', { name: '来源', exact: true }).click();
     await page.getByLabel('允许发起工作的 GitHub 用户', { exact: true }).waitFor();
+    const feedbackSwitch = page.getByRole('switch', { name: '接续 Issue／PR 反馈与 CI 结果' });
+    for (const enabled of [true, false]) {
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.url().includes('/api/repos/') && response.request().method() === 'PATCH',
+        ),
+        feedbackSwitch.click(),
+      ]);
+      await page.waitForFunction((expected) => {
+        const input = document.querySelector<HTMLInputElement>('.followup-toggle input');
+        return input?.checked === expected && !input.disabled;
+      }, enabled);
+      assert.equal(await feedbackSwitch.isChecked(), enabled);
+    }
     await page.screenshot({ path: resolve(artifacts, `visual-sources-${width}.png`) });
     await nav().getByRole('link', { name: '设置', exact: true }).click();
     await page.locator('.workspace-settings').waitFor();

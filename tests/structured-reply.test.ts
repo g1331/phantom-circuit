@@ -169,8 +169,8 @@ async function lifecycle(
     override async thread(options: Parameters<Codex['thread']>[0]) {
       this.cwd = options.cwd;
       this.handler = options.toolHandler;
-      if (options.instructions.includes('Project PM')) pmCalls++;
-      this.role = options.instructions.includes('Task Developer')
+      if (options.instructions.includes('Intake and Cross-work Coordination')) pmCalls++;
+      this.role = options.instructions.includes('Work Owner')
         ? 'dev'
         : options.instructions.includes('Independent Review')
           ? 'review'
@@ -233,7 +233,6 @@ async function lifecycle(
         );
       }
       if (prompt.includes('Evaluate external feedback')) {
-        pmCalls++;
         const attempt = ++turns.feedback;
         if (!outputSchema) withoutSchema.push('feedback');
         else checkStrict('feedback', outputSchema);
@@ -302,15 +301,13 @@ for (const [name, wrap] of shapes)
       assert.equal(run.turns.review.primary, 1, 'a host-submitted review needs one turn');
       assert.equal(run.turns.review.secondary, 0, 'a normal task needs no secondary review');
       assert.equal(run.turns.feedback, 1, 'the feedback verdict must be parsed on the first reply');
-      assert.equal(run.pmCalls(), 2, 'PM may evaluate feedback but never merge acceptance');
+      assert.equal(run.pmCalls(), 1, 'only initial coordination opens a coordinator session');
       assert.deepEqual([...run.axes].sort(), ['primary']);
       assert.ok(
         run
           .events()
           .some(
-            (e) =>
-              e.type === 'feedback' &&
-              e.message.includes('PM 未要求返工：Comments are acknowledgements'),
+            (e) => e.type === 'feedback' && e.message.includes('Comments are acknowledgements'),
           ),
         'the parsed feedback verdict must be the one the host acts on',
       );

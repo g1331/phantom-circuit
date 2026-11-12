@@ -6,6 +6,7 @@ import { useLocale } from './locale/provider.tsx';
 import { useWhen } from './work-list.tsx';
 import { ReceivingForm } from './workbench-receiving.tsx';
 import { routeHref } from './route.ts';
+import { api } from './api.ts';
 
 export function SourcePage({
   projectId,
@@ -28,6 +29,21 @@ export function SourcePage({
   const repo = repos.find((item) => item.id === selected);
   const source = sources.find((item) => item.repoId === selected);
   const health = source?.health;
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  async function toggleFollowUps() {
+    if (!repo) return;
+    setSaving(true);
+    try {
+      await api(`/repos/${repo.id}`, { followUpsEnabled: !repo.followUpsEnabled }, 'PATCH');
+      await onSaved();
+      setError('');
+    } catch (failure) {
+      setError(String(failure));
+    } finally {
+      setSaving(false);
+    }
+  }
   const status = !source?.enabled
     ? 'flow.notConnected'
     : health?.status === 'unavailable'
@@ -121,6 +137,21 @@ export function SourcePage({
               </div>
             )}
             <section className="source-permissions">
+              <label className="followup-toggle">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={!!repo.followUpsEnabled}
+                  disabled={saving || (!repo.authorized && !repo.followUpsEnabled)}
+                  onChange={() => void toggleFollowUps()}
+                />
+                {t('flow.followUpsEnabled')}
+              </label>
+              {error && (
+                <p className="error-inline" role="alert">
+                  {host(error)}
+                </p>
+              )}
               <h3>{t('flow.settings')}</h3>
               <ReceivingForm
                 key={`${repo.id}:${source?.version ?? 0}`}

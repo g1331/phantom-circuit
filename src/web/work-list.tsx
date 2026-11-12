@@ -196,7 +196,9 @@ export function WorkList({
     .filter((g) => g.items.length || g.requests.length);
   const activity = (taskId: string) => {
     const member = view.members.find((m) => m.taskId === taskId);
-    return member ? `${t(`team.role.${member.role}`)} ${t(`team.doing.${member.activity}`)}` : '';
+    return member
+      ? `${t(member.contribution ? 'flow.contributor' : `team.role.${member.role}`)} ${t(`team.doing.${member.activity}`)}`
+      : '';
   };
   return (
     <div className="page work-page">

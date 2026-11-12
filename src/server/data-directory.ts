@@ -151,6 +151,8 @@ const attachmentExtensions: Record<string, string> = {
   'image/webp': 'webp',
 };
 const knownKinds = {
+  followUp: true,
+  collaboration: true,
   intakeSource: true,
   sourceInput: true,
   inputAssessment: true,

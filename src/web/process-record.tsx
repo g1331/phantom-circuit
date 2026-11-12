@@ -184,7 +184,9 @@ export function RunRow({ state, run, cost }: { state: Snapshot; run: Run; cost?:
         title={
           <>
             <time dateTime={run.startedAt}>{when(run.startedAt)}</time>
-            <strong>{t(`team.role.${run.role}`)}</strong>
+            <strong>
+              {t(run.purpose === 'collaboration' ? 'flow.contributor' : `team.role.${run.role}`)}
+            </strong>
             <span className="run-model">
               {model && unset(model)
                 ? t('runtime.unconfigured')

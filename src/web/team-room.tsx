@@ -42,7 +42,9 @@ function Member({ member, now }: { member: TeamMember; now: number }) {
       </span>
       <span className="team-member-body">
         <span className="team-member-head">
-          <strong>{t(`team.role.${member.role}`)}</strong>
+          <strong>
+            {t(member.contribution ? 'flow.contributor' : `team.role.${member.role}`)}
+          </strong>
           {member.since && (
             <time className="team-clock" dateTime={member.since}>
               {clock(now - Date.parse(member.since))}

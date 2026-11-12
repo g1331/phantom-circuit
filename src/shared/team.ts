@@ -31,6 +31,7 @@ export interface TeamMember {
   id: string;
   role: Role;
   activity: MemberActivity;
+  contribution?: boolean;
   runId?: string;
   taskId?: string;
   taskTitle?: string;
@@ -133,6 +134,7 @@ export function teamView(state: Snapshot, projectId: string, feedLimit = 30): Te
         id: run.id,
         role: run.role,
         activity: activity(run, task),
+        ...(run.purpose === 'collaboration' ? { contribution: true } : {}),
         runId: run.id,
         ...(task ? { taskId: task.id, taskTitle: task.title } : {}),
         since: run.startedAt,

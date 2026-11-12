@@ -1,8 +1,8 @@
 # An event-driven development team with a visual workbench
 
-Status: M1 implemented and accepted through the real-platform loop below, after independent
-implementation review. M2 through M4 remain planned. Existing installations require an explicit
-update; source integration does not change a running service.
+Status: M1 and M2 implemented and accepted through the real-platform loops below, after
+independent implementation review. M3 and M4 remain planned. Existing installations require
+an explicit update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/8c32a9dc5d72c033816c6a8110b37f40cf94fba4),
@@ -37,8 +37,9 @@ documents.
 
 Phantom Circuit retains these deliberate differences:
 
-- PM remains the product liaison for requirements, clarification, and cross-task coordination.
-  Dev owns technical choices and, after M2, judgment of its work's in-scope follow-ups.
+- Intake coordination handles new requests, clarification, and cross-work routing. Each work has
+  one persistent owner who decides technical methods and judges in-scope follow-ups. Temporary
+  contributors are commissioned for bounded results rather than assigned permanent team seats.
 - The host retains commits, validation, publication, and fixed-revision merge authorization under
   ADRs 0003 and 0009. Agent instructions and platform approvals do not replace those checks.
 - Engineering failures first enter bounded internal diagnosis and recovery. Exhausted recovery
@@ -102,8 +103,8 @@ Imported-Issue closure and settlement must be explicit, tested branches of the e
 
 The workbench shows received inputs, recorded decisions, current observable work, verification,
 review, outcome, and reply state. It also represents refused, no-action, and unavailable inputs.
-Existing Tasks remain readable from their actual records. Bound-PR feedback can retain the
-current PM assessment in M1 and must be presented that way; direct owner follow-up arrives in M2.
+Existing Tasks remain readable from their actual records. M1 retained coordination assessment
+for bound-PR feedback; M2 now sends that feedback directly to the recorded owner.
 Broad incoming-PR intake and default-branch CI monitoring are later capabilities. Existing checks
 remain visible as delivery evidence without pretending they were ingested source events.
 
@@ -111,7 +112,7 @@ remain visible as delivery evidence without pretending they were ingested source
 
 The desktop home is an automatically arranged relationship canvas. Source nodes link to their
 recorded inputs and Tasks. A Task remains one work node across implementation, validation,
-review, and repair. A PM node appears only for an actual live PM Run. New events update content
+review, and repair. A coordination node appears only for an actual live coordination Run. New events update content
 without sorting existing nodes by their latest activity. Zoom and reset change the view only.
 On phones, decisions and work appear in a vertical layout with bottom navigation.
 
@@ -127,8 +128,8 @@ keeps previously loaded text visible and reports the read error separately from 
 A record links to its original input or task process for the detailed evidence.
 Sources combines receiving health with repository, sender, command, and cutoff controls.
 Settings groups model execution, team instructions, repositories, documents, and run history.
-The connected sources remain Web requests and authorized GitHub Issues. This layout does not
-activate the planned M2 follow-ups or M3 proactive rules.
+Connected sources include Web requests, authorized GitHub Issues, and M2's repository-enabled
+feedback from bound Issues, PRs, reviews, and CI. M3 proactive rules remain planned.
 
 Acceptance:
 
@@ -158,7 +159,22 @@ rejected. A subsequent model-run failure or interruption preserves that judgment
 automatic and manual recovery do not reassess it. Unresolved steering retains its reconciliation
 hold. Correcting a final judgment requires a new explicitly authorized request.
 
-### M2: Owner-led follow-ups and event-driven repair
+### M2: Persistent owners, dynamic collaboration, and feedback
+
+Each Task keeps one owner with its real native session, workspace, and recorded backend/profile.
+Configuration changes apply to new ownership; explicit reassignment fences the previous owner.
+The owner chooses a capability profile and a concrete objective when commissioning a contributor.
+Each assignment records its requester, permission mode, private workspace, Run, result, and
+integration outcome. The owner remains responsible for delivery and explicitly integrates code.
+Read-only assistance, implementation contributions, and host-triggered independent checks are
+bounded executions, without fixed PM/Dev/Review staffing. Existing stored role and profile keys
+remain readable and retain their adapter permission meaning.
+
+Contributions use Task-scoped records and existing Run capacity rather than a second workforce
+scheduler. A delegated call returns its result to the owner; concurrent calls can execute within
+available capacity. Interruption retains the workspace and native session for an explicit retry.
+Cancellation stops the contributor, and old-owner results cannot change reassigned work.
+Separate worktrees prevent accidental shared editing; they are not security sandboxes.
 
 Extend the same workflow to originating Issue discussion, bound PR comments, inline reviews,
 review decisions including bodyless approvals, and bound-PR CI changes. Keep owner/input binding
@@ -166,7 +182,7 @@ independent of an individual Run and fence it on reassignment. Deliver at a safe
 new mid-turn steering is not required for every backend.
 
 An owner judges in-scope follow-ups, takes no action when appropriate, or hands them back with a
-reason. PM handles new scope and cross-work routing after that hand-back. Explicit object links
+reason. Intake coordination handles new scope and cross-work routing after that hand-back. Explicit object links
 can establish ownership; similarity and context-only following do not. Acknowledgment or delivery
 alone does not prove the owner read or dispositioned an input. Ambiguous native delivery holds
 for reconciliation. An unavailable owner history cannot silently become an empty new session.
@@ -174,6 +190,13 @@ for reconciliation. An unavailable owner history cannot silently become an empty
 The independent read-only owner conversation keeps its existing permission contract. Authorized
 work follow-ups use the actual work-session path, not a writable version of that question fork.
 Existing validation diagnosis, review, recovery, and merge gates continue to perform the work.
+
+Repository feedback reception is opt-in and can be disabled locally while retaining received
+records. Human repository owners, members, collaborators, and explicitly admitted sender IDs may
+supply bound feedback; bot comments and host reply markers do not start feedback loops. CI inputs
+are tied to the checked revision. Old-version CI stays historical after the work advances.
+Original-platform result replies use the Operation ledger and verified native comment identity;
+an uncertain response requires remote reconciliation before another write.
 
 Acceptance:
 
@@ -184,6 +207,28 @@ Acceptance:
    fixed-version merge, and original-thread disposition without human engineering intervention.
 3. Restart and reassignment preserve input order and fence late callbacks; pauses and necessary
    answer holds survive automatic feedback, and changed PR heads cannot reuse old merge evidence.
+4. A real owner delegates a bounded contribution, receives and integrates its result, and delivers
+   without a permanent collaborator seat or transferring its ownership to the contributor.
+
+M2 delivery evidence:
+
+- Real [Issue #102](https://github.com/g1331/phantom-circuit/issues/102) produced
+  [PR #103](https://github.com/g1331/phantom-circuit/pull/103). The owner commissioned a
+  read-only implementation inspection, used its findings, and resumed its original native
+  session for a new PR review request. Fresh checks and independent review passed before merge.
+  The [result reply](https://github.com/g1331/phantom-circuit/pull/103#issuecomment-6823790570)
+  was confirmed on the original PR.
+- Real [Issue #104](https://github.com/g1331/phantom-circuit/issues/104) produced
+  [PR #106](https://github.com/g1331/phantom-circuit/pull/106). A required GitHub Actions check
+  failed at `9f39136`. The ingested failure resumed the original owner's native session;
+  the owner repaired the scoped document. Required checks and fresh independent review passed
+  at `32ee1fa`, and the host merged that revision without human repair or override.
+- Both loops ran in isolated instances and merged only into `acceptance/m2-owner-continuity`.
+  The user's running service, original data, and selected models were preserved.
+- The release passed 672 unit/integration tests with nine skipped tests, typechecking,
+  build, browser checks at 1280 and 390 pixels, and independent implementation re-review.
+  Focused regressions cover read-only OMP process permissions and retryable collaborator
+  interruption. Browser filtering also verifies distinct input and judgment record identities.
 
 ### M3: Written-rule proactive maintenance
 

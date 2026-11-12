@@ -185,7 +185,7 @@ export async function checkIntakeWorkbench(
       `#/p/${project.id}/inputs/${accepted.origin!.inputId}`,
     );
     await openPage(page, 'conversation');
-    await page.getByLabel('给 PM 的消息', { exact: true }).waitFor();
+    await page.getByLabel('给协调者的消息', { exact: true }).waitFor();
     await openPage(page, 'home');
     store.updateTaskControl(
       task.id,

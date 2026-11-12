@@ -19,7 +19,8 @@ export function OwnerConversation({
   act: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const { t, time } = useLocale();
-  const [draft, setDraft] = useState({ content: '' });
+  const [draft, setDraft] = useState({ content: '', requestId: crypto.randomUUID() });
+  const [mode, setMode] = useState<'question' | 'followup'>('question');
   const lines = (state.ownerMessages ?? []).filter((m) => m.taskId === task.id);
   const open = hasOwner(task);
   const external = isExternalDelivery(task);
@@ -30,7 +31,24 @@ export function OwnerConversation({
       aria-label={t(external ? 'task.ownerHistory' : 'owner.title')}
     >
       <h3>{t(external ? 'task.ownerHistory' : 'owner.title')}</h3>
-      {!external && <p className="muted">{t(open ? 'owner.hint' : 'owner.closed')}</p>}
+      {open && (
+        <div className="segmented-control" aria-label={t('owner.title')}>
+          <button
+            type="button"
+            aria-pressed={mode === 'question'}
+            onClick={() => setMode('question')}
+          >
+            {t('flow.readQuestion')}
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === 'followup'}
+            onClick={() => setMode('followup')}
+          >
+            {t('flow.requestChange')}
+          </button>
+        </div>
+      )}
       {lines.length > 0 && (
         <ol className="owner-lines">
           {lines.map((m) => (
@@ -66,8 +84,13 @@ export function OwnerConversation({
             const content = draft.content.trim();
             if (!content) return;
             void act(async () => {
-              await api(`/tasks/${task.id}/owner-messages`, { content });
-              setDraft((current) => (current === draft ? { content: '' } : current));
+              await api(
+                `/tasks/${task.id}/${mode === 'question' ? 'owner-messages' : 'follow-ups'}`,
+                mode === 'question' ? { content } : { content, requestId: draft.requestId },
+              );
+              setDraft((current) =>
+                current === draft ? { content: '', requestId: crypto.randomUUID() } : current,
+              );
             });
           }}
         >
@@ -77,10 +100,10 @@ export function OwnerConversation({
             maxLength={8000}
             aria-label={t('owner.placeholder')}
             placeholder={t('owner.placeholder')}
-            onChange={(e) => setDraft({ content: e.target.value })}
+            onChange={(e) => setDraft({ content: e.target.value, requestId: crypto.randomUUID() })}
           />
           <button className="primary-button" disabled={busy || !draft.content.trim()}>
-            <Send size={14} /> {t('owner.send')}
+            <Send size={14} /> {t(mode === 'question' ? 'owner.send' : 'flow.requestChange')}
           </button>
         </form>
       )}

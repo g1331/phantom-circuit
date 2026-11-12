@@ -10,9 +10,9 @@ export async function checkLocale(page: Page, artifacts: string) {
   await choosePreference(page, 'language', 'zh-CN');
   await openPage(page, 'conversation');
   const draft = 'Keep this draft 中文内容 **unchanged**';
-  await page.getByLabel('给 PM 的消息').fill(draft);
+  await page.getByLabel('给协调者的消息').fill(draft);
   await choosePreference(page, 'language', 'en');
-  assert.equal(await page.getByLabel('Message to PM').inputValue(), draft);
+  assert.equal(await page.getByLabel('Message to Coordinator').inputValue(), draft);
   assert.equal(await page.locator('html').getAttribute('lang'), 'en');
   assert.equal(await page.title(), 'Phantom Circuit · Local workspace');
   await page.getByRole('button', { name: 'New project', exact: true }).click();
@@ -31,7 +31,8 @@ export async function checkLocale(page: Page, artifacts: string) {
   ];
   for (const { section, agent } of pages) {
     await settingsPage(dialog, section, agent);
-    if (agent === 'codex') await dialog.getByLabel('Project PM model', { exact: true }).waitFor();
+    if (agent === 'codex')
+      await dialog.getByLabel('Intake coordination model', { exact: true }).waitFor();
     if (section === 'providers')
       await dialog.getByRole('region', { name: 'Provider management' }).waitFor();
     text += `${await dialog.innerText()}\n`;
@@ -61,7 +62,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   await choosePreference(page, 'language', 'zh-CN');
   await clickInSidebar(page, '运行设置');
   await settingsPage(dialog, 'models', 'codex');
-  await dialog.getByLabel('项目 PM模型', { exact: true }).waitFor();
+  await dialog.getByLabel('接入协调模型', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(artifacts, 'locale-settings-zh-mobile-short.png') });
   await page.keyboard.press('Escape');

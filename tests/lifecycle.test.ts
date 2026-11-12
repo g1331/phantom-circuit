@@ -464,7 +464,7 @@ async function completeLifecycle(
     override async thread(o: Parameters<Codex['thread']>[0]) {
       this.cwd = o.cwd;
       this.handler = o.toolHandler;
-      this.role = o.instructions.includes('Task Developer')
+      this.role = o.instructions.includes('Work Owner')
         ? 'dev'
         : o.instructions.includes('Independent Review')
           ? 'review'
