@@ -41,7 +41,9 @@ export function WorkTrajectory({
   const { t, host } = copy;
   const when = useWhen();
   const group = workGroup(work);
-  const nodes = workNodes(task, state, copy, entry);
+  const nodes = workNodes(task, state, copy, entry).filter(
+    (node) => node.key !== 'judgment' && node.key !== 'dev' && (node.key !== 'source' || node.href),
+  );
   const live = state.runs.filter((run) => run.taskId === task.id && run.status === 'running');
   const last = state.events.find(
     (event) =>
@@ -55,7 +57,11 @@ export function WorkTrajectory({
           {task.title}
         </a>
         <span className={`flow-work-state group-${group}`}>
-          {work.teamHold ? <WorkHold work={work} /> : t(`work.group.${group}`)}
+          {work.teamHold ? (
+            <WorkHold work={work} />
+          ) : (
+            t(group === 'moving' ? `team.step.${work.step}` : `work.group.${group}`)
+          )}
         </span>
       </header>
       <div className="flow-work-meta">
@@ -69,25 +75,31 @@ export function WorkTrajectory({
           </span>
         ))}
       </div>
-      <ol className="flow-trajectory" aria-label={t('flow.work')}>
-        {nodes.map((node) => {
-          const Icon = icons[node.key];
-          return (
-            <li
-              key={node.key}
-              className={`flow-node tone-${node.tone}`}
-              data-step={node.key}
-              data-summary={['source', 'outcome', 'reply'].includes(node.key) ? true : undefined}
-            >
-              <Icon size={16} aria-hidden="true" />
-              <div>
-                <span className="flow-node-label">{t(node.label)}</span>
-                {node.href ? <a href={node.href}>{node.detail}</a> : <strong>{node.detail}</strong>}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+      {nodes.length > 0 && (
+        <ol className="flow-trajectory" aria-label={t('flow.work')}>
+          {nodes.map((node) => {
+            const Icon = icons[node.key];
+            return (
+              <li
+                key={node.key}
+                className={`flow-node tone-${node.tone}`}
+                data-step={node.key}
+                data-summary={['source', 'outcome', 'reply'].includes(node.key) ? true : undefined}
+              >
+                <Icon size={16} aria-hidden="true" />
+                <div>
+                  <span className="flow-node-label">{t(node.label)}</span>
+                  {node.href ? (
+                    <a href={node.href}>{node.detail}</a>
+                  ) : (
+                    <strong>{node.detail}</strong>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
       {last && live.length > 0 && (
         <details className="flow-activity">
           <summary>

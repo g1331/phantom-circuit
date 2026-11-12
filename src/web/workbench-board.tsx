@@ -8,6 +8,9 @@ import { useLocale } from './locale/provider.tsx';
 import type { FlowEntry } from './workbench-model.ts';
 import { useInputSummaries } from './use-input-summaries.ts';
 import { WorkCanvas } from './workbench-canvas.tsx';
+import { WorkbenchAttention } from './workbench-attention.tsx';
+import { routeHref } from './route.ts';
+import { useWhen } from './work-list.tsx';
 
 export type FlowFilter = 'all' | 'active' | 'inputs' | 'delivered';
 export type FlowRow =
@@ -87,6 +90,7 @@ export function WorkflowBoard({
   more: () => Promise<void>;
 }) {
   const { t, host } = useLocale();
+  const when = useWhen();
   const [count, setCount] = useState(8);
   const rows = useMemo(() => rowsFor(state, team, page), [state, team, page]);
   const filtered =
@@ -113,6 +117,15 @@ export function WorkflowBoard({
         : `${row.task.title} ${row.task.issue ?? ''} ${row.task.pr ?? ''}`;
     return text.toLocaleLowerCase().includes(needle);
   });
+  const recent = rows
+    .filter(
+      (row): row is Extract<FlowRow, { kind: 'work' }> =>
+        row.kind === 'work' && row.task.stage === 'done',
+    )
+    .sort((a, b) =>
+      (b.work.settledAt ?? b.work.updatedAt).localeCompare(a.work.settledAt ?? a.work.updatedAt),
+    )
+    .slice(0, 3);
   const visible = matches.slice(0, count);
   const ids = visible.flatMap((row) =>
     row.kind === 'work' && row.task.issueOrigin && !row.entry ? [row.task.issueOrigin.inputId] : [],
@@ -128,37 +141,66 @@ export function WorkflowBoard({
   }
   return (
     <div className="flow-board" data-empty={!matches.length} aria-label={t('flow.work')}>
+      <div className="workbench-attention">
+        <WorkbenchAttention state={state} team={team} projectId={projectId} page={page} />
+      </div>
       {!matches.length && (
-        <div className="flow-empty">
-          {loading ? t('connection.loading') : t(rows.length ? 'flow.emptyFilter' : 'flow.empty')}
-        </div>
+        <section className="flow-empty">
+          <h2>
+            {loading
+              ? t('connection.loading')
+              : t(
+                  query || filter !== 'active'
+                    ? 'flow.work'
+                    : team.members.length
+                      ? 'flow.live'
+                      : 'home.status.idle',
+                )}
+          </h2>
+          <p>{t(query || filter !== 'active' ? 'flow.emptyFilter' : 'flow.empty')}</p>
+          {filter === 'active' && !query && recent.length > 0 && (
+            <div className="flow-recent">
+              <h3>{t('flow.recent')}</h3>
+              {recent.map((row) => (
+                <a key={row.id} href={routeHref({ page: 'task', projectId, taskId: row.id })}>
+                  <span>{row.task.title}</span>
+                  <time dateTime={row.work.settledAt ?? row.work.updatedAt}>
+                    {when(row.work.settledAt ?? row.work.updatedAt)}
+                  </time>
+                </a>
+              ))}
+            </div>
+          )}
+        </section>
       )}
       {summaries.error && (
         <div className="error-inline" role="alert">
           {host(summaries.error.message)}
         </div>
       )}
-      <WorkCanvas
-        items={visible}
-        state={state}
-        team={team}
-        projectId={projectId}
-        renderItem={(row) =>
-          row.kind === 'input' ? (
-            <InputTrajectory entry={row.entry} />
-          ) : (
-            <WorkTrajectory
-              task={row.task}
-              work={row.work}
-              state={state}
-              entry={
-                row.entry ??
-                (row.task.issueOrigin ? related.get(row.task.issueOrigin.inputId) : undefined)
-              }
-            />
-          )
-        }
-      />
+      {visible.length > 0 && (
+        <WorkCanvas
+          key={`${projectId}:${filter}:${query}`}
+          items={visible}
+          state={state}
+          projectId={projectId}
+          renderItem={(row) =>
+            row.kind === 'input' ? (
+              <InputTrajectory entry={row.entry} />
+            ) : (
+              <WorkTrajectory
+                task={row.task}
+                work={row.work}
+                state={state}
+                entry={
+                  row.entry ??
+                  (row.task.issueOrigin ? related.get(row.task.issueOrigin.inputId) : undefined)
+                }
+              />
+            )
+          }
+        />
+      )}
       {(matches.length > count || page?.next) && (
         <button
           className="flow-more secondary-button"

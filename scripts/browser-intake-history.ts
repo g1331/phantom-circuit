@@ -106,10 +106,7 @@ export async function checkPagedInputReplies(context: Context) {
     !engine.intake.workflow(projectId).inputs.some((item) => item.input.id === entry.input.id),
   );
   const row = page.locator(`[data-task-id="${task.id}"]`);
-  await row
-    .locator('[data-step="judgment"]')
-    .getByText('已接单', { exact: true })
-    .waitFor({ state: 'attached' });
+  await row.locator('[data-step="source"] a').getByText('GitHub #17', { exact: true }).waitFor();
   await row.locator('[data-step="reply"]').getByText('回复待核对', { exact: true }).waitFor();
   await page.screenshot({ path: resolve(context.artifacts, 'intake-older-reply-390.png') });
 }
@@ -141,6 +138,7 @@ export async function checkLiveInputSettlement(context: Context) {
   store.updateMessage(message.id, { status: 'running', draftStatus: 'running', runId: run.id });
   store.event('activity', 'Synthetic source assessment action', { projectId, runId: run.id });
   try {
+    await page.getByRole('button', { name: '全部', exact: true }).click();
     await page
       .locator('.flow-project-activity')
       .getByText('Synthetic source assessment action', { exact: true })

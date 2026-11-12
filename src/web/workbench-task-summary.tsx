@@ -7,6 +7,7 @@ import { useInputSummaries } from './use-input-summaries.ts';
 import { routeHref } from './route.ts';
 import { workNodes } from './workbench-model.ts';
 import { deliveryPRUrl } from './engineering-reference.tsx';
+import { eventText } from './event-text.ts';
 
 export function WorkSummary({ task, state }: { task: Task; state: Snapshot }) {
   const copy = useLocale();
@@ -29,8 +30,16 @@ export function WorkSummary({ task, state }: { task: Task; state: Snapshot }) {
     ['tests', 'review', 'outcome', 'reply'].includes(node.key),
   );
   const prUrl = deliveryPRUrl(task);
+  const hasFacts =
+    task.issueOrigin ||
+    owner ||
+    task.ownerRunId ||
+    task.worktree ||
+    prUrl ||
+    evidence.length > 0 ||
+    summaries.error;
   return (
-    <div className="task-focus-summary">
+    <div className={`task-focus-summary ${hasFacts ? '' : 'compact'}`}>
       <section className="task-focus-timeline">
         <h2>{t('flow.work')}</h2>
         <ol>
@@ -58,77 +67,83 @@ export function WorkSummary({ task, state }: { task: Task; state: Snapshot }) {
           {events.map((event) => (
             <li key={event.id}>
               <time dateTime={event.at}>{when(event.at)}</time>
-              <div>{host(event.message.split('\n')[0], event.descriptor)}</div>
+              <div>{eventText(event, copy).split('\n')[0]}</div>
             </li>
           ))}
         </ol>
       </section>
-      <aside className="task-focus-facts">
-        <dl>
-          <div>
-            <dt>{t('flow.source')}</dt>
-            <dd>
-              {task.issueOrigin ? (
-                <a
-                  href={routeHref({
-                    page: 'input',
-                    projectId: task.projectId,
-                    inputId: task.issueOrigin.inputId,
-                  })}
-                >
-                  <Github size={15} />
-                  GitHub Issue #{entry?.input.number ?? task.issue}
-                </a>
-              ) : (
-                <span>
-                  <MessageSquare size={15} />
-                  {t('flow.sourceWeb')}
-                </span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>{t('flow.owner')}</dt>
-            <dd>
-              {owner || task.ownerRunId
-                ? t(`team.role.${owner?.role ?? 'dev'}`)
-                : t('flow.historyMissing')}
-            </dd>
-          </div>
-          {task.worktree && (
+      {hasFacts && (
+        <aside className="task-focus-facts">
+          <dl>
             <div>
-              <dt>{t('flow.directory')}</dt>
-              <dd className="task-worktree-path" title={task.worktree}>
-                {task.worktree}
-              </dd>
-            </div>
-          )}
-          {prUrl && (
-            <div>
-              <dt>{t('flow.outcome')}</dt>
+              <dt>{t('flow.source')}</dt>
               <dd>
-                <a href={prUrl} target="_blank" rel="noreferrer">
-                  <GitPullRequest size={15} />
-                  PR #{taskDeliveryPR(task)}
-                </a>
+                {task.issueOrigin ? (
+                  <a
+                    href={routeHref({
+                      page: 'input',
+                      projectId: task.projectId,
+                      inputId: task.issueOrigin.inputId,
+                    })}
+                  >
+                    <Github size={15} />
+                    GitHub Issue #{entry?.input.number ?? task.issue}
+                  </a>
+                ) : (
+                  <span>
+                    <MessageSquare size={15} />
+                    {t('flow.sourceWeb')}
+                  </span>
+                )}
               </dd>
             </div>
-          )}
-        </dl>
-        <div className="task-focus-evidence">
-          {evidence.map((node) => (
-            <div key={node.key} data-step={node.key} className={`tone-${node.tone}`}>
-              <span>{t(node.label)}</span>
-              {node.href ? <a href={node.href}>{node.detail}</a> : <strong>{node.detail}</strong>}
+            {(owner || task.ownerRunId) && (
+              <div>
+                <dt>{t('flow.owner')}</dt>
+                <dd>{t(`team.role.${owner?.role ?? 'dev'}`)}</dd>
+              </div>
+            )}
+            {task.worktree && (
+              <div>
+                <dt>{t('flow.directory')}</dt>
+                <dd className="task-worktree-path" title={task.worktree}>
+                  {task.worktree}
+                </dd>
+              </div>
+            )}
+            {prUrl && (
+              <div>
+                <dt>{t('flow.outcome')}</dt>
+                <dd>
+                  <a href={prUrl} target="_blank" rel="noreferrer">
+                    <GitPullRequest size={15} />
+                    PR #{taskDeliveryPR(task)}
+                  </a>
+                </dd>
+              </div>
+            )}
+          </dl>
+          {evidence.length > 0 && (
+            <div className="task-focus-evidence">
+              {evidence.map((node) => (
+                <div key={node.key} data-step={node.key} className={`tone-${node.tone}`}>
+                  <span>{t(node.label)}</span>
+                  {node.href ? (
+                    <a href={node.href}>{node.detail}</a>
+                  ) : (
+                    <strong>{node.detail}</strong>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        {summaries.error && (
-          <div className="error-inline" role="alert">
-            {host(summaries.error.message)}
-          </div>
-        )}
-      </aside>
+          )}
+          {summaries.error && (
+            <div className="error-inline" role="alert">
+              {host(summaries.error.message)}
+            </div>
+          )}
+        </aside>
+      )}
     </div>
   );
 }

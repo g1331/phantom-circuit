@@ -4,9 +4,7 @@ import type {
   CostEstimate,
   Event,
   PriceSnapshot,
-  Role,
   Run,
-  RunStatus,
   Snapshot,
   UsageAggregate,
 } from '../shared/types.ts';
@@ -19,6 +17,7 @@ import { TaskRuntimeBadges } from './project-actions.tsx';
 import { isRunning } from './sidebar.tsx';
 import { unset } from './ui.tsx';
 import { useWhen } from './work-list.tsx';
+import { eventText } from './event-text.ts';
 
 const tokenFields = {
   inputTokens: 'usage.input',
@@ -50,21 +49,6 @@ const eventKeys = {
   oncall: 'event.oncall',
   blocked: 'event.blocked',
   recovery: 'event.recovery',
-} as const;
-const roles: Role[] = ['pm', 'dev', 'review', 'oncall'];
-const statuses: RunStatus[] = [
-  'queued',
-  'running',
-  'waiting',
-  'paused',
-  'interrupted',
-  'failed',
-  'completed',
-];
-const controlKeys = {
-  pause: 'ui.pauseTask',
-  resume: 'ui.resumeTask',
-  cancel: 'ui.cancelTask',
 } as const;
 /** A long history opens on its newest entries. */
 const page = 40;
@@ -303,21 +287,14 @@ function firstLine(text: string) {
 
 /** What the host recorded while the work went on; commands hide behind their own switch. */
 export function EventLog({ events }: { events: Event[] }) {
-  const { t, host } = useLocale();
+  const copy = useLocale();
+  const { t } = copy;
   const when = useWhen();
   const [commands, setCommands] = useState(false);
   const commandCount = events.filter((e) => e.type === 'command').length;
   const shown = commands ? events : events.filter((e) => e.type !== 'command');
   const label = (type: string) =>
     type in eventKeys ? t(eventKeys[type as keyof typeof eventKeys]) : type;
-  // Run and control events are recorded as terse codes ("dev completed", "任务 pause").
-  const text = (e: Event) => {
-    if (e.type === 'task' && e.control) return t(controlKeys[e.control.action]);
-    const [role, status] = e.message.split(' ');
-    if (e.type === 'run' && roles.includes(role as Role) && statuses.includes(status as RunStatus))
-      return `${t(`team.role.${role as Role}`)} · ${t(`ui.${status as RunStatus}`)}`;
-    return host(e.message, e.descriptor);
-  };
   return (
     <section className="process-section" aria-label={t('process.events')}>
       <header className="section-head">
@@ -339,7 +316,7 @@ export function EventLog({ events }: { events: Event[] }) {
         <Paged
           items={shown}
           render={(e) => {
-            const message = text(e);
+            const message = eventText(e, copy);
             const head = (
               <>
                 <time dateTime={e.at}>{when(e.at)}</time>

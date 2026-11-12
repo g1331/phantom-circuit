@@ -1,12 +1,11 @@
 import { Menu, Pause, Play, Plus, Search } from 'lucide-react';
 import type { Project, Snapshot } from '../shared/types.ts';
 import { useLocale } from './locale/provider.tsx';
-import { routeHref, type Route } from './route.ts';
+import { routeHref } from './route.ts';
 
 export function WorkspaceHeader({
   state,
   project,
-  route,
   waiting,
   moving,
   query,
@@ -19,7 +18,6 @@ export function WorkspaceHeader({
 }: {
   state?: Snapshot;
   project: Project;
-  route: Route;
   waiting: number;
   moving: number;
   query: string;
@@ -55,21 +53,7 @@ export function WorkspaceHeader({
       <a className="console-moving" href={routeHref({ page: 'team', projectId: project.id })}>
         {moving ? t('home.status.moving', { count: moving }) : t('home.status.idle')}
       </a>
-      <nav className="console-view-switch" aria-label={t('nav.label')}>
-        {(['home', 'records'] as const).map((page) => (
-          <a
-            key={page}
-            href={routeHref({ page, projectId: project.id })}
-            aria-current={
-              route.page === page || (page === 'home' && ['task', 'input'].includes(route.page))
-                ? 'page'
-                : undefined
-            }
-          >
-            {t(page === 'home' ? 'flow.title' : 'flow.records')}
-          </a>
-        ))}
-      </nav>
+
       <label className="console-search">
         <Search size={17} aria-hidden="true" />
         <input

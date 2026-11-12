@@ -187,13 +187,23 @@ function TaskOverview({
             )}
           </section>
         )}
-        <Fold className="task-receipt-details" title={t('task.evidence')} open>
-          <TaskRuntimeBadges state={state} taskId={detail.id} />
-          <Receipt task={detail} state={state} />
-        </Fold>
+        {(detail.stage === 'done' ||
+          detail.head ||
+          detail.tests.length > 0 ||
+          detail.reviews.length > 0 ||
+          detail.pr) && (
+          <Fold
+            className="task-receipt-details"
+            title={t('task.evidence')}
+            open={detail.stage === 'done'}
+          >
+            <TaskRuntimeBadges state={state} taskId={detail.id} />
+            <Receipt task={detail} state={state} />
+          </Fold>
+        )}
       </div>
       {experience}
-      {(!isExternalDelivery(detail) || conversation) && (
+      {(conversation || (!finished && !isExternalDelivery(detail))) && (
         <div className="task-owner-context">
           {conversation ? (
             <OwnerConversation task={detail} state={state} busy={busy} act={act} />

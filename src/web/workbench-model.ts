@@ -7,6 +7,7 @@ import {
   taskDeliveryPR,
 } from '../shared/task-history.ts';
 import { routeHref } from './route.ts';
+import { eventText } from './event-text.ts';
 
 export type FlowEntry = WorkflowPage['inputs'][number];
 export type FlowTone = 'neutral' | 'progress' | 'delivery' | 'success' | 'warning';
@@ -138,7 +139,7 @@ export function workRecords(
   copy: ReturnType<typeof createLocale>,
   page?: WorkflowPage,
 ): WorkRecord[] {
-  const { t, host } = copy;
+  const { t } = copy;
   const rows: WorkRecord[] = [];
   for (const entry of page?.inputs ?? []) {
     const { input, assessment } = entry;
@@ -196,13 +197,13 @@ export function workRecords(
       at: event.at,
       kind: ['command', 'activity'].includes(event.type) ? 'trace' : 'action',
       source: role ? t(`team.role.${role}`) : t('flow.recordAction'),
-      title: host(event.message.split('\n')[0], event.descriptor),
+      title: eventText(event, copy).split('\n')[0],
       result: '',
       tone: 'neutral',
       href: task
         ? routeHref({ page: 'task', projectId, taskId: task.id, view: 'process' })
         : undefined,
-      body: [task?.title, host(event.message, event.descriptor)].filter(Boolean).join('\n'),
+      body: [task?.title, eventText(event, copy)].filter(Boolean).join('\n'),
     });
   }
   return rows;
