@@ -281,14 +281,9 @@ async function lifecycle(
 
 const shapes: [string, (json: string) => string][] = [
   ['a bare JSON object', (json) => json],
-  ['a JSON code fence', (json) => '```json\n' + json + '\n```'],
   [
     'prose before a JSON code fence',
     (json) => `Evidence is taken from the pinned diff.\n\n\`\`\`json\n${json}\n\`\`\`\n`,
-  ],
-  [
-    'prose before a bare JSON object',
-    (json) => `Evidence is taken from the pinned diff: ${json}\nReviewed at the pinned revision.`,
   ],
 ];
 

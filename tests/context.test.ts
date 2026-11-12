@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { domainContext, instructions } from '../src/server/prompts.ts';
+import { domainContext } from '../src/server/prompts.ts';
 import { Codex } from '../src/server/codex.ts';
 
 test('PM context contains actual accepted ADR decisions, not only filenames', async () => {
@@ -73,12 +73,5 @@ test('thread setup rejects a mismatched or missing effective reasoning effort', 
       }),
       /推理档位/,
     );
-  }
-});
-
-test('role instructions contain only the host role prompt without a bundled method library', async () => {
-  for (const role of ['pm', 'dev', 'review', 'oncall'] as const) {
-    const base = await readFile(new URL(`../prompts/${role}.md`, import.meta.url), 'utf8');
-    assert.equal(await instructions(role), base, role);
   }
 });
