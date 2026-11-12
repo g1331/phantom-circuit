@@ -13,7 +13,7 @@ import type { AgentToolHandler } from '../src/server/agent-backend.ts';
 import type { Collaboration } from '../src/shared/collaboration.ts';
 
 // A real Git workspace proves that contributions stay separate until their owner accepts them.
-test('owner integrates a private contribution once and rejects a conflicting late result', async () => {
+test('owner integrates an isolated contribution once and rejects conflicts', async () => {
   const f = await devFixture('phantom-contribution-');
   const ws = new Workspaces(join(f.root, 'ws'), f.store);
   try {
@@ -70,7 +70,7 @@ test('owner integrates a private contribution once and rejects a conflicting lat
   }
 });
 
-test('follow-ups resume the real owner despite a profile change and recover queued inputs', async () => {
+test('follow-ups preserve owner sessions across profile changes and recovery', async () => {
   const f = await devFixture('phantom-owner-followup-');
   const ws = new Workspaces(join(f.root, 'ws'), f.store);
   const inbox = new FollowUps(f.store);
@@ -134,7 +134,7 @@ test('follow-ups resume the real owner despite a profile change and recover queu
   }
 });
 
-test('an engine owner can commission and integrate a contributor without changing ownership', async () => {
+test('owner commissions and integrates a contributor without changing ownership', async () => {
   const f = await devFixture('phantom-owner-delegation-');
   const ws = new Workspaces(join(f.root, 'ws'), f.store);
   let integrated = false;
@@ -194,7 +194,7 @@ test('an engine owner can commission and integrate a contributor without changin
   }
 });
 
-test('read-only OMP contributions retain their permissions and retryable session on shutdown', async () => {
+test('OMP read-only permissions and retryable sessions survive shutdown', async () => {
   const f = await devFixture('phantom-contribution-shutdown-');
   const ws = new Workspaces(join(f.root, 'ws'), f.store);
   f.store.saveProjectAgentSelection(f.project.id, { mode: 'override', agent: 'omp' });

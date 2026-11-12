@@ -1,9 +1,8 @@
 # An event-driven development team with a visual workbench
 
-Status: M1 implemented and accepted through the real-platform loop below, after independent
-implementation review. M2 is being implemented as owner-led dynamic collaboration;
-M3 and M4 remain planned. Existing installations require an explicit
-update; source integration does not change a running service.
+Status: M1 and M2 implemented and accepted through the real-platform loops below, after
+independent implementation review. M3 and M4 remain planned. Existing installations require
+an explicit update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/8c32a9dc5d72c033816c6a8110b37f40cf94fba4),
@@ -104,8 +103,8 @@ Imported-Issue closure and settlement must be explicit, tested branches of the e
 
 The workbench shows received inputs, recorded decisions, current observable work, verification,
 review, outcome, and reply state. It also represents refused, no-action, and unavailable inputs.
-Existing Tasks remain readable from their actual records. Bound-PR feedback can retain the
-current PM assessment in M1 and must be presented that way; direct owner follow-up arrives in M2.
+Existing Tasks remain readable from their actual records. M1 retained coordination assessment
+for bound-PR feedback; M2 now sends that feedback directly to the recorded owner.
 Broad incoming-PR intake and default-branch CI monitoring are later capabilities. Existing checks
 remain visible as delivery evidence without pretending they were ingested source events.
 
@@ -113,7 +112,7 @@ remain visible as delivery evidence without pretending they were ingested source
 
 The desktop home is an automatically arranged relationship canvas. Source nodes link to their
 recorded inputs and Tasks. A Task remains one work node across implementation, validation,
-review, and repair. A PM node appears only for an actual live PM Run. New events update content
+review, and repair. A coordination node appears only for an actual live coordination Run. New events update content
 without sorting existing nodes by their latest activity. Zoom and reset change the view only.
 On phones, decisions and work appear in a vertical layout with bottom navigation.
 
@@ -129,8 +128,8 @@ keeps previously loaded text visible and reports the read error separately from 
 A record links to its original input or task process for the detailed evidence.
 Sources combines receiving health with repository, sender, command, and cutoff controls.
 Settings groups model execution, team instructions, repositories, documents, and run history.
-The connected sources remain Web requests and authorized GitHub Issues. This layout does not
-activate the planned M2 follow-ups or M3 proactive rules.
+Connected sources include Web requests, authorized GitHub Issues, and M2's repository-enabled
+feedback from bound Issues, PRs, reviews, and CI. M3 proactive rules remain planned.
 
 Acceptance:
 
@@ -210,6 +209,26 @@ Acceptance:
    answer holds survive automatic feedback, and changed PR heads cannot reuse old merge evidence.
 4. A real owner delegates a bounded contribution, receives and integrates its result, and delivers
    without a permanent collaborator seat or transferring its ownership to the contributor.
+
+M2 delivery evidence:
+
+- Real [Issue #102](https://github.com/g1331/phantom-circuit/issues/102) produced
+  [PR #103](https://github.com/g1331/phantom-circuit/pull/103). The owner commissioned a
+  read-only implementation inspection, used its findings, and resumed its original native
+  session for a new PR review request. Fresh checks and independent review passed before merge.
+  The [result reply](https://github.com/g1331/phantom-circuit/pull/103#issuecomment-6823790570)
+  was confirmed on the original PR.
+- Real [Issue #104](https://github.com/g1331/phantom-circuit/issues/104) produced
+  [PR #106](https://github.com/g1331/phantom-circuit/pull/106). A required GitHub Actions check
+  failed at `9f39136`. The ingested failure resumed the original owner's native session;
+  the owner repaired the scoped document. Required checks and fresh independent review passed
+  at `32ee1fa`, and the host merged that revision without human repair or override.
+- Both loops ran in isolated instances and merged only into `acceptance/m2-owner-continuity`.
+  The user's running service, original data, and selected models were preserved.
+- The release passed 672 unit/integration tests with nine skipped tests, typechecking,
+  build, browser checks at 1280 and 390 pixels, and independent implementation re-review.
+  Focused regressions cover read-only OMP process permissions and retryable collaborator
+  interruption. Browser filtering also verifies distinct input and judgment record identities.
 
 ### M3: Written-rule proactive maintenance
 
