@@ -475,7 +475,7 @@ export async function checkMaintenance() {
       phase: 'sync',
       message: reason,
     });
-    await page.getByRole('button', { name: otherProject.name, exact: true }).click();
+    await page.locator('.workspace-project-picker select').selectOption(otherProject.id);
     await openPage(page, 'conversation');
     await page.getByRole('heading', { name: otherProject.name, exact: true }).waitFor();
     await openTechnicalActions();
@@ -489,7 +489,7 @@ export async function checkMaintenance() {
     );
     assert.deepEqual(store.get('incident', foreign.id), foreign);
     assert.deepEqual(store.get('incident', orphan.id), orphan);
-    await page.getByRole('button', { name: 'Background refresh happened', exact: true }).click();
+    await page.locator('.workspace-project-picker select').selectOption(project.id);
     await openPage(page, 'conversation');
     await page.getByRole('heading', { name: 'Background refresh happened', exact: true }).waitFor();
     await openTechnicalActions();

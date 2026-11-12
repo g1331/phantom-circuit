@@ -120,7 +120,7 @@ export function PMComposer({
     }
   }
   return (
-    <div className="composer">
+    <div className="composer" data-draft={!!draft.trim() || images.length > 0}>
       {error && (
         <div role="alert">
           {error instanceof LocalUiError ? t(error.key) : <ErrorText error={error} />}

@@ -252,101 +252,42 @@ export async function checkUsability() {
     });
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
-    await page.getByRole('button', { name: 'Conversation fixture', exact: true }).click();
+    await page
+      .locator('.workspace-project-picker select')
+      .selectOption({ label: 'Conversation fixture' });
     await openPage(page, 'conversation');
-    for (const collapsed of [false, true]) {
-      await page.setViewportSize({ width: 1366, height: 768 });
-      if (collapsed) await page.locator('.sidebar-toggle').click();
-      for (const locale of ['zh-CN', 'en']) {
-        await choosePreference(page, 'language', locale);
-        for (const width of [1366, 1100, 851, 850, 768, 660, 390]) {
-          await page.setViewportSize({ width, height: 768 });
-          // At phone widths the sidebar is a drawer; measure it open.
-          const drawer = await openDrawer(page);
-          const controls = await page
-            .locator('.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control)')
-            .evaluateAll((rows) =>
-              rows.map((row) => {
-                const box = row.getBoundingClientRect();
-                const icon = row.querySelector('svg')!.getBoundingClientRect();
-                const label = row.querySelector('.control-label')!;
-                const labelBox = label.getBoundingClientRect();
-                const select = row.querySelector('.choice-value')?.getBoundingClientRect();
-                return {
-                  x: box.x,
-                  y: box.y,
-                  width: box.width,
-                  height: box.height,
-                  iconX: icon.x,
-                  iconCenterY: icon.y + icon.height / 2,
-                  labelX: labelBox.x,
-                  labelVisible: labelBox.width > 0,
-                  labelFits: label.scrollWidth <= label.clientWidth,
-                  labelText: label.textContent,
-                  labelClientWidth: label.clientWidth,
-                  labelScrollWidth: label.scrollWidth,
-                  selectRight: select ? select.right : undefined,
-                };
-              }),
-            );
-          const context = `${width}px ${locale} ${collapsed ? 'collapsed' : 'expanded'} sidebar`;
-          assert.equal(controls.length, 3, context);
-          const projectIcon = await page.locator('.project-link svg').first().boundingBox();
-          assert.ok(
-            projectIcon && Math.abs(projectIcon.x - controls[0].iconX) < 1,
-            `${context}: project and control icon columns ` +
-              `(${projectIcon?.x} vs ${controls[0].iconX})`,
+    for (const locale of ['zh-CN', 'en']) {
+      await choosePreference(page, 'language', locale);
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 768 });
+        const drawer = await openDrawer(page);
+        const rail = page.locator('.sidebar');
+        assert.equal(await rail.locator('.project-link').count(), 0);
+        assert.notEqual(await page.locator('.workspace-project-picker select').inputValue(), '');
+        const controls = await rail
+          .locator(
+            '.sidebar-bottom > :is(.language-control, .sidebar-action, .theme-control):visible',
+          )
+          .evaluateAll((rows) =>
+            rows.map((row) => {
+              const box = row.getBoundingClientRect();
+              return { width: box.width, height: box.height };
+            }),
           );
-          if (controls[0].labelVisible) {
-            const projectLabel = await page.locator('.project-link > span').first().boundingBox();
-            assert.ok(
-              projectLabel && Math.abs(projectLabel.x - controls[0].labelX) < 1,
-              `${context}: project and control text columns`,
-            );
-          }
-          for (const control of controls) {
-            assert.ok(Math.abs(control.iconX - controls[0].iconX) < 1, `${context}: icon column`);
-            const rowHeight = width <= 660 ? 44 : control.labelVisible ? 36 : 40;
-            assert.equal(control.height, rowHeight, `${context}: row height`);
-            assert.equal(control.width, controls[0].width, `${context}: row width`);
-            assert.ok(
-              Math.abs(control.iconCenterY - (control.y + control.height / 2)) < 1,
-              `${context}: vertical centering`,
-            );
-            if (control.labelVisible) {
-              assert.ok(
-                Math.abs(control.labelX - controls[0].labelX) < 1,
-                `${context}: text column`,
-              );
-              assert.ok(
-                control.labelFits,
-                `${context}: readable labels (${control.labelText}: ` +
-                  `${control.labelScrollWidth}px required, ` +
-                  `${control.labelClientWidth}px available)`,
-              );
-            }
-          }
-          assert.ok(
-            Math.abs(controls[1].y - controls[0].y - controls[0].height - 2) < 1 &&
-              Math.abs(controls[2].y - controls[1].y - controls[1].height - 2) < 1,
-            `${context}: row gaps`,
-          );
-          assert.ok(
-            Math.abs(controls[0].selectRight! - controls[2].selectRight!) < 1,
-            `${context}: selector column`,
-          );
-          await page.locator('.sidebar').screenshot({
-            path: resolve(
-              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-              `sidebar-${width}-${locale}-${collapsed ? 'collapsed' : 'expanded'}.png`,
-            ),
-          });
-          if (drawer) await closeDrawer(page);
+        assert.equal(controls.length, width <= 660 ? 4 : 3);
+        for (const control of controls) {
+          assert(control.width >= 40 && control.height >= 40);
         }
+        await rail.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `rail-${width}-${locale}.png`,
+          ),
+        });
+        if (drawer) await closeDrawer(page);
       }
     }
     await page.setViewportSize({ width: 1366, height: 768 });
-    await page.locator('.sidebar-toggle').click();
     await choosePreference(page, 'language', 'zh-CN');
     for (const theme of ['dark', 'light']) {
       await choosePreference(page, 'theme', theme);
@@ -423,7 +364,7 @@ export async function checkUsability() {
     }
     await page.setViewportSize({ width: 1366, height: 768 });
     const languageTrigger = page.locator('.sidebar .language-control');
-    await page.locator('.sidebar-action').focus();
+    await page.locator('.sidebar .theme-control').focus();
     await page.keyboard.press('Shift+Tab');
     assert.equal(
       await languageTrigger.evaluate((element) => element.matches(':focus-visible')),
@@ -588,7 +529,7 @@ export async function checkUsability() {
     );
     assert.equal(await readingProcess.evaluate((el: HTMLDetailsElement) => el.open), true);
     await page.setViewportSize({ width: 1366, height: 768 });
-    // Collapsed or narrowed to a rail, every sidebar icon shares one vertical axis.
+    // The fixed rail keeps a common icon axis across desktop widths and reloads.
     const railCenters = () =>
       page.locator('.sidebar').evaluate((sidebar) =>
         [...sidebar.querySelectorAll('svg')]
@@ -603,13 +544,12 @@ export async function checkUsability() {
         `${label}: sidebar icons are centered on one axis, got ${centers.join(', ')}`,
       );
     };
-    await page.getByRole('button', { name: '收起侧栏', exact: true }).click();
-    await assertRailAligned('collapsed sidebar');
+    await assertRailAligned('desktop rail');
     await page.setViewportSize({ width: 760, height: 768 });
     await assertRailAligned('760px rail');
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.reload();
-    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await assertRailAligned('reloaded rail');
     await page.setViewportSize({ width: 390, height: 500 });
     await page.getByRole('button', { name: '对话目录', exact: true }).click();
     const directory = page.getByRole('dialog', { name: '对话目录' });
@@ -633,7 +573,7 @@ export async function checkUsability() {
       ),
     });
     await page.setViewportSize({ width: 1366, height: 768 });
-    await page.getByRole('button', { name: 'UI fixture', exact: true }).click();
+    await page.locator('.workspace-project-picker select').selectOption({ label: 'UI fixture' });
     // Work is grouped by what it asks of the user, in a fixed order, instead of by host stage.
     await openPage(page, 'work');
     const workPage = page.locator('.work-page');
@@ -835,7 +775,7 @@ export async function checkUsability() {
         setTimeout(() => reject(new Error('Project request missing')), 8000),
       ),
     ]);
-    await page.locator('.project-link').filter({ hasText: secondProject.name }).click();
+    await page.locator('.workspace-project-picker select').selectOption(secondProject.id);
     await openPage(page, 'project');
     await page.locator('.claim-order time').waitFor();
     assert.equal((await page.locator('.claim-order').innerText()).includes(project.name), false);
@@ -843,7 +783,7 @@ export async function checkUsability() {
     hold = undefined;
     await page.waitForTimeout(100);
     assert.equal((await page.locator('.claim-order').innerText()).includes(project.name), false);
-    await page.locator('.project-link').filter({ hasText: project.name }).click();
+    await page.locator('.workspace-project-picker select').selectOption(project.id);
     await openPage(page, 'work');
     await search.fill('');
     let releaseState!: () => void;
@@ -946,19 +886,22 @@ export async function checkUsability() {
             await page.keyboard.press('Enter');
             const taskPage = page.locator('.task-page');
             await taskPage.waitFor();
+            const canvas = page.locator('.canvas-viewport');
             assert.equal(
-              await workPage.isVisible(),
+              await canvas.isVisible(),
               viewport.width > 660,
-              'task inspection keeps the work list on desktop and focuses the task on phone',
+              'inspection retains desktop source context and focuses the task on phone',
             );
             if (viewport.width > 660) {
-              const listBox = await workPage.boundingBox();
+              const canvasBox = await canvas.boundingBox();
               const detailBox = await taskPage.boundingBox();
               assert.ok(
-                listBox && detailBox && listBox.x + listBox.width <= detailBox.x + 1,
-                'desktop work list sits to the left of the task detail',
+                canvasBox &&
+                  detailBox &&
+                  detailBox.x > canvasBox.x &&
+                  detailBox.x + detailBox.width <= viewport.width + 1,
+                'desktop inspector leaves source context visible and fits the viewport',
               );
-              assert.equal(await workPage.locator('.work-row[aria-current="page"]').count(), 1);
             }
             assert.equal(
               await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -1052,7 +995,12 @@ export async function checkUsability() {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       for (const theme of ['light', 'dark']) {
         await choosePreference(page, 'theme', theme);
-        await clickInSidebar(page, 'New project');
+        if (width <= 660) await clickInSidebar(page, 'New project');
+        else
+          await page
+            .locator('.workspace-project-picker')
+            .getByRole('button', { name: 'New project', exact: true })
+            .click();
         await captureModal('new-project', width, theme);
         // Project facts are a page now, not a dialog: it scrolls with the page and never overflows.
         await openPage(page, 'project');

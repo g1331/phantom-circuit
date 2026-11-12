@@ -15,6 +15,7 @@ import type { TaskView } from './task-detail.tsx';
 import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
 import { deliveryPRUrl, EngineeringReference } from './engineering-reference.tsx';
+import { WorkSummary } from './workbench-task-summary.tsx';
 
 export const profileKeys = {
   backend: 'profile.backend',
@@ -59,8 +60,8 @@ export function TaskPage({
   const view = useMemo(() => teamView(state, projectId), [state, projectId]);
   const work = view.work.find((w) => w.taskId === taskId);
   const back = (
-    <a className="page-back" href={routeHref({ page: 'work', projectId })}>
-      <ArrowLeft size={14} /> {t('work.back')}
+    <a className="page-back" href={routeHref({ page: 'home', projectId })}>
+      <ArrowLeft size={14} /> {t('flow.close')}
     </a>
   );
   if (!task || !work)
@@ -131,6 +132,7 @@ export function TaskPage({
           {reassign}
         </div>
       )}
+      {section === 'overview' && <WorkSummary task={task} state={state} />}
       <DeferredTaskDetail
         key={task.id}
         view={section}

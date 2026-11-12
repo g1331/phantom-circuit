@@ -107,6 +107,29 @@ current PM assessment in M1 and must be presented that way; direct owner follow-
 Broad incoming-PR intake and default-branch CI monitoring are later capabilities. Existing checks
 remain visible as delivery evidence without pretending they were ingested source events.
 
+#### Workbench layout
+
+The desktop home is an automatically arranged relationship canvas. Source nodes link to their
+recorded inputs and Tasks. A Task remains one work node across implementation, validation,
+review, and repair. A PM node appears only for an actual live PM Run. New events update content
+without sorting existing nodes by their latest activity. Zoom and reset change the view only.
+On phones, decisions and work appear in a vertical layout with bottom navigation.
+
+Selecting work opens an addressable side panel with recorded events, source and owner facts,
+fixed-revision evidence, and the existing specification, process, and owner conversation.
+Delivery and original-platform replies keep separate states. Chat stays in a compact, expandable
+composer and a dedicated conversation page with its existing bounded reading contract.
+
+Records combine paged retained inputs, judgments and replies with the project's event snapshot.
+Commands and activity traces appear under the execution filter; they do not flood the default
+view. Selecting an input or reply reads its retained full text on demand. A failed refresh
+keeps previously loaded text visible and reports the read error separately from delivery state.
+A record links to its original input or task process for the detailed evidence.
+Sources combines receiving health with repository, sender, command, and cutoff controls.
+Settings groups model execution, team instructions, repositories, documents, and run history.
+The connected sources remain Web requests and authorized GitHub Issues. This layout does not
+activate the planned M2 follow-ups or M3 proactive rules.
+
 Acceptance:
 
 1. A real explicitly admitted Issue in an authorized test repository reaches fixed-revision

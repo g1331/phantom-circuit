@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createLocale } from '../src/web/locale/core.ts';
-import { workNodes } from '../src/web/workbench-model.ts';
+import { workNodes, workRecords } from '../src/web/workbench-model.ts';
 import { intakeFixture } from './intake-fixture.ts';
 
 test('workbench validation uses the newest attempt per command at the pinned head', async () => {
@@ -38,6 +38,23 @@ test('workbench validation uses the newest attempt per command at the pinned hea
       3,
       'older attempts remain as evidence history',
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test('records distinguish technical traces and never infer an execution result', async () => {
+  const f = intakeFixture();
+  try {
+    f.store.event('command', 'npm test', { projectId: f.project.id });
+    f.store.event('task', 'Work queued', { projectId: f.project.id });
+    const other = f.store.createProject('Other project', 'Separate record scope');
+    f.store.event('task', 'Other project', { projectId: other.id });
+    const records = workRecords(f.store.snapshot(), f.project.id, createLocale('en'));
+    assert.equal(records.find((row) => row.title === 'npm test')?.kind, 'trace');
+    assert.equal(records.find((row) => row.title === 'Work queued')?.kind, 'action');
+    assert.equal(records.find((row) => row.title === 'npm test')?.result, '');
+    assert(!records.some((row) => row.title === 'Other project'));
   } finally {
     await f.close();
   }

@@ -8,6 +8,9 @@ test('every page round-trips through its hash, and unknown hashes fall back to h
     { page: 'conversation', projectId: 'p1' },
     { page: 'conversation', projectId: 'p1', view: 'question/1' },
     { page: 'input', projectId: 'p1', inputId: 'input/1' },
+    { page: 'input', projectId: 'p1', inputId: 'input/1', view: 'records' },
+    { page: 'records', projectId: 'p1' },
+    { page: 'sources', projectId: 'p1' },
     { page: 'brief', projectId: 'p1' },
     { page: 'work', projectId: 'p1' },
     { page: 'task', projectId: 'p1', taskId: 't/1' },
@@ -15,6 +18,8 @@ test('every page round-trips through its hash, and unknown hashes fall back to h
     { page: 'team', projectId: 'p1' },
     { page: 'project', projectId: 'p1' },
     { page: 'project', projectId: 'p1', view: 'runs' },
+    { page: 'project', projectId: 'p1', view: 'instructions' },
+    { page: 'project', projectId: 'p1', view: 'repos' },
   ];
   for (const route of routes) assert.deepEqual(parseRoute(routeHref(route)), route);
   assert.deepEqual(parseRoute(''), { page: 'home' });

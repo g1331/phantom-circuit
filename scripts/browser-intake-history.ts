@@ -25,7 +25,15 @@ export async function checkPagedInputReplies(context: Context) {
       actor: { id: 17, login: 'other', kind: 'user' as const },
     })),
   ];
-  await page.getByRole('button', { name: `同步来源 · ${repo.name}`, exact: true }).click();
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/api/repos/${repo.id}/intake/refresh`) &&
+        response.ok(),
+    ),
+    page.getByRole('button', { name: `同步来源 · ${repo.name}`, exact: true }).click(),
+  ]);
   await page.locator('.source-unavailable').waitFor({ state: 'detached' });
   const entry = engine.intake
     .workflow(projectId, undefined, 50)
@@ -116,7 +124,15 @@ export async function checkLiveInputSettlement(context: Context) {
       body: '/phantom\n' + Array.from({ length: 30 }, (_, index) => paragraph(index)).join('\n\n'),
     },
   ];
-  await page.getByRole('button', { name: `同步来源 · ${repo.name}`, exact: true }).click();
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/api/repos/${repo.id}/intake/refresh`) &&
+        response.ok(),
+    ),
+    page.getByRole('button', { name: `同步来源 · ${repo.name}`, exact: true }).click(),
+  ]);
   const entry = engine.intake.workflow(projectId).inputs.find((item) => item.input.number === 18)!;
   const message = engine.intake.dispatchMessage(entry.input.id)!;
   const run = store.run('pm', projectId, 'pm', {

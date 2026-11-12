@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Pause, Play, Settings2 } from 'lucide-react';
+import { useMemo, useState, type ReactNode } from 'react';
+import { MessageSquare, Settings2 } from 'lucide-react';
 import type { Project, Snapshot } from '../shared/types.ts';
 import { teamView } from '../shared/team.ts';
 import { api } from './api.ts';
@@ -7,10 +7,11 @@ import { useLocale } from './locale/provider.tsx';
 import { routeHref } from './route.ts';
 import { useWorkflow } from './use-workflow.ts';
 import { WorkflowBoard, type FlowFilter } from './workbench-board.tsx';
-import { WorkbenchAttention } from './workbench-attention.tsx';
 import { InputDetail } from './workbench-detail.tsx';
 import { ReceivingSettings } from './workbench-receiving.tsx';
 import { WorkbenchSources } from './workbench-sources.tsx';
+import { WorkbenchRecords } from './workbench-records.tsx';
+import { SourcePage } from './workbench-source-page.tsx';
 
 const filters = ['all', 'active', 'inputs', 'delivered'] as const;
 
@@ -18,14 +19,18 @@ export function Workbench({
   state,
   project,
   inputId,
-  busy,
-  onTeam,
+  view = 'canvas',
+  query,
+  onQuery,
+  detail,
 }: {
   state: Snapshot;
   project: Project;
   inputId?: string;
-  busy: boolean;
-  onTeam: (action: 'pause' | 'resume') => void;
+  view?: 'canvas' | 'records' | 'sources';
+  query: string;
+  onQuery: (query: string) => void;
+  detail?: ReactNode;
 }) {
   const { t, host } = useLocale();
   const team = useMemo(() => teamView(state, project.id), [state, project.id]);
@@ -53,68 +58,94 @@ export function Workbench({
   }
   const error = actionError || workflow.error?.message;
   return (
-    <div className="page flow-page">
-      <header className="flow-header">
-        <h1>{t('flow.title')}</h1>
-        {workflow.page?.admissionPaused && <span className="flow-paused">{t('flow.paused')}</span>}
-        <div className="flow-header-actions">
-          <a
-            className="primary-button"
-            href={routeHref({ page: 'conversation', projectId: project.id })}
-          >
-            {t('flow.new')}
-          </a>
-          <button
-            className="secondary-button"
-            disabled={busy || !workflow.page}
-            onClick={() => onTeam(workflow.page?.admissionPaused ? 'resume' : 'pause')}
-          >
-            {workflow.page?.admissionPaused ? <Play size={15} /> : <Pause size={15} />}
-            {t(workflow.page?.admissionPaused ? 'flow.resume' : 'flow.pause')}
-          </button>
-          {repos.length > 0 && (
-            <button
-              className="icon-button"
-              aria-label={t('flow.settings')}
-              onClick={() => setReceiving(repos[0].id)}
-            >
-              <Settings2 size={18} />
-            </button>
-          )}
-        </div>
-      </header>
+    <div
+      className={`page flow-page visual-workspace view-${view} ${detail ? 'has-inspector' : ''}`}
+    >
       {error && (
         <div className="error-inline" role="alert">
           {host(error)}
         </div>
       )}
-      {workflow.page && (
-        <WorkbenchSources
-          repos={repos}
-          sources={workflow.page.sources}
+      {view === 'canvas' && (
+        <>
+          <header className="flow-header">
+            <h1 className="sr-only">{t('flow.title')}</h1>
+            <div className="flow-filters" role="group" aria-label={t('flow.work')}>
+              {filters.map((value) => (
+                <button
+                  key={value}
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {t(`flow.${value}`)}
+                </button>
+              ))}
+            </div>
+            <div className="flow-header-actions">
+              <a href={routeHref({ page: 'work', projectId: project.id })}>{t('brief.allWork')}</a>
+              <a
+                className="icon-button"
+                aria-label={t('flow.openConversation')}
+                href={routeHref({ page: 'conversation', projectId: project.id })}
+              >
+                <MessageSquare size={17} />
+              </a>
+              {repos.length > 0 && (
+                <button
+                  className="icon-button"
+                  aria-label={t('flow.settings')}
+                  onClick={() => setReceiving(repos[0].id)}
+                >
+                  <Settings2 size={17} />
+                </button>
+              )}
+            </div>
+          </header>
+          {workflow.page && (
+            <WorkbenchSources
+              repos={repos}
+              sources={workflow.page.sources}
+              projectId={project.id}
+              syncing={syncing}
+              onConfigure={setReceiving}
+              onSync={sync}
+            />
+          )}
+          <WorkflowBoard
+            projectId={project.id}
+            state={state}
+            team={team}
+            page={workflow.page}
+            filter={filter}
+            query={query}
+            loading={workflow.loading}
+            more={workflow.more}
+          />
+        </>
+      )}
+      {view === 'records' && (
+        <WorkbenchRecords
           projectId={project.id}
-          syncing={syncing}
-          onConfigure={setReceiving}
-          onSync={sync}
+          state={state}
+          page={workflow.page}
+          query={query}
+          onQuery={onQuery}
+          loading={workflow.loading}
+          more={workflow.more}
+          refresh={workflow.refresh}
         />
       )}
-      <WorkbenchAttention state={state} team={team} projectId={project.id} page={workflow.page} />
-      <div className="flow-filters" role="group" aria-label={t('flow.work')}>
-        {filters.map((value) => (
-          <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>
-            {t(`flow.${value}`)}
-          </button>
-        ))}
-      </div>
-      <WorkflowBoard
-        projectId={project.id}
-        state={state}
-        team={team}
-        page={workflow.page}
-        filter={filter}
-        loading={workflow.loading}
-        more={workflow.more}
-      />
+      {view === 'sources' && (
+        <SourcePage
+          projectId={project.id}
+          repos={repos}
+          sources={workflow.page?.sources ?? []}
+          syncing={syncing}
+          onSync={sync}
+          onSaved={workflow.refresh}
+        />
+      )}
+      {detail && <section className="workbench-inspector">{detail}</section>}
       {receiving && (
         <ReceivingSettings
           repos={repos}
@@ -129,6 +160,7 @@ export function Workbench({
           key={inputId}
           inputId={inputId}
           projectId={project.id}
+          backTo={view === 'records' ? 'records' : 'home'}
           onChange={workflow.refresh}
         />
       )}

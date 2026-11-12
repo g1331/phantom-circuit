@@ -7,9 +7,10 @@ import { InputTrajectory } from './workbench-input.tsx';
 import { useLocale } from './locale/provider.tsx';
 import type { FlowEntry } from './workbench-model.ts';
 import { useInputSummaries } from './use-input-summaries.ts';
+import { WorkCanvas } from './workbench-canvas.tsx';
 
 export type FlowFilter = 'all' | 'active' | 'inputs' | 'delivered';
-type Row =
+export type FlowRow =
   | { kind: 'input'; id: string; at: string; active: boolean; entry: FlowEntry }
   | {
       kind: 'work';
@@ -21,7 +22,7 @@ type Row =
       entry?: FlowEntry;
     };
 
-function rowsFor(state: Snapshot, team: TeamView, page?: WorkflowPage): Row[] {
+function rowsFor(state: Snapshot, team: TeamView, page?: WorkflowPage): FlowRow[] {
   const work = new Map(team.work.map((item) => [item.taskId, item]));
   const inputs = page?.inputs ?? [];
   const byInput = new Map(inputs.map((entry) => [entry.input.id, entry]));
@@ -30,14 +31,14 @@ function rowsFor(state: Snapshot, team: TeamView, page?: WorkflowPage): Row[] {
     if (entry.assessment.disposition.status === 'accepted')
       bound.set(entry.assessment.disposition.taskId, entry);
   }
-  const rows: Row[] = state.tasks.flatMap((task) => {
+  const rows: FlowRow[] = state.tasks.flatMap((task) => {
     const item = work.get(task.id);
     return item
       ? [
           {
             kind: 'work',
             id: task.id,
-            at: item.settledAt ?? item.updatedAt,
+            at: task.createdAt,
             active: !['done', 'cancelled'].includes(task.stage),
             task,
             work: item,
@@ -74,12 +75,14 @@ export function WorkflowBoard({
   filter,
   loading,
   more,
+  query = '',
 }: {
   projectId: string;
   state: Snapshot;
   team: TeamView;
   page?: WorkflowPage;
   filter: FlowFilter;
+  query?: string;
   loading: boolean;
   more: () => Promise<void>;
 }) {
@@ -88,7 +91,7 @@ export function WorkflowBoard({
   const rows = useMemo(() => rowsFor(state, team, page), [state, team, page]);
   const filtered =
     filter === 'inputs'
-      ? (page?.inputs ?? []).map((entry): Row => ({
+      ? (page?.inputs ?? []).map((entry): FlowRow => ({
           kind: 'input',
           id: entry.input.id,
           at: entry.input.observedAt,
@@ -102,22 +105,30 @@ export function WorkflowBoard({
               ? row.kind === 'work' && row.task.stage === 'done'
               : true,
         );
-  const visible = filtered.slice(0, count);
+  const needle = query.trim().toLocaleLowerCase();
+  const matches = filtered.filter((row) => {
+    const text =
+      row.kind === 'input'
+        ? `${row.entry.input.title} ${row.entry.input.number} ${row.entry.input.actor.login}`
+        : `${row.task.title} ${row.task.issue ?? ''} ${row.task.pr ?? ''}`;
+    return text.toLocaleLowerCase().includes(needle);
+  });
+  const visible = matches.slice(0, count);
   const ids = visible.flatMap((row) =>
     row.kind === 'work' && row.task.issueOrigin && !row.entry ? [row.task.issueOrigin.inputId] : [],
   );
   const summaries = useInputSummaries(projectId, ids, state.events[0]?.id);
   const related = new Map(summaries.entries.map((entry) => [entry.input.id, entry]));
   async function loadMore() {
-    if (filtered.length > count) setCount((value) => value + 8);
+    if (matches.length > count) setCount((value) => value + 8);
     else {
       await more();
       setCount((value) => value + 8);
     }
   }
   return (
-    <div className="flow-board" aria-label={t('flow.work')}>
-      {!filtered.length && (
+    <div className="flow-board" data-empty={!matches.length} aria-label={t('flow.work')}>
+      {!matches.length && (
         <div className="flow-empty">
           {loading ? t('connection.loading') : t(rows.length ? 'flow.emptyFilter' : 'flow.empty')}
         </div>
@@ -127,23 +138,28 @@ export function WorkflowBoard({
           {host(summaries.error.message)}
         </div>
       )}
-      {visible.map((row) =>
-        row.kind === 'input' ? (
-          <InputTrajectory key={row.id} entry={row.entry} />
-        ) : (
-          <WorkTrajectory
-            key={row.id}
-            task={row.task}
-            work={row.work}
-            state={state}
-            entry={
-              row.entry ??
-              (row.task.issueOrigin ? related.get(row.task.issueOrigin.inputId) : undefined)
-            }
-          />
-        ),
-      )}
-      {(filtered.length > count || page?.next) && (
+      <WorkCanvas
+        items={visible}
+        state={state}
+        team={team}
+        projectId={projectId}
+        renderItem={(row) =>
+          row.kind === 'input' ? (
+            <InputTrajectory entry={row.entry} />
+          ) : (
+            <WorkTrajectory
+              task={row.task}
+              work={row.work}
+              state={state}
+              entry={
+                row.entry ??
+                (row.task.issueOrigin ? related.get(row.task.issueOrigin.inputId) : undefined)
+              }
+            />
+          )
+        }
+      />
+      {(matches.length > count || page?.next) && (
         <button
           className="flow-more secondary-button"
           disabled={loading}

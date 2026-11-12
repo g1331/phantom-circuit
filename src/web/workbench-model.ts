@@ -115,3 +115,95 @@ export function workNodes(
     });
   return nodes;
 }
+
+export type WorkRecord = {
+  id: string;
+  at: string;
+  source: string;
+  title: string;
+  result: string;
+  tone: string;
+  href?: string;
+  original?: string;
+} & (
+  | { kind: 'input' | 'judgment'; inputId: string }
+  | { kind: 'reply'; inputId: string; replyId: string }
+  | { kind: 'action' | 'trace'; body: string }
+);
+export type RecordKind = WorkRecord['kind'];
+
+export function workRecords(
+  state: Snapshot,
+  projectId: string,
+  copy: ReturnType<typeof createLocale>,
+  page?: WorkflowPage,
+): WorkRecord[] {
+  const { t, host } = copy;
+  const rows: WorkRecord[] = [];
+  for (const entry of page?.inputs ?? []) {
+    const { input, assessment } = entry;
+    const href = routeHref({ page: 'input', projectId, inputId: input.id, view: 'records' });
+    rows.push({
+      id: input.id,
+      at: input.observedAt,
+      kind: 'input',
+      inputId: input.id,
+      source: 'GitHub',
+      title: `Issue #${input.number} · ${input.title}`,
+      result: t('flow.received'),
+      tone: 'progress',
+      href,
+      original: input.url,
+    });
+    rows.push({
+      id: assessment.id,
+      at: assessment.updatedAt,
+      kind: 'judgment',
+      inputId: input.id,
+      source: t('flow.admission'),
+      title: `Issue #${input.number} · ${input.title}`,
+      result: t(`flow.${assessment.disposition.status}`),
+      tone: inputTone(entry),
+      href,
+      original: input.url,
+    });
+    for (const reply of entry.replies) {
+      rows.push({
+        id: reply.id,
+        at: reply.state.status === 'sent' ? reply.state.sentAt : reply.createdAt,
+        kind: 'reply',
+        inputId: input.id,
+        replyId: reply.id,
+        source: 'GitHub',
+        title: `Issue #${input.number} · ${input.title}`,
+        result: t(`flow.reply.${reply.state.status}`),
+        tone:
+          reply.state.status === 'sent'
+            ? 'success'
+            : reply.state.status === 'queued'
+              ? 'neutral'
+              : 'warning',
+        href,
+        original: reply.state.status === 'sent' ? reply.state.url : input.url,
+      });
+    }
+  }
+  for (const event of state.events.filter((item) => item.projectId === projectId)) {
+    const task = state.tasks.find((item) => item.id === event.taskId);
+    const role = state.runs.find((run) => run.id === event.runId)?.role;
+    rows.push({
+      id: `event:${event.id}`,
+      at: event.at,
+      kind: ['command', 'activity'].includes(event.type) ? 'trace' : 'action',
+      source: role ? t(`team.role.${role}`) : t('flow.recordAction'),
+      title: host(event.message.split('\n')[0], event.descriptor),
+      result: '',
+      tone: 'neutral',
+      href: task
+        ? routeHref({ page: 'task', projectId, taskId: task.id, view: 'process' })
+        : undefined,
+      body: [task?.title, host(event.message, event.descriptor)].filter(Boolean).join('\n'),
+    });
+  }
+  return rows;
+}

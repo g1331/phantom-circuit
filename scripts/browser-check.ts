@@ -990,7 +990,7 @@ try {
   await page.goBack();
   await page.getByRole('heading', { level: 1, name: deliveredTitle, exact: true }).waitFor();
   await backToWork(page);
-  const search = page.getByLabel('搜索工作');
+  const search = page.getByLabel('搜索工作', { exact: true });
   await search.fill('不会匹配');
   await page.getByText('没有匹配的工作。', { exact: true }).waitFor();
   await search.fill('持续迭代');

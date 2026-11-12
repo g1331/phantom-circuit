@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChevronDown, Menu, Plus, X } from 'lucide-react';
+import { ChevronDown, MessageSquare, Plus, X } from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { teamView, workGroup } from '../shared/team.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
@@ -18,7 +18,6 @@ import { TeamInstructions } from './team-instructions.tsx';
 import { RunList } from './run-list.tsx';
 import { ClaimOrder } from './task-priority.tsx';
 import { DomainDocuments, ProjectContext, ProjectHeader } from './project-context.tsx';
-import { PageTabs } from './fold.tsx';
 import { Modal } from './ui.tsx';
 import { CommandsForm, ProjectForm, RepoForm } from './forms.tsx';
 import { TeamRoom } from './team-room.tsx';
@@ -28,6 +27,8 @@ import { WorkList } from './work-list.tsx';
 import { TaskPage } from './task-page.tsx';
 import { ProjectNav } from './project-nav.tsx';
 import { Workbench } from './workbench.tsx';
+import { WorkspaceHeader } from './workspace-header.tsx';
+import { WorkspaceSettings } from './workspace-settings.tsx';
 import './style.css';
 
 function App() {
@@ -39,7 +40,9 @@ function App() {
   const [state, setState] = useState<Snapshot>();
   const [route, go] = useRoute();
   const page = route.page;
-  const projectView = route.view === 'docs' || route.view === 'runs' ? route.view : 'overview';
+  const projectView = ['docs', 'runs', 'instructions', 'repos'].includes(route.view ?? '')
+    ? route.view!
+    : 'overview';
   const [drawer, setDrawer] = useState(false);
   const [workQuery, setWorkQuery] = useState('');
   const [modal, setModal] = useState<'project' | 'repo' | 'settings' | 'project-settings' | null>(
@@ -51,13 +54,7 @@ function App() {
   const error = actionError || connectionError || '';
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    localStorage.getItem('phantom.sidebar') === 'collapsed',
-  );
   const composerRef = useRef<PMComposerHandle>(null);
-  useEffect(() => {
-    localStorage.setItem('phantom.sidebar', sidebarCollapsed ? 'collapsed' : 'expanded');
-  }, [sidebarCollapsed]);
   const [stream, setStream] = useState<Record<string, string>>({});
   const scroll = useRef<HTMLDivElement>(null);
   const conversationContent = useRef<HTMLDivElement>(null);
@@ -205,6 +202,10 @@ function App() {
     if (route.projectId !== project.id) go({ page: 'home', projectId: project.id }, true);
   }, [project?.id, route.projectId]);
   useEffect(() => setDrawer(false), [route.page, route.projectId, route.taskId]);
+  function newProject() {
+    setDrawer(false);
+    setModal('project');
+  }
   const openTask = (taskId: string) =>
     project && go({ page: 'task', projectId: project.id, taskId });
   if (processDisclosures.current.projectId !== (project?.id ?? '')) {
@@ -443,11 +444,7 @@ function App() {
       />
     ) : null;
   return (
-    <div
-      className={
-        `shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ` + `${drawer ? 'drawer-open' : ''}`
-      }
-    >
+    <div className={`shell visual-shell sidebar-collapsed ${drawer ? 'drawer-open' : ''}`}>
       {drawer && (
         <button
           className="drawer-scrim"
@@ -456,44 +453,30 @@ function App() {
         />
       )}
       <Sidebar
-        state={state}
-        selectedId={project?.id}
-        collapsed={sidebarCollapsed}
         connected={connected}
-        onToggle={() => setSidebarCollapsed((value) => !value)}
-        onSelect={(id) => go({ page: 'home', projectId: id })}
-        onNewProject={() => setModal('project')}
+        onNewProject={newProject}
         onSettings={() => setModal('settings')}
         projectNav={nav('sidebar')}
       />
       <main className="main">
         {project && (
-          <header className="workspace-header">
-            <button
-              className="workspace-menu icon-button"
-              aria-label={t('nav.menu')}
-              aria-expanded={drawer}
-              onClick={() => setDrawer(true)}
-            >
-              <Menu size={18} />
-            </button>
-            <strong>{project.name}</strong>
-            <div className="workspace-status">
-              {waitingCount > 0 && (
-                <a
-                  className="status-attention"
-                  href={routeHref({ page: 'work', projectId: project.id })}
-                >
-                  {t('home.status.waiting', { count: waitingCount })}
-                </a>
-              )}
-              {movingCount > 0 && (
-                <a href={routeHref({ page: 'work', projectId: project.id })}>
-                  {t('home.status.moving', { count: movingCount })}
-                </a>
-              )}
-            </div>
-          </header>
+          <WorkspaceHeader
+            state={state}
+            project={project}
+            route={route}
+            waiting={waitingCount}
+            moving={movingCount}
+            query={workQuery}
+            busy={busy}
+            onProject={(id) => go({ page: 'home', projectId: id })}
+            onNewProject={newProject}
+            onQuery={(query) => {
+              setWorkQuery(query);
+              if (page !== 'records') go({ page: 'records', projectId: project.id });
+            }}
+            onTeam={onTeam}
+            onMenu={() => setDrawer(true)}
+          />
         )}
         {!project && (
           <header className="topbar">
@@ -543,14 +526,39 @@ function App() {
           </div>
         ) : (
           <>
-            {(page === 'home' || page === 'input') && (
+            {['home', 'input', 'task', 'records', 'sources'].includes(page) && (
               <Workbench
                 key={project.id}
                 state={state}
                 project={project}
                 inputId={route.inputId}
-                busy={busy}
-                onTeam={onTeam}
+                view={
+                  page === 'sources'
+                    ? 'sources'
+                    : page === 'records' || route.view === 'records'
+                      ? 'records'
+                      : 'canvas'
+                }
+                query={workQuery}
+                onQuery={setWorkQuery}
+                detail={
+                  page === 'task' && route.taskId ? (
+                    <TaskPage
+                      state={state}
+                      projectId={project.id}
+                      taskId={route.taskId}
+                      view={route.view}
+                      schedule={currentSchedule}
+                      busy={busy}
+                      act={act}
+                      reload={reload}
+                      onDraft={(draft) => {
+                        go({ page: 'conversation', projectId: project.id });
+                        composerRef.current?.setDraft(draft.content, draft.intent);
+                      }}
+                    />
+                  ) : undefined
+                }
               />
             )}
             {/* Keep drafts and reading position mounted across navigation. */}
@@ -729,51 +737,18 @@ function App() {
                       </button>
                     )}
                   </div>
-                  <PMComposer
-                    key={project.id}
-                    ref={composerRef}
-                    busy={busy}
-                    pmBusy={pmBusy}
-                    onSend={send}
-                    modelControl={
-                      <PMModelControl
-                        project={project}
-                        settings={state.settings}
-                        agent={projectAgent}
-                        profile={pmProfile}
-                        onSave={reload}
-                      />
-                    }
-                  />
                 </div>
               </section>
             </div>
             {page === 'brief' && <div className="page brief-page">{brief}</div>}
-            {(page === 'work' || page === 'task') && (
-              <div className={page === 'task' ? 'work-inspection' : 'work-surface'}>
+            {page === 'work' && (
+              <div className="work-surface">
                 <WorkList
                   state={state}
                   project={project}
                   query={workQuery}
                   setQuery={setWorkQuery}
-                  selectedId={page === 'task' ? route.taskId : undefined}
                 />
-                {page === 'task' && route.taskId && (
-                  <TaskPage
-                    state={state}
-                    projectId={project.id}
-                    taskId={route.taskId}
-                    view={route.view}
-                    schedule={currentSchedule}
-                    busy={busy}
-                    act={act}
-                    reload={reload}
-                    onDraft={(draft) => {
-                      go({ page: 'conversation', projectId: project.id });
-                      composerRef.current?.setDraft(draft.content, draft.intent);
-                    }}
-                  />
-                )}
               </div>
             )}
             {page === 'team' && (
@@ -787,60 +762,88 @@ function App() {
             )}
             {page === 'project' && (
               <div className="page project-page">
-                <ProjectHeader project={project} onOpenModal={setModal} />
-                <PageTabs
-                  label={t('tabs.project')}
-                  route={{ page: 'project', projectId: project.id }}
-                  current={projectView}
-                  tabs={[
-                    { view: 'overview', label: t('project.tab.overview') },
-                    {
-                      view: 'docs',
-                      label: t('project.tab.docs'),
-                      count: state.documents.filter((d) => d.projectId === project.id).length,
-                    },
-                    { view: 'runs', label: t('project.tab.runs') },
-                  ]}
-                />
-                {projectView === 'overview' && (
-                  <>
-                    <ProjectContext
-                      project={project}
-                      state={state}
-                      repos={repos}
-                      tasks={tasks}
-                      active={active}
-                      busy={busy}
-                      act={act}
-                      projectAgent={projectAgent}
-                      pmProfile={pmProfile}
-                      onOpenModal={setModal}
-                      onConfigureRepo={setRepoConfig}
-                      claims={
-                        <ClaimOrder
-                          schedule={currentSchedule}
-                          projects={state.projects}
-                          locale={locale}
-                          refresh={() => setScheduleRefresh((n) => n + 1)}
-                          error={
-                            scheduleError?.projectId === project.id ? scheduleError.message : ''
-                          }
-                          refreshing={scheduleLoading}
-                        />
-                      }
-                    />
+                <WorkspaceSettings
+                  state={state}
+                  project={project}
+                  section={projectView}
+                  busy={busy}
+                  reload={reload}
+                  repositories={
+                    <>
+                      <ProjectHeader project={project} onOpenModal={setModal} />
+                      <ProjectContext
+                        project={project}
+                        state={state}
+                        repos={repos}
+                        tasks={tasks}
+                        active={active}
+                        busy={busy}
+                        act={act}
+                        projectAgent={projectAgent}
+                        pmProfile={pmProfile}
+                        onOpenModal={setModal}
+                        onConfigureRepo={setRepoConfig}
+                        claims={
+                          <ClaimOrder
+                            schedule={currentSchedule}
+                            projects={state.projects}
+                            locale={locale}
+                            refresh={() => setScheduleRefresh((n) => n + 1)}
+                            error={
+                              scheduleError?.projectId === project.id ? scheduleError.message : ''
+                            }
+                            refreshing={scheduleLoading}
+                          />
+                        }
+                      />
+                    </>
+                  }
+                  instructions={
                     <TeamInstructions
                       key={project.id}
                       state={state}
                       projectId={project.id}
                       refresh={reload}
                     />
-                  </>
-                )}
-                {projectView === 'docs' && <DomainDocuments state={state} project={project} />}
-                {projectView === 'runs' && <RunList state={state} runs={runs} tasks={tasks} />}
+                  }
+                  documents={<DomainDocuments state={state} project={project} />}
+                  runs={<RunList state={state} runs={runs} tasks={tasks} />}
+                />
               </div>
             )}
+            <div
+              className={`workspace-composer ${page === 'conversation' ? 'expanded' : 'compact'}`}
+              hidden={!['home', 'input', 'conversation'].includes(page)}
+            >
+              {page !== 'conversation' && (
+                <a
+                  className="workspace-chat-link"
+                  href={routeHref({
+                    page: 'conversation',
+                    projectId: project.id,
+                  })}
+                  aria-label={t('flow.openConversation')}
+                >
+                  <MessageSquare size={16} />
+                </a>
+              )}
+              <PMComposer
+                key={project.id}
+                ref={composerRef}
+                busy={busy}
+                pmBusy={pmBusy}
+                onSend={send}
+                modelControl={
+                  <PMModelControl
+                    project={project}
+                    settings={state.settings}
+                    agent={projectAgent}
+                    profile={pmProfile}
+                    onSave={reload}
+                  />
+                }
+              />
+            </div>
             {nav('bar')}
           </>
         )}

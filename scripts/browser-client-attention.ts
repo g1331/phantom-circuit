@@ -15,7 +15,7 @@ import { createApp } from '../src/server/app.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import type { Message, Project, Repo } from '../src/shared/types.ts';
 import { pagesEn, pagesZh } from '../src/web/locale/pages.ts';
-import { clickInSidebar, openPage, openTask } from './browser-pages.ts';
+import { openPage, openTask } from './browser-pages.ts';
 import { choosePreference } from './browser-preferences.ts';
 
 export async function checkClientAttention({
@@ -142,7 +142,7 @@ export async function checkClientAttention({
         await page.locator('.group-needs_you .work-row').waitFor();
         assert.equal(await page.locator('.group-needs_you .work-row').count(), 1);
         assert.equal(
-          await page.locator('.project-pages:visible .page-work .page-badge').textContent(),
+          await page.locator('.project-pages:visible .page-home .page-badge').textContent(),
           '1',
         );
         assert.ok(
@@ -267,8 +267,8 @@ export async function checkBriefProjectIsolation(page: Page, store: Store, artif
   await page.goto(`${origin}/?brief-isolation-fixture=1#/p/${first.id}`);
   await openPage(page, 'brief');
   await page.locator('.brief-page .brief').waitFor();
-  await clickInSidebar(page, second.name);
-  await page.locator('.workspace-header > strong').filter({ hasText: second.name }).waitFor();
+  await page.locator('.workspace-project-picker select').selectOption(second.id);
+  await page.waitForURL((url) => url.hash === `#/p/${second.id}`);
   await page.locator('.drawer-scrim').waitFor({ state: 'detached' });
   assert.equal(await page.locator('.home-brief').count(), 0);
   await openPage(page, 'brief');

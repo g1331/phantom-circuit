@@ -72,7 +72,9 @@ export function WorkbenchSources({
           </div>
         );
       })}
-      {!repos.length && <a href={routeHref({ page: 'project', projectId })}>{t('flow.noRepo')}</a>}
+      {!repos.length && (
+        <a href={routeHref({ page: 'project', projectId, view: 'repos' })}>{t('flow.noRepo')}</a>
+      )}
     </div>
   );
 }
