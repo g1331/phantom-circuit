@@ -669,7 +669,7 @@ try {
   makeTask('支持体验反馈与持续迭代');
   store.event('fixture', '浏览器验证场景已准备', { projectId: project.id });
   await openPage(page, 'project');
-  await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).waitFor();
+  await page.getByRole('switch', { name: 'orbit-web 允许认领新任务', exact: true }).waitFor();
   await openSection(page, 'project.tab.docs');
   const documents = page.getByRole('region', { name: '领域文档', exact: true });
   await documents.getByText('CONTEXT.md', { exact: true }).click({ timeout: 5000 });
@@ -859,18 +859,32 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await openPage(page, 'project');
-  await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).click();
+  const repoControl = page.locator('.repo-control').filter({ hasText: 'orbit-web' });
+  await repoControl.getByText('允许认领新任务', { exact: true }).waitFor();
+  await repoControl.getByText('已暂停认领，排队任务等待开启', { exact: true }).waitFor();
+  await page.getByRole('switch', { name: 'orbit-web 允许认领新任务', exact: true }).click();
   await page.waitForFunction(
     () =>
-      document.querySelector('[aria-label="orbit-web 开工开关"]')?.getAttribute('aria-checked') ===
-      'true',
+      document
+        .querySelector('[aria-label="orbit-web 允许认领新任务"]')
+        ?.getAttribute('aria-checked') === 'true',
   );
-  await page.getByRole('switch', { name: 'orbit-web 开工开关', exact: true }).click();
+  assert.equal(store.repo(repo.id).enabled, true);
+  assert.equal(await repoControl.getByText('已暂停认领，排队任务等待开启').count(), 0);
+  await page.reload();
+  await repoControl.getByRole('switch', { checked: true }).waitFor();
+  await repoControl.getByText('允许认领新任务', { exact: true }).waitFor();
+  await page.getByRole('switch', { name: 'orbit-web 允许认领新任务', exact: true }).click();
   await page.waitForFunction(
     () =>
-      document.querySelector('[aria-label="orbit-web 开工开关"]')?.getAttribute('aria-checked') ===
-      'false',
+      document
+        .querySelector('[aria-label="orbit-web 允许认领新任务"]')
+        ?.getAttribute('aria-checked') === 'false',
   );
+  await page.reload();
+  await repoControl.getByRole('switch', { checked: false }).waitFor();
+  await repoControl.getByText('允许认领新任务', { exact: true }).waitFor();
+  await repoControl.getByText('已暂停认领，排队任务等待开启', { exact: true }).waitFor();
   assert.equal(store.repo(repo.id).enabled, false);
   assert.equal(store.activeRuns().filter((r) => r.role === 'dev').length, 1);
   // Work is grouped by what it asks of the user, not by host stage.

@@ -171,9 +171,10 @@ export function ProjectContext({
                 </div>
                 <div className="switch-row">
                   <div>
-                    <strong>
-                      {r.enabled ? t('ui.newTaskClaimsEnabled') : t('ui.newTaskClaimsStopped')}
-                    </strong>
+                    <strong>{t('ui.newTaskClaimsEnabled')}</strong>
+                    {!r.enabled && (
+                      <small id={`repo-claims-paused-${r.id}`}>{t('ui.newTaskClaimsPaused')}</small>
+                    )}
                     {!r.enabled && count > 0 && <small>{t('repos.running', { count })}</small>}
                   </div>
                   <button
@@ -181,6 +182,7 @@ export function ProjectContext({
                     role="switch"
                     aria-checked={r.enabled}
                     aria-label={t('repos.switch', { name: r.name })}
+                    aria-describedby={r.enabled ? undefined : `repo-claims-paused-${r.id}`}
                     disabled={busy}
                     onClick={() =>
                       void act(() => api(`/repos/${r.id}`, { enabled: !r.enabled }, 'PATCH'))
