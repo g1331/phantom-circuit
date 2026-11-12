@@ -1,4 +1,10 @@
 import type { IntakeSource, SourceInput, InputAssessment, SourceReply } from '../shared/intake.ts';
+import type {
+  MaintenanceRule,
+  MaintenanceCandidate,
+  MaintenanceObservation,
+  MaintenanceHealth,
+} from '../shared/maintenance.ts';
 import { TEAM_INSTRUCTIONS_LIMIT, teamInstructionsLength } from '../shared/team-instructions.ts';
 import {
   comparePriority,
@@ -146,6 +152,10 @@ export const defaults: Settings = {
 import type { Collaboration, FollowUp } from '../shared/collaboration.ts';
 
 type Entities = {
+  maintenanceRule: MaintenanceRule;
+  maintenanceCandidate: MaintenanceCandidate;
+  maintenanceObservation: MaintenanceObservation;
+  maintenanceHealth: MaintenanceHealth;
   followUp: FollowUp;
   collaboration: Collaboration;
   intakeSource: IntakeSource;

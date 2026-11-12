@@ -1,4 +1,5 @@
 import { Intake } from './intake.ts';
+import { Maintenance } from './maintenance.ts';
 import { FollowUps } from './follow-ups.ts';
 import { Collaborations, delegationInput, collaborationAction } from './collaboration.ts';
 import type { Collaboration } from '../shared/collaboration.ts';
@@ -366,6 +367,7 @@ export class Engine {
   private readonly injectedFactory?: AgentFactory;
   private readonly deliveryRuntime: Promise<DeliveryRuntime>;
   readonly intake: Intake;
+  readonly maintenance: Maintenance;
   constructor(
     readonly store: Store,
     readonly github: GitHub,
@@ -375,6 +377,7 @@ export class Engine {
     options: EngineOptions = {},
   ) {
     this.intake = new Intake(store, github, (message) => this.chat(message));
+    this.maintenance = new Maintenance(store, github);
     this.injectedFactory = createAgent;
     this.stallMs = options.stallMs ?? 20 * 60_000;
     this.loopRepeats = options.loopRepeats ?? 5;
@@ -4242,6 +4245,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
       if (input.reply?.status === 'pending')
         await new GitHubFollowUps(this.store, this.github).reply(input.id);
     void this.track(this.intake.pump()).catch((error) => this.store.event('intake', String(error)));
+    void this.track(this.maintenance.pump());
     if (Date.now() < this.syncRetryAt) return;
     for (const task of this.store.list('task')) {
       if (Date.now() < this.syncRetryAt) return;

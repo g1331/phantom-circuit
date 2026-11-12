@@ -1,4 +1,5 @@
 import type { SourceReply } from '../shared/intake.ts';
+import { readMaintenanceCandidates } from './maintenance-github.ts';
 import {
   resolveActor,
   readIssues,
@@ -246,6 +247,9 @@ export class GitHub {
   }
   async readIntakeIssues(repo: Repo, since: string): Promise<ObservedIssue[]> {
     return readIssues(this.api.bind(this), this.intakePage.bind(this), repo, since);
+  }
+  async readMaintenanceCandidates(repo: Repo, kinds: Set<'issue' | 'ci'>) {
+    return readMaintenanceCandidates(this.intakePage.bind(this), repo, kinds);
   }
   async deliverSourceReply(reply: SourceReply, assertAllowed: () => void) {
     const repo = this.store.repo(reply.repoId);

@@ -1,8 +1,10 @@
 # An event-driven development team with a visual workbench
 
 Status: M1 and M2 implemented and accepted through the real-platform loops below, after
-independent implementation review. M3 and M4 remain planned. Existing installations require
-an explicit update; source integration does not change a running service.
+independent implementation review. M3 rule management and observation are implemented in this
+increment, pending fixed-revision host validation and real-platform observation acceptance.
+M3 automatic maintenance and M4 remain planned. Existing installations require an explicit
+update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype/tree/8c32a9dc5d72c033816c6a8110b37f40cf94fba4),
@@ -129,7 +131,8 @@ A record links to its original input or task process for the detailed evidence.
 Sources combines receiving health with repository, sender, command, and cutoff controls.
 Settings groups model execution, team instructions, repositories, documents, and run history.
 Connected sources include Web requests, authorized GitHub Issues, and M2's repository-enabled
-feedback from bound Issues, PRs, reviews, and CI. M3 proactive rules remain planned.
+feedback from bound Issues, PRs, reviews, and CI. Sources also contains M3 maintenance rules,
+version history and candidate observations; automatic execution remains planned.
 
 Acceptance:
 
@@ -231,6 +234,77 @@ M2 delivery evidence:
   interruption. Browser filtering also verifies distinct input and judgment record identities.
 
 ### M3: Written-rule proactive maintenance
+
+#### Implemented observation increment; real-platform acceptance pending
+
+Repository Sources now provides multiple named maintenance rules, each with immutable numbered
+versions, user provenance and concurrent-save checks. Each rule fixes its repository, mode,
+candidate kind, exact Issue label or workflow name, minimum inactivity in minutes, and permitted
+scope. New rules default to observe. Off performs no inferred collection or admission. Auto can
+be saved as the user's intended mode, but is explicitly displayed as observation only with
+execution pending. All active modes currently retain observations only: they create no Task,
+Run, Message, source reply or outbound Operation. Explicit admitted Issue requests and Web
+implementation requests continue through their existing authorization paths in every mode.
+
+The read-only GitHub adapter collects open, unassigned Issues and the newest GitHub Actions run
+for each workflow on GitHub's actual default branch. A newer successful or pending run supersedes
+an old failure. A completed failure, timeout, action-required or startup-failure result is a CI
+candidate. The source samples elapsed time from the Issue or run's last update; waiting for an
+age condition consumes no model turn. Receiving has complete bounded pagination, schema checks
+and explicit unavailable health on incomplete or failed reads. Retained observations remain
+readable after a failed refresh. Collection shares the Engine's existing synchronization cycle
+with a one-minute read interval and per-repository overlapping-read coalescing.
+
+Candidates retain native identity, evidence revision, URL, original body, actor evidence and
+source/observation times in the existing Store. Each observation binds an immutable rule-version
+identity, condition-by-condition judgments, sampled age, proposed scope, recommendation,
+would-accept result, related Tasks and hold reasons. Exact label/workflow matching selects a
+candidate; the proposed scope remains the user's written limit, with implementation assessment
+and enforcement reserved for the automatic increment. Bots and host-marked Issues are excluded
+from eligibility. An existing Task's Issue, PR or retained head/delivery revision, an open PR
+associated with the checked commit, and an explicit intake request all prevent competing
+maintenance. Bound-PR CI keeps M2's existing owner-feedback route. A historical closed PR alone
+does not exclude an unrelated later default-branch failure.
+
+The commit of an observation checks the current rule version after remote reads. A rule change
+discards an unfinished old-version judgment; earlier committed judgments remain historical and
+are labeled as such in the workbench. A stable candidate/version/judgment identity deduplicates
+repeated reads while allowing a newly satisfied age condition or changed hold to be recorded.
+Team admission holds and related Task pauses are sampled and retained, never modified by the
+observer. Rule versions, input evidence, judgments and pause provenance survive restart. The
+rule-version reference is provenance for the observation; automatic execution must still
+revalidate authority at continuation and use the existing Task/Operation delivery gates.
+
+The Sources page has compact rule rows and observation rows with expandable details. Rule
+history and full source evidence load on demand; history and observation pages contain at most
+30 entries. Details retain source links, all judgments and scope, and links to existing work.
+There is no second work scheduler or automatic reply path.
+
+Local verification covers Store persistence, HTTP/CSRF and concurrent versions, the GitHub
+read boundary, duplicate/self/linked events, stale reads, explicit requests in every mode,
+source failures and restart with user holds. The existing browser entry now includes rule
+creation/editing, history and observation details at 1280 px and 390 px, with empty/data
+screenshots. Its formal execution and screenshots are host validation evidence, still pending.
+
+Real-platform acceptance remains blocked on host GitHub/isolated-instance access: this work
+session and the coordinator have no broker or isolated-instance API entry. No real candidate,
+GitHub write, browser screenshot or delivered repair is claimed by the local fixtures. The host
+must use separate data and workspaces, preserving the active service, original data and stable
+M2 directory. In that isolated instance, configure two observe rules for this repository using
+an actual Issue label and an actually failing default-branch workflow, then invoke
+`POST /api/repos/:id/maintenance/refresh`. Inspect
+`GET /api/repos/:id/maintenance` and
+`GET /api/repos/:id/maintenance/observations/:observationId`, or the Sources page, for both real
+URLs, full evidence, judgments and scope. Repeat refresh and restart, change a rule during a
+read, and verify unchanged Task/Run/outbound-Operation counts and retained user pauses. These
+routes use the normal local session and CSRF protection. Record the actual source URLs and
+screenshots in the host's acceptance report before marking this increment accepted.
+
+#### Remaining automatic increment
+
+The following M3 direction and acceptance criteria remain authoritative. In particular,
+automatic Issue/CI implementation, repair delivery, one effective automatic work across
+interruption, and continuation-time authorization revalidation remain unimplemented.
 
 Add versioned off, observe, and auto modes for inferred candidates. Observe is the default for
 new proactive configuration. Explicit admitted requests remain available in every mode. First
