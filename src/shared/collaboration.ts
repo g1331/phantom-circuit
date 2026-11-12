@@ -16,6 +16,7 @@ export interface FollowUp {
   url?: string;
   replyIssue?: number;
   head?: string;
+  checkConclusion?: string;
   body: string;
   receivedAt: string;
   status: 'queued' | 'processing' | 'accepted' | 'resolved' | 'handed_back';

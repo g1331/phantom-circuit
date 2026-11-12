@@ -814,7 +814,12 @@ export function createApp(
     const followUps = store
       .list('followUp')
       .filter((item) => item.taskId === id)
-      .reverse();
+      .reverse()
+      .sort(
+        (a, b) =>
+          Number(['resolved', 'cancelled'].includes(a.status)) -
+          Number(['resolved', 'cancelled'].includes(b.status)),
+      );
     return {
       assignments: assignments.slice(offset, offset + 30).map((item) => ({
         ...item,

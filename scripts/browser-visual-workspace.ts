@@ -110,6 +110,7 @@ export async function checkVisualWorkspace(
     await page
       .locator('.record-row')
       .filter({ hasText: 'Issue #18 · Synthetic live source assessment' })
+      .filter({ has: page.locator('.record-source', { hasText: /^GitHub$/ }) })
       .click();
     await page
       .locator('.record-detail')
@@ -133,8 +134,12 @@ export async function checkVisualWorkspace(
           (response) =>
             response.url().includes('/api/repos/') && response.request().method() === 'PATCH',
         ),
-        feedbackSwitch.setChecked(enabled),
+        feedbackSwitch.click(),
       ]);
+      await page.waitForFunction((expected) => {
+        const input = document.querySelector<HTMLInputElement>('.followup-toggle input');
+        return input?.checked === expected && !input.disabled;
+      }, enabled);
       assert.equal(await feedbackSwitch.isChecked(), enabled);
     }
     await page.screenshot({ path: resolve(artifacts, `visual-sources-${width}.png`) });

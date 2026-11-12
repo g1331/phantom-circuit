@@ -117,6 +117,7 @@ export class GitHubFollowUps {
         nativeId: `check:${result.id}`,
         revision: `${result.completed_at}:${result.conclusion}`,
         author: 'GitHub Checks',
+        checkConclusion: result.conclusion ?? undefined,
         url: result.html_url ?? undefined,
         head: task.head,
         body:
@@ -140,6 +141,7 @@ export class GitHubFollowUps {
         nativeId: `status:${result.id}`,
         revision: result.updated_at,
         author: 'GitHub Status',
+        checkConclusion: result.state,
         url: result.target_url ?? undefined,
         head: task.head,
         body: `${result.context}: ${result.state}\n${result.description ?? ''}`,

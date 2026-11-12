@@ -8,6 +8,7 @@ import { Collaborations } from '../src/server/collaboration.ts';
 import { FollowUps } from '../src/server/follow-ups.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Codex } from '../src/server/codex.ts';
+import { OmpBackend } from '../src/server/omp.ts';
 import type { AgentToolHandler } from '../src/server/agent-backend.ts';
 import type { Collaboration } from '../src/shared/collaboration.ts';
 
@@ -88,11 +89,18 @@ test('follow-ups resume the real owner despite a profile change and recover queu
       author: 'user',
       body: 'Is this within scope?',
     };
+    const passedCheck = inbox.receive(task.id, {
+      ...message,
+      kind: 'check',
+      nativeId: 'passed-check',
+      checkConclusion: 'success',
+      body: 'Tests: success',
+    });
     const input = inbox.receive(task.id, message);
     assert.equal(inbox.receive(task.id, message).id, input.id);
     inbox.claim(input.id, 'interrupted-feedback');
     f.store.recover();
-    assert.equal(inbox.queued(task.id).length, 1);
+    assert.equal(inbox.queued(task.id).length, 2);
     let resumed = false;
     class Owner extends Codex {
       override async start() {}
@@ -115,6 +123,8 @@ test('follow-ups resume the real owner despite a profile change and recover queu
       'feedback resolved',
     );
     assert.equal(resumed, true);
+    assert.equal(f.store.get('followUp', passedCheck.id)?.status, 'resolved');
+    assert.equal(f.store.list('run').filter((run) => run.purpose === 'followup').length, 1);
     assert.equal(f.store.task(task.id).ownerRunId, first.id);
     assert.equal(f.store.list('run').filter((run) => run.role === 'pm').length, 0);
   } finally {
@@ -177,6 +187,69 @@ test('an engine owner can commission and integrate a contributor without changin
     await engine.tick();
     await until(() => integrated || !!f.store.list('incident').length, 'contribution finished');
     assert.equal(integrated, true, JSON.stringify(f.store.list('incident')));
+  } finally {
+    await engine.stop();
+    f.store.close();
+    await rm(f.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+});
+
+test('read-only OMP contributions retain their permissions and retryable session on shutdown', async () => {
+  const f = await devFixture('phantom-contribution-shutdown-');
+  const ws = new Workspaces(join(f.root, 'ws'), f.store);
+  f.store.saveProjectAgentSelection(f.project.id, { mode: 'override', agent: 'omp' });
+  let started = false;
+  let allowedTools: unknown;
+  class Model extends OmpBackend {
+    handler?: AgentToolHandler;
+    contributor = false;
+    tools: unknown;
+    override async start(options?: unknown) {
+      this.tools = (options as { allowedTools: string[] }).allowedTools;
+    }
+    override async stop() {}
+    override async thread(options: Parameters<OmpBackend['thread']>[0]) {
+      this.handler = options.toolHandler;
+      this.contributor = options.instructions.includes('temporary contributor');
+      if (this.contributor) allowedTools = this.tools;
+      return this.contributor ? 'contributor-session' : 'owner-session';
+    }
+    override async turn(
+      _thread: string,
+      _prompt: string,
+      _profile?: unknown,
+      signal?: AbortSignal,
+    ): Promise<string> {
+      if (this.contributor) {
+        started = true;
+        return new Promise((_resolve, reject) => {
+          signal!.addEventListener('abort', () => reject(new Error('Interrupted')), { once: true });
+        });
+      }
+      await this.handler!('delegate_work', {
+        requestKey: 'inspect',
+        objective: 'Inspect the existing code',
+        profile: 'backend',
+        mode: 'read',
+      });
+      return 'Inspection returned.';
+    }
+  }
+  const engine = new Engine(f.store, f.github, ws, f.root, () => new Model());
+  try {
+    await engine.start();
+    await engine.tick();
+    await until(() => started, 'contributor started');
+    await engine.stop();
+    assert.deepEqual(allowedTools, ['read', 'grep', 'glob']);
+    const assignment = f.store.list('collaboration')[0];
+    assert.equal(assignment.status, 'failed');
+    const owner = f.store.run('dev', f.project.id, f.task.profile, f.store.task(f.task.id));
+    f.store.bindRunThread(owner, 'owner-session');
+    const retry = new Collaborations(f.store, ws.root).retry(owner, assignment.id);
+    assert.equal(retry.status, 'queued');
+    assert.equal(retry.worktree, assignment.worktree);
+    assert.equal(f.store.get('run', retry.runId!)?.threadId, 'contributor-session');
   } finally {
     await engine.stop();
     f.store.close();

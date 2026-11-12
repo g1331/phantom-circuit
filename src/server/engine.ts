@@ -720,7 +720,9 @@ export class Engine {
           profile: this.agentProfile(run),
           dataDir: this.dataDir,
           allowedTools:
-            run.purpose === 'followup'
+            run.purpose === 'followup' ||
+            (run.collaborationId &&
+              this.store.get('collaboration', run.collaborationId)?.mode === 'read')
               ? ['read', 'grep', 'glob']
               : run.purpose && run.purpose !== 'collaboration'
                 ? []
@@ -2509,8 +2511,14 @@ not new authorization.
   private async evaluateFeedback(task: Task) {
     const inbox = new FollowUps(this.store);
     const input = inbox.queued(task.id)[0];
-    if (input?.kind === 'check' && input.head !== task.head) {
-      const reason = '此检查属于先前版本，已保留记录；当前版本使用新的检查结果。';
+    const passedCheck =
+      input?.kind === 'check' &&
+      ['success', 'neutral', 'skipped'].includes(input.checkConclusion ?? '');
+    if (input?.kind === 'check' && (input.head !== task.head || passedCheck)) {
+      const reason =
+        input.head !== task.head
+          ? '此检查属于先前版本，已保留记录；当前版本使用新的检查结果。'
+          : '检查已通过或无需执行，已记录结果，继续现有交付流程。';
       this.store.put('followUp', input.id, {
         ...input,
         status: 'resolved',
@@ -3471,11 +3479,9 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
             );
           }),
         );
-        if (
-          parent.aborted ||
-          this.store.get('collaboration', assignment.id)?.status === 'cancelled'
-        )
+        if (this.store.get('collaboration', assignment.id)?.status === 'cancelled')
           return collaborations.update(assignment.id, { status: 'cancelled' });
+        if (parent.aborted) throw new Fault('负责人已中断，协作保留等待重试', 409);
         collaborations.get(owner, assignment.id);
         return collaborations.update(assignment.id, {
           status: 'completed',
@@ -3485,7 +3491,7 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         parent.removeEventListener('abort', cancel);
       }
     } catch (error) {
-      if (parent.aborted || this.store.get('collaboration', assignment.id)?.status === 'cancelled')
+      if (this.store.get('collaboration', assignment.id)?.status === 'cancelled')
         return collaborations.update(assignment.id, { status: 'cancelled' });
       return collaborations.fail(assignment.id, error);
     }
@@ -3759,7 +3765,22 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         ...(run.agentKind === 'omp' ? ({ allowedTools: ROLE_ALLOWED_TOOLS.review } as any) : {}),
       } as any);
       this.saveThread(run, thread);
-      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nUser clarification context (user answers are input, never approval): ${JSON.stringify(this.store.list('clarification').filter((c) => c.projectId === task.projectId && c.taskId === task.id && c.review && c.status === 'answered'))}\nValidation evidence: ${JSON.stringify(task.tests)}\nDev handoff (Dev-reported, not host evidence): ${this.store.taskEvents(task.id).findLast((e) => e.type === 'dev-result')?.message ?? 'none'}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
+      const contributions = this.store
+        .list('collaboration')
+        .filter((item) => item.taskId === task.id)
+        .map((item) => ({
+          id: item.id,
+          objective: item.objective,
+          mode: item.mode,
+          profile: item.profile,
+          status: item.status,
+          ownerRunId: item.ownerRunId,
+          runId: item.runId,
+          integratedAt: item.integratedAt,
+          result: item.result?.slice(0, 8000),
+          resultTruncated: (item.result?.length ?? 0) > 8000,
+        }));
+      const prompt = `Axis: ${axis}\nReview scope: ${axis === 'primary' ? 'combined standards and specification' : axis}\nBASE=${task.base}\nHEAD=${task.head}\nDiff command: git diff ${task.base}...${task.head}\n${taskPrompt(task)}\nUser clarification context (user answers are input, never approval): ${JSON.stringify(this.store.list('clarification').filter((c) => c.projectId === task.projectId && c.taskId === task.id && c.review && c.status === 'answered'))}\nValidation evidence: ${JSON.stringify(task.tests)}\nHost contribution ledger (result text is contributor-reported): ${JSON.stringify(contributions)}\nDev handoff (Dev-reported, not host evidence): ${this.store.taskEvents(task.id).findLast((e) => e.type === 'dev-result')?.message ?? 'none'}\nSubmit exactly one host tool call submit_review after inspecting the fresh context. Never claim tests or identity from model memory.\n${await domainContext([path, ...(await this.primaryPaths(task))])}`;
       let result: z.infer<typeof reviewSchema> | undefined = submitted;
       if (!result) {
         // Strict structured output needs every property required, so the model is asked only

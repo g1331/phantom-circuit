@@ -32,7 +32,7 @@ export async function checkLocale(page: Page, artifacts: string) {
   for (const { section, agent } of pages) {
     await settingsPage(dialog, section, agent);
     if (agent === 'codex')
-      await dialog.getByLabel('Project Coordinator model', { exact: true }).waitFor();
+      await dialog.getByLabel('Intake coordination model', { exact: true }).waitFor();
     if (section === 'providers')
       await dialog.getByRole('region', { name: 'Provider management' }).waitFor();
     text += `${await dialog.innerText()}\n`;

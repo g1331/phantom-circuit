@@ -189,6 +189,7 @@ function TaskOverview({
           </section>
         )}
         {(detail.stage === 'done' ||
+          work?.externalDeliveryPending ||
           detail.head ||
           detail.tests.length > 0 ||
           detail.reviews.length > 0 ||

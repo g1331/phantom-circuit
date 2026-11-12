@@ -7,7 +7,16 @@ export type FollowUpInput = Pick<
   'source' | 'kind' | 'nativeId' | 'revision' | 'author' | 'body'
 > &
   Partial<
-    Pick<FollowUp, 'url' | 'replyIssue' | 'head' | 'actorId' | 'actorAssociation' | 'sourceTime'>
+    Pick<
+      FollowUp,
+      | 'url'
+      | 'replyIssue'
+      | 'head'
+      | 'checkConclusion'
+      | 'actorId'
+      | 'actorAssociation'
+      | 'sourceTime'
+    >
   >;
 
 export class FollowUps {

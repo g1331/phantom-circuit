@@ -150,9 +150,9 @@ export async function checkWorkspace() {
         );
       }, actionSelector);
     assert.equal(
-      await sectionOrder('.task-collaborate'),
-      true,
-      'receipt, collaboration and owner follow reading order',
+      await page.locator('.task-receipt-details').count(),
+      0,
+      'work without a revision does not show an empty delivery receipt',
     );
     const ownerInput = page.locator('.owner-conversation textarea');
     await ownerInput.scrollIntoViewIfNeeded();

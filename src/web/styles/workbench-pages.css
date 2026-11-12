@@ -32,6 +32,13 @@
   font-weight: 550;
 }
 
+.contribution-row > p:not(.error-text) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .contribution-row .record-result {
   flex: none;
   font-size: 12px;
