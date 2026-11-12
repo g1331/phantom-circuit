@@ -1,0 +1,19 @@
+name: M2 isolated acceptance
+on:
+  pull_request:
+    branches: [acceptance/m2-owner-continuity]
+  push:
+    branches: ['phantom/**']
+permissions:
+  contents: read
+jobs:
+  validate:
+    name: m2-real-acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the scoped documentation
+        run: |
+          test -s docs/m2-acceptance.md
+          grep -q '^# ' docs/m2-acceptance.md
+          test -s README.md
