@@ -1741,7 +1741,7 @@ export class Engine {
           {
             name: 'record_domain_document',
             description:
-              'Persist an agreed glossary or ADR using upstream formats. This local design record does not edit a repository. Attach accepted document IDs to a later implementation ticket to publish through normal review.',
+              'Persist an agreed project document using the target repository’s existing paths and formats. This local design record does not edit a repository. Attach accepted document IDs to a later implementation ticket to publish through normal review.',
             inputSchema: jsonSchema(documentInput),
           },
           {
