@@ -56,7 +56,7 @@ export function Sidebar({
           <span className="control-label">{t('settings.title')}</span>
         </button>
         <div
-          className="connection"
+          className="connection sr-only"
           role="status"
           title={t(connected ? 'connection.ready' : 'connection.waiting')}
           aria-label={t(connected ? 'connection.ready' : 'connection.waiting')}
