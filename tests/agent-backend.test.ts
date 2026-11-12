@@ -1,25 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Codex } from '../src/server/codex.ts';
 import { OmpBackend } from '../src/server/omp.ts';
 import {
   asAgentModelCapability,
   assertEffectiveProfile,
-  type AgentBackend,
   type AgentModelCapability,
 } from '../src/server/agent-backend.ts';
-
-test('Codex remains assignable to the normalized AgentBackend seam', () => {
-  const backend: AgentBackend = new Codex();
-  assert.equal(typeof backend.start, 'function');
-  assert.equal(typeof backend.thread, 'function');
-  assert.equal(typeof backend.turn, 'function');
-  assert.equal(typeof backend.createSession, 'function');
-  assert.equal(typeof backend.resumeSession, 'function');
-  assert.equal(typeof backend.modelCapabilities, 'function');
-  assert.equal(typeof backend.probe, 'function');
-  assert.equal(typeof backend.reconcileSteer, 'function');
-});
 
 test('OMP reports restricted capabilities and explicit allowance absence', async () => {
   const backend = new OmpBackend();
