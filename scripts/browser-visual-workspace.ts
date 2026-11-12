@@ -22,15 +22,53 @@ export async function checkVisualWorkspace(
     await page.setViewportSize({ width, height: 900 });
     await choosePreference(page, 'theme', 'light');
     await visit({ page: 'home' });
+    await page.getByRole('button', { name: '全部', exact: true }).click();
     await page.locator(`[data-task-id="${taskId}"]`).waitFor();
     if (width === 1280) {
       const paths = page.locator('.canvas-connections > path');
       await paths.first().waitFor({ state: 'attached' });
       assert((await paths.count()) > 0);
+      const card = page.locator(`[data-task-id="${taskId}"]`);
+      const before = (await card.boundingBox())!;
+      const toolbar = await page.locator('.canvas-tools').boundingBox();
       await page.getByRole('button', { name: '缩小', exact: true }).click();
-      assert.equal(await page.locator('.canvas-tools output').innerText(), '90%');
+      const after = (await card.boundingBox())!;
+      assert(Math.abs(after.width / before.width - 1 / 1.2) < 0.01);
+      assert(Math.abs(after.height / before.height - 1 / 1.2) < 0.01);
+      assert.deepEqual(await page.locator('.canvas-tools').boundingBox(), toolbar);
+      const viewport = page.locator('.canvas-viewport');
+      const bounds = (await viewport.boundingBox())!;
+      const stage = page.locator('.canvas-stage');
+      const start = (await stage.boundingBox())!;
+      await page.mouse.move(bounds.x + 8, bounds.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(bounds.x + 108, bounds.y + 68, { steps: 5 });
+      await page.mouse.up();
+      const moved = (await stage.boundingBox())!;
+      assert(Math.abs(moved.x - start.x - 100) < 1);
+      assert(Math.abs(moved.y - start.y - 60) < 1);
+      const anchor = { x: bounds.x + 200, y: bounds.y + 180 };
+      await page.mouse.move(anchor.x, anchor.y);
+      await page.keyboard.down('Control');
+      await page.mouse.wheel(0, -80);
+      await page.keyboard.up('Control');
+      await page.waitForFunction(
+        (width) => document.querySelector('.canvas-stage')!.getBoundingClientRect().width > width,
+        moved.width,
+      );
+      const zoomed = (await stage.boundingBox())!;
+      const factor = zoomed.width / moved.width;
+      assert(Math.abs((anchor.x - zoomed.x) / factor - (anchor.x - moved.x)) < 1);
+      assert(Math.abs((anchor.y - zoomed.y) / factor - (anchor.y - moved.y)) < 1);
+      await page.getByRole('button', { name: '适配视图', exact: true }).click();
+      const fitted = (await stage.boundingBox())!;
+      assert(fitted.x >= bounds.x && fitted.x + fitted.width <= bounds.x + bounds.width + 1);
+      assert(fitted.y >= bounds.y && fitted.y + fitted.height <= bounds.y + bounds.height + 1);
       await page.getByRole('button', { name: '复位画布', exact: true }).click();
       assert.equal(await page.locator('.canvas-tools output').innerText(), '100%');
+      const reset = (await stage.boundingBox())!;
+      assert.equal(Math.round(reset.x - bounds.x), 32);
+      assert.equal(Math.round(reset.y - bounds.y), 32);
     }
     await page.locator(`[data-task-id="${taskId}"] .flow-work-title`).click();
     await page.locator('.workbench-inspector .task-detail').waitFor();
@@ -42,6 +80,7 @@ export async function checkVisualWorkspace(
     await page
       .locator('.record-row')
       .filter({ hasText: 'Issue #18 · Synthetic live source assessment' })
+      .filter({ hasText: '回复已送达' })
       .click();
     await page
       .locator('.record-detail')

@@ -395,7 +395,33 @@
 }
 
 .settings-scope {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
   margin-bottom: 24px;
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.settings-scope button {
+  min-height: var(--control-height);
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+.settings-scope button:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.settings-scope button[aria-pressed='true'] {
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  color: var(--text);
+  font-weight: 600;
 }
 
 .workspace-settings .settings-layout {
@@ -452,6 +478,14 @@
   grid-template-columns: minmax(0, 1.4fr) minmax(220px, 1fr);
   gap: 24px;
   margin: 24px 0;
+}
+
+.task-focus-summary.compact {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.task-focus-facts {
+  align-self: start;
 }
 
 .task-focus-timeline,

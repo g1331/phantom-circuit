@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChevronDown, MessageSquare, Plus, X } from 'lucide-react';
+import { ChevronDown, Plus, X } from 'lucide-react';
 import type { Project, Repo, SchedulingExplanation, Snapshot } from '../shared/types.ts';
 import { teamView, workGroup } from '../shared/team.ts';
 import { api, session, LocalRequestError, LocalUiError, HostRequestError } from './api.ts';
@@ -463,7 +463,6 @@ function App() {
           <WorkspaceHeader
             state={state}
             project={project}
-            route={route}
             waiting={waitingCount}
             moving={movingCount}
             query={workQuery}
@@ -815,18 +814,6 @@ function App() {
               className={`workspace-composer ${page === 'conversation' ? 'expanded' : 'compact'}`}
               hidden={!['home', 'input', 'conversation'].includes(page)}
             >
-              {page !== 'conversation' && (
-                <a
-                  className="workspace-chat-link"
-                  href={routeHref({
-                    page: 'conversation',
-                    projectId: project.id,
-                  })}
-                  aria-label={t('flow.openConversation')}
-                >
-                  <MessageSquare size={16} />
-                </a>
-              )}
               <PMComposer
                 key={project.id}
                 ref={composerRef}

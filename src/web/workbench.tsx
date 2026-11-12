@@ -1,5 +1,4 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { MessageSquare, Settings2 } from 'lucide-react';
 import type { Project, Snapshot } from '../shared/types.ts';
 import { teamView } from '../shared/team.ts';
 import { api } from './api.ts';
@@ -13,7 +12,7 @@ import { WorkbenchSources } from './workbench-sources.tsx';
 import { WorkbenchRecords } from './workbench-records.tsx';
 import { SourcePage } from './workbench-source-page.tsx';
 
-const filters = ['all', 'active', 'inputs', 'delivered'] as const;
+const filters = ['active', 'inputs', 'delivered', 'all'] as const;
 
 export function Workbench({
   state,
@@ -35,7 +34,7 @@ export function Workbench({
   const { t, host } = useLocale();
   const team = useMemo(() => teamView(state, project.id), [state, project.id]);
   const workflow = useWorkflow(project.id, state.events[0]?.id);
-  const [filter, setFilter] = useState<FlowFilter>('all');
+  const [filter, setFilter] = useState<FlowFilter>('active');
   const [receiving, setReceiving] = useState<string>();
   const [syncing, setSyncing] = useState<string>();
   const [actionError, setActionError] = useState('');
@@ -83,22 +82,6 @@ export function Workbench({
             </div>
             <div className="flow-header-actions">
               <a href={routeHref({ page: 'work', projectId: project.id })}>{t('brief.allWork')}</a>
-              <a
-                className="icon-button"
-                aria-label={t('flow.openConversation')}
-                href={routeHref({ page: 'conversation', projectId: project.id })}
-              >
-                <MessageSquare size={17} />
-              </a>
-              {repos.length > 0 && (
-                <button
-                  className="icon-button"
-                  aria-label={t('flow.settings')}
-                  onClick={() => setReceiving(repos[0].id)}
-                >
-                  <Settings2 size={17} />
-                </button>
-              )}
             </div>
           </header>
           {workflow.page && (

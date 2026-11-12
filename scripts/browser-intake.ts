@@ -69,7 +69,7 @@ export async function checkIntakeWorkbench(
       await page.setViewportSize({ width, height: 900 });
       await page.screenshot({ path: resolve(artifacts, `intake-empty-${width}.png`) });
     }
-    await page.getByRole('button', { name: '接收设置', exact: true }).click();
+    await page.locator('.flow-source-state > button').first().click();
     const settings = page.getByRole('dialog', { name: '接收设置', exact: true });
     await settings.getByLabel('接收明确指令的 Issue 请求').check();
     await settings.getByLabel('允许发起工作的 GitHub 用户').fill('human');
@@ -78,6 +78,7 @@ export async function checkIntakeWorkbench(
     await settings.waitFor({ state: 'hidden' });
     assert.equal(engine.intake.source(repo.id)?.enabled, true);
     await page.getByRole('button', { name: `同步来源 · ${repo.name}`, exact: true }).click();
+    await page.getByRole('button', { name: '全部', exact: true }).click();
     await page.getByRole('link', { name: observations[0].title, exact: true }).waitFor();
     const input = (number: number) => {
       const entry = engine.intake
@@ -119,6 +120,7 @@ export async function checkIntakeWorkbench(
     });
     store.updateMessage(accepted.id, { status: 'completed', draftStatus: 'completed' });
     await page.reload();
+    await page.getByRole('button', { name: '全部', exact: true }).click();
     await page.locator(`[data-task-id="${task.id}"]`).waitFor();
     assert.equal(await page.locator('.flow-work').count(), 1);
     assert.equal(await page.locator('.flow-input').count(), 4);
@@ -131,6 +133,8 @@ export async function checkIntakeWorkbench(
         await page.locator('.flow-page').evaluate((el) => {
           el.scrollTop = 0;
         });
+        if (width === 1280)
+          await page.getByRole('button', { name: '适配视图', exact: true }).click();
         await page.screenshot({ path: resolve(artifacts, `intake-${width}-${theme}.png`) });
         await page.getByRole('link', { name: observations[0].title, exact: true }).click();
         const detail = page.getByRole('dialog', { name: '输入详情', exact: true });
@@ -154,6 +158,7 @@ export async function checkIntakeWorkbench(
     await page.reload();
     await page.getByRole('button', { name: '恢复团队', exact: true }).click();
     await page.getByRole('button', { name: '暂停团队', exact: true }).waitFor();
+    await page.getByRole('button', { name: '全部', exact: true }).click();
     assert.equal(store.project(project.id).admissionPaused, false);
     github.readIntakeIssues = async () => {
       throw new Error('Synthetic source read failed');
