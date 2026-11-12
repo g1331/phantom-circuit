@@ -687,8 +687,10 @@ export async function checkRuntimeUI() {
     const timingValues = page.locator('.usage-panel .duration-stat dd');
     const openTiming = async () => {
       await page.reload();
-      await openTask(page, task.title);
-      await openSection(page, 'task.tab.process');
+      await page
+        .locator('.task-page')
+        .getByRole('heading', { level: 1, name: task.title, exact: true })
+        .waitFor();
       await page.locator('.usage-panel').scrollIntoViewIfNeeded();
       await timingValues.first().waitFor();
     };
@@ -697,6 +699,8 @@ export async function checkRuntimeUI() {
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
         snapshot.runs = [...completedRuns, timingRun];
+        await openTask(page, task.title);
+        await openSection(page, 'task.tab.process');
         await openTiming();
         await page
           .locator('.usage-panel dt')
