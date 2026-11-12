@@ -180,10 +180,10 @@ export type TaskCompletion =
       source: 'external';
       primary: RemoteMergeObservation;
       closing: RemoteMergeObservation;
-      issue: number;
-      closedAt: string;
+      issue?: number;
+      closedAt?: string;
       checkedAt: string;
-      relationship: {
+      relationship?: {
         primaryReferencesIssue: true;
         closingReferencesIssue: true;
         closureEventAt: string;
@@ -194,6 +194,15 @@ export type TaskCompletion =
       >;
     };
 export interface Task {
+  /** Frozen registration decision; absent legacy records retain Issue registration. */
+  issueRegistration?: {
+    mode: 'issue' | 'none';
+    basis: 'default' | 'source' | 'team' | 'imported';
+    quote?: string;
+    sourceMessageId: string;
+    teamInstructionsVersion?: number;
+    section?: 'repository' | 'engineering' | 'delivery';
+  };
   issueOrigin?: { kind: 'external'; inputId: string; assessmentId: string };
   retrospectiveChecked?: boolean;
   id: string;

@@ -23,6 +23,7 @@ export const schemas = {
     repoId: id,
     title: z.string().optional(),
     issue: z.number().int().positive().optional(),
+    issueRegistration: z.object({ mode: z.enum(['issue', 'none']) }).optional(),
     stage: id,
     sourceMessageId: id.optional(),
     createdAt: z.string().optional(),
@@ -160,14 +161,16 @@ const externalCompletion = z.object({
   source: z.literal('external'),
   primary: mergedRevision,
   closing: mergedRevision,
-  issue: z.number().int().positive(),
-  closedAt: z.iso.datetime({ offset: true }),
+  issue: z.number().int().positive().optional(),
+  closedAt: z.iso.datetime({ offset: true }).optional(),
   checkedAt: z.iso.datetime({ offset: true }),
-  relationship: z.object({
-    primaryReferencesIssue: z.literal(true),
-    closingReferencesIssue: z.literal(true),
-    closureEventAt: z.iso.datetime({ offset: true }),
-  }),
+  relationship: z
+    .object({
+      primaryReferencesIssue: z.literal(true),
+      closingReferencesIssue: z.literal(true),
+      closureEventAt: z.iso.datetime({ offset: true }),
+    })
+    .optional(),
 });
 
 export function mergeEvidence(
@@ -187,7 +190,13 @@ export function mergeEvidence(
       primary.repository !== repo.github ||
       closing.repository !== repo.github ||
       (task.pr ? primary.pr !== task.pr : primary.pr !== closing.pr) ||
-      issue !== task.issue
+      issue !== task.issue ||
+      (issue
+        ? !external.data.relationship || !external.data.closedAt
+        : task.issueRegistration?.mode !== 'none' ||
+          !task.pr ||
+          primary.pr !== closing.pr ||
+          !!external.data.relationship)
     )
       return { merged: false };
     return {

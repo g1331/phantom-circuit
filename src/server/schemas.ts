@@ -50,6 +50,21 @@ export const taskInput = creationPriorityInput
     dependencies: z.array(z.string()).max(100),
     kind: z.enum(['backend', 'frontend', 'fullstack']),
     complexity: z.enum(['normal', 'complex']),
+    registrationDecision: z
+      .object({
+        mode: z.enum(['issue', 'none']),
+        basis: z.enum(['source', 'team']),
+        quote: z.string().trim().min(1).max(4000),
+        section: z.enum(['repository', 'engineering', 'delivery']).optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'Decide registration from explicit user instructions or adopted repository agreements. ' +
+          'Use none when they explicitly prohibit creating Issues; quote the exact instruction. ' +
+          'For team basis supply its section. Otherwise omit to retain Issue registration. ' +
+          'An empty Issue list is not a policy. Existing source Issues remain bound independently.',
+      ),
     documentIds: z
       .array(z.string())
       .default([])

@@ -309,9 +309,13 @@ for (const route of ['backend', 'frontend', 'fullstack', 'complex'] as const)
 test('merged work with a user port interruption produces an adoptable instruction suggestion', () =>
   completeLifecycle('backend', true));
 
+test('Web work without Issue registration completes validation, review, merge and delivery', () =>
+  completeLifecycle('backend', false, true));
+
 async function completeLifecycle(
   route: 'backend' | 'frontend' | 'fullstack' | 'complex',
   retrospective = false,
+  withoutIssue = false,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-lifecycle-'));
   const source = join(root, 'source');
@@ -360,7 +364,12 @@ async function completeLifecycle(
     enabled: true,
     commands: { install: '', build: '', test: 'node verify.cjs', start: '', port: 3000 },
   });
-  const message = store.addMessage(p.id, 'user', 'Implement sum', 'implement');
+  const message = store.addMessage(
+    p.id,
+    'user',
+    'Implement sum. Do not create an Issue.',
+    'implement',
+  );
   const task = store.createTask({
     projectId: p.id,
     repoId: repo.id,
@@ -372,6 +381,15 @@ async function completeLifecycle(
     kind: route === 'complex' ? 'backend' : route,
     complexity: route === 'complex' ? 'complex' : 'normal',
     priority: 0,
+    ...(withoutIssue
+      ? {
+          registrationDecision: {
+            mode: 'none' as const,
+            basis: 'source' as const,
+            quote: 'Do not create an Issue.',
+          },
+        }
+      : {}),
   });
   store.updateMessage(message.id, { status: 'completed', draftStatus: 'completed' });
   let issue = { number: 1, body: '', state: 'open' };
@@ -415,7 +433,7 @@ async function completeLifecycle(
     }
     override async merge(t: Task) {
       assert.equal(mergeReady(t), true);
-      assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
+      if (!withoutIssue) assert.match(issue.body, /- \[ \] 2 \+ 3 = 5/);
       if (retrospective) {
         const message = store.addMessage(
           p.id,
@@ -439,6 +457,7 @@ async function completeLifecycle(
     }
     override async syncStatus() {}
     override async api<T = any>(endpoint: string, method = 'GET', data?: any): Promise<T> {
+      assert.equal(withoutIssue, false, `Unexpected Issue request: ${method} ${endpoint}`);
       if (endpoint.endsWith('/issues') && method === 'POST') issue = { ...issue, ...data };
       if (method === 'PATCH') {
         assert.equal(merged, true);
@@ -582,9 +601,21 @@ async function completeLifecycle(
       'done',
       JSON.stringify({ task: result, events: store.events().slice(0, 5) }),
     );
-    assert.match(issue.body, /- \[x\] 2 \+ 3 = 5/);
-    assert.equal(issue.state, 'closed');
-    assert.equal(result.issueBody, issue.body);
+    if (withoutIssue) {
+      assert.equal(result.issue, undefined);
+      assert.equal(result.issueRegistration?.mode, 'none');
+      assert.equal(result.completion?.source, 'host');
+      await engine.sync();
+      await engine.sync();
+      assert.equal(
+        store.list('message').filter((m) => m.descriptor?.code === 'delivery_completed').length,
+        1,
+      );
+    } else {
+      assert.match(issue.body, /- \[x\] 2 \+ 3 = 5/);
+      assert.equal(issue.state, 'closed');
+      assert.equal(result.issueBody, issue.body);
+    }
     assert.equal(devTurns, route === 'complex' ? 2 : 1);
     assert.ok(['dev', 'review'].every((role) => observed.includes(role)));
     if (retrospective) {
