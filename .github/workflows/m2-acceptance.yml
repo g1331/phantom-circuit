@@ -17,3 +17,9 @@ jobs:
           test -s docs/m2-acceptance.md
           grep -q '^# ' docs/m2-acceptance.md
           test -s README.md
+          if test -f docs/m2-ci-acceptance.md; then
+            grep -Fq 'CI follow-ups resume the same owner session.' docs/m2-ci-acceptance.md || {
+              echo 'CI validation failed: add the exact sentence "CI follow-ups resume the same owner session." to docs/m2-ci-acceptance.md.'
+              exit 1
+            }
+          fi
