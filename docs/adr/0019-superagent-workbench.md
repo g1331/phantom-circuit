@@ -55,6 +55,14 @@ Phantom Circuit retains these deliberate differences:
 
 ## Evolve the existing execution lifecycle
 
+Issue registration is optional under explicit adopted repository agreements (ADR 0016).
+Web work retains its source, local Task, owner and registration evidence through delivery
+without publishing an Issue. Workbench source, progress, PR and receipt views use those retained
+records. Existing Issue reception and original-discussion replies remain governed by their own
+admission and reply policies, even where new registration Issues are disabled. The common
+Task creation boundary retains authorization and deduplication for each supported entry point;
+this change introduces no proactive intake or separate scheduler.
+
 Extend Task, Run, native owner-session bindings, recovery, and the Operation ledger. Do not create
 another work scheduler or migrate live Tasks into a parallel Ticket lifecycle. A separate kernel
 would duplicate ownership of execution and recovery before delivering the requested experience.

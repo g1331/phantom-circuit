@@ -22,7 +22,13 @@ import type {
   ReviewResult,
   RemoteMergeObservation,
 } from '../shared/types.ts';
-import { expectedTaskBranch, pullRequestBody, pullRequestTitle } from './task-naming.ts';
+import {
+  expectedTaskBranch,
+  pullRequestBody,
+  pullRequestTitle,
+  pullRequestRequirements,
+} from './task-naming.ts';
+import { issueFree } from '../shared/task-history.ts';
 
 /** The identity fields reconciliation needs; GitHub returns them on every PR resource. */
 interface PullRef {
@@ -589,6 +595,7 @@ export class GitHub {
     }
   }
   async publishIssue(task: Task): Promise<any> {
+    if (this.skipIssue(task)) return;
     if (task.issueOrigin) {
       this.store.assertTaskExecutable(task.id);
       return this.readImportedIssue(task);
@@ -652,6 +659,7 @@ export class GitHub {
     });
     for (const key of task.dependencies) {
       const dep = this.store.task(key);
+      if (issueFree(dep)) continue;
       const endpoint = `repos/${repo.github}/issues/${issue.number}/dependencies/blocked_by`;
       await this.operation(
         `dependency:${task.id}:${key}`,
@@ -1084,9 +1092,64 @@ export class GitHub {
       prUrl: result.html_url,
       prState: pullDisplayState(result),
     });
+    if (issueFree(task)) await this.syncPullRequirements(this.store.task(task.id));
     return result;
   }
+  private async syncPullRequirements(task: Task) {
+    const repo = this.store.repo(task.repoId);
+    const desired = pullRequestRequirements(task);
+    const begin = `<!-- phantom-requirements:${task.id} -->`;
+    const end = `<!-- /phantom-requirements:${task.id} -->`;
+    const digest = createHash('sha256').update(desired).digest('hex');
+    const key = `pr-requirements:${task.id}:${task.pr}:${digest}`;
+    const read = async () => {
+      const pr = await this.pull(task);
+      this.store.assertTaskExecutable(task.id);
+      if (
+        pr.number !== task.pr ||
+        pr.head.sha !== task.head ||
+        pr.head.ref !== task.branch ||
+        pr.head.repo?.full_name !== repo.github ||
+        pr.base.ref !== repo.defaultBranch ||
+        pr.base.repo?.full_name !== repo.github ||
+        pr.state !== 'open' ||
+        isMerged(pr) ||
+        !pr.body.includes(`<!-- phantom-task:${task.id} -->`) ||
+        pullRequestRequirements(this.store.task(task.id)) !== desired
+      )
+        throw new Fault('PR 需求同步的关联或任务内容已变化，需要重新核对', 409);
+      const start = pr.body.indexOf(begin);
+      const stop = pr.body.indexOf(end, start + begin.length);
+      if (start < 0 || stop < 0 || pr.body.indexOf(begin, start + begin.length) >= 0)
+        throw new Fault('PR 缺少唯一的宿主需求区段，需要核对正文', 409);
+      return { pr, body: pr.body.slice(0, start) + desired + pr.body.slice(stop + end.length) };
+    };
+    const initial = await read();
+    const operation = this.store.get('operation', key);
+    if (initial.pr.body === initial.body && (!operation || operation.status === 'done')) return;
+    if (operation?.status === 'done')
+      throw new Fault('PR 已同步的需求区段发生变化，需要核对正文', 409);
+    await this.operation(
+      key,
+      'sync-pr-requirements',
+      async () => {
+        const observed = await read();
+        return observed.pr.body === observed.body ? observed.pr : undefined;
+      },
+      async () => {
+        const observed = await read();
+        this.authorize(this.store.repo(task.repoId));
+        const result: PullState = await this.api(`repos/${repo.github}/pulls/${task.pr}`, 'PATCH', {
+          body: observed.body,
+        });
+        if (result.number !== task.pr || result.body !== observed.body)
+          throw new Fault('GitHub 尚未确认 PR 需求正文更新', 409);
+        return result;
+      },
+    );
+  }
   async reviseIssue(task: Task) {
+    if (this.skipIssue(task)) return;
     if (task.issueOrigin) {
       this.store.assertTaskExecutable(task.id);
       return this.readImportedIssue(task);
@@ -1140,6 +1203,7 @@ export class GitHub {
     return issue;
   }
   async completeIssue(task: Task) {
+    if (this.skipIssue(task)) return;
     if (task.issueOrigin) {
       const authority = this.store.sourceAuthority(
         task.sourceMessageId,
@@ -1451,6 +1515,20 @@ export class GitHub {
   async externalCompletionEvidence(task: Task, issue: unknown) {
     const repo = this.store.repo(task.repoId);
     let primary = task.pr ? this.store.task(task.id).remoteMerge : undefined;
+    if (this.skipIssue(task)) {
+      if (
+        !repo.authorized ||
+        !task.pr ||
+        !primary ||
+        task.prReadFailure ||
+        primary.pr !== task.pr ||
+        primary.repoId !== repo.id ||
+        primary.repository !== repo.github ||
+        primary.baseRef !== repo.defaultBranch
+      )
+        throw new Fault('远端交付缺少完整关联 PR 合并证据', 409);
+      return { primary, closing: primary, checkedAt: now() };
+    }
     const closed = z
       .object({
         state: z.literal('closed'),
@@ -1547,6 +1625,13 @@ export class GitHub {
         closureEventAt: z.iso.datetime({ offset: true }).parse(last.createdAt),
       },
     };
+  }
+  private skipIssue(task: Task) {
+    if (!issueFree(task)) return false;
+    // A retained publication attempt must be reconciled even if a policy record was changed.
+    if (this.store.get('operation', `issue:${task.id}`))
+      throw new Fault('已有 Issue 登记操作需要核对，保留原登记流程', 409);
+    return true;
   }
   async reviewComment(task: Task, review: ReviewResult) {
     this.store.assertTaskExecutable(task.id);

@@ -1,5 +1,8 @@
 import type { Evidence, Incident, Task } from './types.ts';
 
+export const issueFree = (task: Task) =>
+  task.issueRegistration?.mode === 'none' && !task.issue && !task.issueOrigin;
+
 export function latestPerCommand(tests: Evidence[], head?: string) {
   const at = head ? tests.filter((evidence) => evidence.head === head) : tests;
   const byCommand = new Map<string, Evidence>();
@@ -57,13 +60,14 @@ export function externalDeliveryNotice(task: Task) {
     throw new Error('External completion evidence required');
   const { primary, closing, issue } = task.completion;
   const content =
-    `「${task.title}」已按远端交付结案（PR #${primary.pr}；` +
-    `Issue #${issue} 由 PR #${closing.pr} 关闭）。本机验证与评审保留原记录。`;
+    `「${task.title}」已按远端交付结案（PR #${primary.pr}` +
+    (issue ? `；Issue #${issue} 由 PR #${closing.pr} 关闭` : '') +
+    '）。本机验证与评审保留原记录。';
   return {
     content,
     descriptor: {
-      code: 'delivery_external_completed',
-      params: { title: task.title, pr: primary.pr, closingPR: closing.pr, issue },
+      code: issue ? 'delivery_external_completed' : 'delivery_external_without_issue',
+      params: { title: task.title, pr: primary.pr, closingPR: closing.pr, issue: issue ?? null },
       detail: content,
     },
   };

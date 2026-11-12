@@ -10,6 +10,7 @@ import {
   clarificationInput,
   reviewSchema,
   creationPriorityInput,
+  taskInput,
   incidentInput,
   priorityUpdateInput,
   profileSetSchema,
@@ -20,6 +21,7 @@ import {
   externalDeliveryHoldReason,
   externalDevelopmentHeld,
   externalDeliveryNotice,
+  issueFree,
   taskAttention,
 } from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
@@ -2008,6 +2010,12 @@ export class Store {
       Partial<Pick<Task, 'changeType' | 'scope' | 'summaryEn' | 'cleanup'>> & {
         priority: number | PriorityLevel;
         priorityReason?: string;
+        registrationDecision?: {
+          mode: 'issue' | 'none';
+          basis: 'source' | 'team';
+          quote: string;
+          section?: 'repository' | 'engineering' | 'delivery';
+        };
       },
     prioritySource?: Pick<PriorityChange, 'actor' | 'runId'>,
   ) {
@@ -2061,6 +2069,22 @@ export class Store {
         t.title.trim().toLowerCase() === input.title.trim().toLowerCase(),
     );
     if (existing) return existing;
+    const registration = taskInput.shape.registrationDecision.parse(input.registrationDecision);
+    const instructions = prioritySource?.runId
+      ? this.runTeamInstructions(this.get('run', prioritySource.runId)!)
+      : this.currentTeamInstructions(input.projectId);
+    if (registration && !authority.external) {
+      const text =
+        registration.basis === 'source'
+          ? source.role === 'user' && !source.origin
+            ? source.content
+            : ''
+          : registration.section
+            ? instructions.sections[registration.section]
+            : '';
+      if (!text.includes(registration.quote))
+        throw new Fault('Issue 登记决定必须引用当前请求或已采用团队说明的原文', 409);
+    }
     if (authority.external) {
       const prior = this.list('task').find((task) => task.sourceMessageId === source.id);
       if (prior) {
@@ -2096,8 +2120,18 @@ export class Store {
       if (this.task(dep).projectId !== input.projectId) throw new Fault('依赖必须属于当前项目');
     }
     const profile: ProfileName = input.complexity === 'complex' ? 'complex' : input.kind;
+    const { registrationDecision: _decision, ...taskData } = input;
     const task: Task = {
-      ...input,
+      ...taskData,
+      issueRegistration: {
+        ...(authority.external
+          ? { mode: 'issue' as const, basis: 'imported' as const }
+          : (registration ?? { mode: 'issue' as const, basis: 'default' as const })),
+        sourceMessageId: source.id,
+        ...(registration?.basis === 'team'
+          ? { teamInstructionsVersion: instructions.version }
+          : {}),
+      },
       ...(authority.external
         ? {
             issueOrigin: {
@@ -2911,7 +2945,16 @@ export class Store {
         !repo.authorized ||
         (task.pr ? task.pr !== evidence.primary.pr : evidence.primary.pr !== evidence.closing.pr) ||
         task.issue !== evidence.issue ||
-        task.issueState !== 'completed' ||
+        (issueFree(task)
+          ? !task.pr ||
+            !!evidence.issue ||
+            !!evidence.relationship ||
+            evidence.closing.pr !== evidence.primary.pr ||
+            !!this.get('operation', `issue:${task.id}`)
+          : task.issueState !== 'completed' ||
+            !evidence.issue ||
+            !evidence.relationship ||
+            !evidence.closedAt) ||
         (!!task.pr && task.prState !== 'merged') ||
         task.prReadFailure ||
         evidence.primary.repoId !== repo.id ||

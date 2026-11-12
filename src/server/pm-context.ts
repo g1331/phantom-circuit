@@ -47,6 +47,7 @@ function taskSummary(task: Task) {
     sourceMessageId: task.sourceMessageId,
     ...(finished(task) ? {} : { spec: clip(task.spec, FIELD_CHARS), acceptance: task.acceptance }),
     ...(task.issue ? { issue: task.issue } : {}),
+    issueRegistration: task.issueRegistration,
     ...(task.pr ? { pr: task.pr } : {}),
     ...(task.retries ? { retries: task.retries } : {}),
     ...(task.pendingFeedback?.length ? { pendingFeedback: task.pendingFeedback.length } : {}),

@@ -16,6 +16,25 @@ npm start
 
 Open **http://127.0.0.1:4317**. Create a project, connect a repository and explicitly grant its engineering permissions. Repositories start with new task claims disabled. Ask the PM to inspect project scripts and configure install/build/test/start commands before opening work. `聊一聊` never authorizes tasks; `交给 PM 做` and `体验反馈` do. No sample data is inserted into the real workspace.
 
+### Delivering work without creating Issues
+
+In the existing project **Team instructions**, adopt an explicit agreement in the relevant
+repository block, for example: `For owner/repository, do not create Issues; deliver requested
+work through pull requests.` You can also explicitly request no Issue registration in your Web
+implementation request. The coordinator records the choice and its quoted basis for each new
+Task. Repositories without an explicit agreement keep the existing Issue registration behavior.
+
+Submit requirements from the Web as usual. The workbench retains the request, owner, progress,
+verification, independent review, PR and delivery result. The PR includes the requirements and
+acceptance criteria. Restarting or revising work preserves its registration choice and user
+pauses. Later agreement changes leave existing work and linked Issues intact; uncertain earlier
+Issue writes still require the existing reconciliation process. External completion of no-Issue
+work requires its linked merged PR and verified remote revision.
+
+Issue receiving is configured separately: opting out of new registration still permits explicitly
+enabled requests from existing Issues, retaining the original discussion and result replies.
+This repository continues using its current Issue registration convention.
+
 ### GitHub Issue receiving
 
 Open a project and choose **Workbench** in the project navigation. Open **Receiving settings** from the header settings button or the repository's source row, then select the repository. Issue receiving starts disabled. Repository engineering authorization is granted separately when connecting the repository; it does not enable receiving or select who may request work.

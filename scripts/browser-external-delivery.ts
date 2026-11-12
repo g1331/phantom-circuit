@@ -28,8 +28,13 @@ function syntheticExternalFixtures(store: Store) {
     defaultBranch: 'main',
     authorized: true,
   });
-  const source = store.addMessage(project.id, 'user', 'Synthetic delivery request', 'implement');
-  const task = (title: string) =>
+  const source = store.addMessage(
+    project.id,
+    'user',
+    'Synthetic delivery request. No new Issues.',
+    'implement',
+  );
+  const task = (title: string, withoutIssue = false) =>
     store.createTask({
       projectId: project.id,
       repoId: repo.id,
@@ -41,6 +46,15 @@ function syntheticExternalFixtures(store: Store) {
       kind: 'frontend',
       complexity: 'normal',
       priority: 0,
+      ...(withoutIssue
+        ? {
+            registrationDecision: {
+              mode: 'none' as const,
+              basis: 'source' as const,
+              quote: 'No new Issues.',
+            },
+          }
+        : {}),
     });
   const oldHead = 'a'.repeat(40);
   const remoteHead = 'b'.repeat(40);
@@ -116,6 +130,17 @@ function syntheticExternalFixtures(store: Store) {
   const issueOnly = prepare(task('Synthetic issue-only external delivery'), undefined);
   store.completeExternalTask(issueOnly.id, evidence(82));
   assert.equal(store.task(issueOnly.id).pr, undefined);
+  const withoutIssue = prepare(task('Synthetic Web delivery without an Issue', true), 83);
+  store.updateTask(withoutIssue.id, {
+    issue: undefined,
+    issueUrl: undefined,
+    issueState: undefined,
+  });
+  store.completeExternalTask(withoutIssue.id, {
+    primary: observation(83),
+    closing: observation(83),
+    checkedAt: at,
+  });
   const unknown = prepare(task('Synthetic unknown delivery relationship'), 81);
   store.updateTask(unknown.id, {
     externalCompletionPendingReason: 'Synthetic relationship read unavailable',
@@ -138,7 +163,18 @@ function syntheticExternalFixtures(store: Store) {
     message: 'Synthetic new incident after external delivery',
   });
   store.updateIncident(freshIncident.id, { status: 'waiting_user' });
-  return { project, done, issueOnly, unknown, issueUnknown, later, repo, oldHead, remoteHead };
+  return {
+    project,
+    done,
+    issueOnly,
+    withoutIssue,
+    unknown,
+    issueUnknown,
+    later,
+    repo,
+    oldHead,
+    remoteHead,
+  };
 }
 
 async function expandReceipt(page: Page) {
@@ -236,7 +272,7 @@ export async function checkExternalDelivery(
             });
           };
           await openPage(page, 'work');
-          for (const item of [fixtures.done, fixtures.issueOnly]) {
+          for (const item of [fixtures.done, fixtures.issueOnly, fixtures.withoutIssue]) {
             const row = page.locator('.work-row').filter({ hasText: item.title });
             assert.match((await row.getAttribute('class')) ?? '', /group-delivered/);
           }
@@ -244,6 +280,7 @@ export async function checkExternalDelivery(
           for (const [item, pr] of [
             [fixtures.done, 81],
             [fixtures.issueOnly, 82],
+            [fixtures.withoutIssue, 83],
           ] as const) {
             await openTask(page, item.title);
             const taskPage = page.locator('.task-page');
@@ -268,6 +305,10 @@ export async function checkExternalDelivery(
             if (!(await controls.evaluate((element) => element.hasAttribute('open'))))
               await controls.locator(':scope > summary').click();
             await controls.locator(`a[href="${prUrl}"]`).waitFor();
+            if (pr === 83) {
+              assert.equal(await taskPage.locator('a[href*="/issues/"]').count(), 0);
+              assert.doesNotMatch(await taskPage.innerText(), /#undefined|Issue #/);
+            }
             assert.equal(
               await taskPage
                 .getByRole('button', {
@@ -285,7 +326,7 @@ export async function checkExternalDelivery(
               0,
               'superseded history creates no current incident or recovery badge',
             );
-            await capture(pr === 81 ? 'done' : 'issue-only');
+            await capture(pr === 81 ? 'done' : pr === 82 ? 'issue-only' : 'without-issue');
           }
           await openTask(page, fixtures.unknown.title);
           const status = page.locator('.task-status');

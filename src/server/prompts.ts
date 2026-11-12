@@ -71,6 +71,7 @@ export function taskPrompt(task: Task) {
       dependencies: task.dependencies,
       feedback: task.feedback,
       issue: task.issueUrl,
+      issueRegistration: task.issueRegistration,
       branch: task.branch,
       documentChanges: task.documentChanges,
     },

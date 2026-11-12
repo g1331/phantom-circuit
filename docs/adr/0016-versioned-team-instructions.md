@@ -2,6 +2,19 @@
 
 Accepted. This supersedes only the part of ADR 0013 step 3 about how the team remembers repository conventions and working agreements. Repository learning and delivery-policy changes remain separate work. Each Project has three text sections: repository conventions, engineering practices and delivery requirements. The Project page contains their current text, editor, history and comparison using the existing disclosure rows; there is no new page or navigation item.
 
+Issue registration now follows explicit adopted agreements through this same entry. Coordination
+interprets the relevant repository block and the other adopted sections, or the user's explicit
+request, when creating a Task. It supplies the registration choice and an exact supporting quote;
+the host checks the quote against the original user request or the Run's pinned instruction
+version and saves that provenance on the Task. Unspecified policy keeps Issue registration.
+An empty remote Issue list supplies no policy evidence. This uses the existing coordination
+judgment rather than a language-dependent keyword parser or another settings switch.
+
+The decision is fixed for that Task. Later agreement edits and restores affect future planning;
+they neither remove linked Issues nor backfill Issues for existing local-only work. Imported
+Issue requests keep their original association independently of the new-registration decision.
+Receiving policies, repository authorization, ownership and merge gates retain their own authority.
+
 A save appends an immutable, project-local numbered version with its full text, user/team source, optional originating Task and timestamp. Restoring copies an old version into a new version with a restore reference; it never rewrites history. Concurrent edits supply the version they started from and are rejected if it has changed. There are no editable historical records or deletion endpoints. Each Run pins the current version when created, before any asynchronous preparation. Version 0 means empty text; legacy Runs without a version stay explicitly unrecorded, rather than being attributed to today's text. Versions survive restarts and remain readable with the Run. Read-only owner conversations also pin their own current version and keep their existing read-only tools.
 
 Role instructions precede the team text, followed by the Task and turn input. The host explicitly states before the text that permissions, tools, onboarding authorization and reviews at pinned revisions are authoritative. Saving instructions does not modify any of those policies or the tools made available. Resumed sessions receive the version pinned for the new Run. This is working context, not an authorization source or a security sandbox. ADR 0002 removes the former default skill catalog while preserving these explicitly adopted project instructions.
