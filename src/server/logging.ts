@@ -36,6 +36,7 @@ export function startupOptions() {
       'pretty-logs': { type: 'boolean', default: false },
       'log-level': { type: 'string' },
       'data-dir': { type: 'string' },
+      'dev-frontend': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -50,6 +51,7 @@ export function startupOptions() {
     throw new Error('Invalid log level. Choose trace, debug, info, warn, error, fatal or silent.');
   return {
     dataDir: values['data-dir'],
+    devFrontend: values['dev-frontend'],
     logger: {
       level,
       ...(values['pretty-logs']

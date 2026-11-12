@@ -40,7 +40,7 @@ After `npm ci`, start the backend and the frontend dev server together:
 npm run dev
 ```
 
-The backend defaults to **http://127.0.0.1:4317**, prints readable timestamped logs and restarts when backend source files change. Ctrl+C stops both. `npm run dev:server` and `npm run dev:web` start either side alone.
+The backend defaults to **http://127.0.0.1:4317**, prints readable timestamped logs and restarts when backend source files change. In development, web requests to the backend temporarily redirect to **http://127.0.0.1:5173**; API requests stay on the backend. Ctrl+C stops both. `npm run dev:server` and `npm run dev:web` start either side alone; the watched backend expects Vite for the UI. `npm start` serves the last `npm run build` output on the backend port without Vite.
 
 Open **http://127.0.0.1:5173** for frontend hot updates. Vite proxies API requests to the backend port in the selected data directory's `config.json` (4317 by default). Development stops if its backend port or frontend port 5173 is occupied. Browser developer tools (F12) show frontend console messages and network requests. `npm run build` is needed to update the frontend served directly by the backend; Vite development uses source files.
 

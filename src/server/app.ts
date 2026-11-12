@@ -139,7 +139,10 @@ export function createApp(
   port = 4317,
   createCodex: () => Codex = () => new Codex(),
   createOmp: () => AgentBackend = () => new OmpBackend(),
-  options: { logger?: import('fastify').FastifyServerOptions['logger'] } = {},
+  options: {
+    logger?: import('fastify').FastifyServerOptions['logger'];
+    devFrontend?: boolean;
+  } = {},
 ) {
   const providers = new Providers(store, createCodex);
   const agents = new AgentRuntime(store, providers, {
@@ -862,7 +865,16 @@ export function createApp(
       .catch((e) => store.event('preview', String(e), { projectId: store.repo(id).projectId }));
     return { starting: true };
   });
-  if (existsSync(runtimePath('dist', 'index.html'))) {
+  if (options.devFrontend) {
+    app.get('/*', async (req, reply) => {
+      const path = req.url.split('?')[0];
+      if (path === '/api' || path.startsWith('/api/'))
+        return reply.code(404).send({ error: '接口不存在' });
+      return reply
+        .header('Cache-Control', 'no-store')
+        .redirect(`http://127.0.0.1:5173${req.url}`, 307);
+    });
+  } else if (existsSync(runtimePath('dist', 'index.html'))) {
     void app.register(fastifyStatic, { root: runtimePath('dist'), prefix: '/' });
     app.setNotFoundHandler((req, reply) =>
       req.url.startsWith('/api/')

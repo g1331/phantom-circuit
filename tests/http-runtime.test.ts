@@ -58,7 +58,7 @@ class RuntimeCodex extends Codex {
 
 async function fixture(
   t: { after: (fn: () => Promise<void>) => void },
-  options: { defaultAgent?: AgentKind } = {},
+  options: { defaultAgent?: AgentKind; devFrontend?: boolean } = {},
 ) {
   await mkdir(join('.phantom', 'test'), { recursive: true });
   const root = await mkdtemp(join('.phantom', 'test', 'http-runtime-'));
@@ -76,6 +76,8 @@ async function fixture(
     new Previews(store, workspaces),
     4317,
     () => new RuntimeCodex(),
+    undefined,
+    { devFrontend: options.devFrontend },
   );
   t.after(async () => {
     await app.close();
@@ -103,6 +105,20 @@ async function fixture(
     });
   return { app, store, request };
 }
+
+test('only development web requests redirect to Vite; the API stays available', async (t) => {
+  const dev = await fixture(t, { devFrontend: true });
+  const root = { url: '/', headers: { host: '127.0.0.1:4317' } };
+  const redirect = await dev.app.inject(root);
+  assert.equal(redirect.statusCode, 307);
+  assert.equal(redirect.headers.location, 'http://127.0.0.1:5173/');
+  assert.equal(redirect.headers['cache-control'], 'no-store');
+  assert.equal((await dev.request('GET', '/state')).statusCode, 200);
+  const standalone = await fixture(t);
+  const response = await standalone.app.inject(root);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers.location, undefined);
+});
 
 test('HTTP request parsing failures retain their client error status', async (t) => {
   const { store, request } = await fixture(t);
