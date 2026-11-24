@@ -122,6 +122,130 @@ test('task timing counts live execution once and freezes stopped records', async
   assert.equal((await timing()).active, false, 'cancellation also freezes the elapsed clock');
 });
 
+test('task timing preserves paused waiting time when cancelled or finished after waiting', async (t) => {
+  const start = Date.parse('2026-11-12T01:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const store = new Store(':memory:');
+  const ws = new Workspaces('/test', store);
+  const app = createApp(
+    store,
+    new Engine(store, new GitHub(store), ws, '/test'),
+    new Previews(store, ws),
+  );
+  t.after(async () => {
+    await app.close();
+    store.close();
+  });
+  const project = store.createProject('Timing Pause', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'timing-pause',
+    path: '/test',
+    github: 'example/timing-pause',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const sourceMessageId = store.addMessage(project.id, 'user', 'Timing Pause', 'implement').id;
+  const cancelledTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Cancel after wait',
+    spec: 'Cancel after wait',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+  const headers = {
+    host: '127.0.0.1:4317',
+    cookie: String(init.headers['set-cookie']).split(';')[0],
+  };
+  const readTiming = async (taskId: string) => {
+    const response = await app.inject({ url: `/api/tasks/${taskId}/usage`, headers });
+    assert.equal(response.statusCode, 200);
+    return response.json();
+  };
+
+  const run1 = store.run('dev', project.id, 'frontend', cancelledTask);
+  t.mock.timers.setTime(start + 10_000);
+  store.finishRun(run1.id, 'paused');
+  store.control(cancelledTask.id, 'pause');
+  t.mock.timers.setTime(start + 70_000);
+  const beforeCancel = await readTiming(cancelledTask.id);
+  assert.equal(beforeCancel.durationMs, 10_000);
+  assert.equal(beforeCancel.elapsedMs, 70_000);
+  assert.equal(beforeCancel.active, true);
+
+  store.control(cancelledTask.id, 'cancel');
+  assert.equal(store.task(cancelledTask.id).endedAt, new Date(start + 70_000).toISOString());
+  const atCancel = await readTiming(cancelledTask.id);
+  assert.equal(atCancel.durationMs, 10_000);
+  assert.equal(atCancel.elapsedMs, 70_000);
+  assert.equal(atCancel.active, false);
+
+  t.mock.timers.setTime(start + 130_000);
+  store.updateTask(cancelledTask.id, { blocked: undefined });
+  assert.equal(store.task(cancelledTask.id).endedAt, new Date(start + 70_000).toISOString());
+  const afterMetadata = await readTiming(cancelledTask.id);
+  assert.equal(afterMetadata.durationMs, 10_000);
+  assert.equal(afterMetadata.elapsedMs, 70_000);
+  assert.equal(afterMetadata.active, false);
+
+  const doneTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Done after wait',
+    spec: 'Done after wait',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const run2 = store.run('dev', project.id, 'frontend', doneTask);
+  t.mock.timers.setTime(start + 140_000);
+  store.finishRun(run2.id, 'paused');
+  store.control(doneTask.id, 'pause');
+  t.mock.timers.setTime(start + 200_000);
+  store.updateTask(doneTask.id, { stage: 'done' });
+  t.mock.timers.setTime(start + 260_000);
+  const doneTiming = await readTiming(doneTask.id);
+  assert.equal(doneTiming.durationMs, 10_000);
+  assert.equal(doneTiming.elapsedMs, 70_000);
+  assert.equal(doneTiming.active, false);
+
+  const legacyTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Legacy done',
+    spec: 'Legacy done',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  store.put('run', 'legacy-run', {
+    ...run2,
+    id: 'legacy-run',
+    taskId: legacyTask.id,
+    startedAt: new Date(start).toISOString(),
+    endedAt: new Date(start + 25_000).toISOString(),
+    durationMs: 25_000,
+    status: 'completed',
+  });
+  store.put('task', legacyTask.id, { ...store.task(legacyTask.id), stage: 'done' });
+  const legacyTiming = await readTiming(legacyTask.id);
+  assert.equal(legacyTiming.durationMs, 25_000);
+  assert.equal(legacyTiming.elapsedMs, 25_000);
+  assert.equal(legacyTiming.active, false);
+});
+
 test('state retains original historical evidence while scheduling excludes only settled known gaps', async () => {
   const store = new Store(':memory:');
   const ws = new Workspaces('/test', store);
