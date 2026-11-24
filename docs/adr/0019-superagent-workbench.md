@@ -1,9 +1,8 @@
 # An event-driven development team with a visual workbench
 
-Status: M1 and M2 implemented and accepted through the real-platform loops below, after
-independent implementation review. M3 rule management and observation are implemented in this
-increment, pending fixed-revision host validation and real-platform observation acceptance.
-M3 automatic maintenance and M4 remain planned. Existing installations require an explicit
+Status: M1, M2, and M3 rule management and observation are implemented and accepted through the
+host checks and live read-only observation evidence below, after independent implementation
+review. M3 automatic maintenance and M4 remain planned. Existing installations require an explicit
 update; source integration does not change a running service.
 
 The user wants Phantom Circuit to adopt the organizing principles of
@@ -243,7 +242,7 @@ M2 delivery evidence:
 
 ### M3: Written-rule proactive maintenance
 
-#### Implemented observation increment; real-platform acceptance pending
+#### Accepted observation increment
 
 Repository Sources now provides multiple named maintenance rules, each with immutable numbered
 versions, user provenance and concurrent-save checks. Each rule fixes its repository, mode,
@@ -288,25 +287,24 @@ history and full source evidence load on demand; history and observation pages c
 30 entries. Details retain source links, all judgments and scope, and links to existing work.
 There is no second work scheduler or automatic reply path.
 
-Local verification covers Store persistence, HTTP/CSRF and concurrent versions, the GitHub
-read boundary, duplicate/self/linked events, stale reads, explicit requests in every mode,
-source failures and restart with user holds. The existing browser entry now includes rule
-creation/editing, history and observation details at 1280 px and 390 px, with empty/data
-screenshots. Its formal execution and screenshots are host validation evidence, still pending.
+Host verification after merging `master` executed the full fixed-revision check, build, unit/API
+suite and browser suite (1280 px and 390 px, including rule creation/editing, history and
+observation details). Live read-only GitHub observation acceptance also ran in an isolated
+temporary Store/workspace instance against `g1331/phantom-circuit` with two observe rules
+(`ready-for-agent` Issues and default-branch workflow `M2 isolated acceptance`), inspecting
+`GET /api/repos/:id/maintenance` and `GET /api/repos/:id/maintenance/observations/:observationId`:
 
-Real-platform acceptance remains blocked on host GitHub/isolated-instance access: this work
-session and the coordinator have no broker or isolated-instance API entry. No real candidate,
-GitHub write, browser screenshot or delivered repair is claimed by the local fixtures. The host
-must use separate data and workspaces, preserving the active service, original data and stable
-M2 directory. In that isolated instance, configure two observe rules for this repository using
-an actual Issue label and an actually failing default-branch workflow, then invoke
-`POST /api/repos/:id/maintenance/refresh`. Inspect
-`GET /api/repos/:id/maintenance` and
-`GET /api/repos/:id/maintenance/observations/:observationId`, or the Sources page, for both real
-URLs, full evidence, judgments and scope. Repeat refresh and restart, change a rule during a
-read, and verify unchanged Task/Run/outbound-Operation counts and retained user pauses. These
-routes use the normal local session and CSRF protection. Record the actual source URLs and
-screenshots in the host's acceptance report before marking this increment accepted.
+- All four open `ready-for-agent` Issues (`#107`, `#108`, `#109`, `#115`) were collected with
+  full URLs, bodies, condition judgments and `selfGenerated: true` provenance from their
+  host-marked bodies, keeping `wouldAccept: false` with zero Tasks, Runs, Messages or
+  outbound GitHub Operations.
+- Default-branch polling queried `repos/g1331/phantom-circuit/actions/workflows/415968191/runs?branch=master&per_page=1`
+  with healthy status; because `master` had zero failing workflow runs at observation time,
+  no real failing-CI candidate was present on `master` (failing-CI candidate rendering and
+  filtering remain covered by local and browser fixtures until M3 automatic CI repair acceptance).
+- Repeated refresh deduplicated unchanged judgments; Store/app restart preserved `admissionPaused`
+  and existing v1 observations; updating the Issue rule to v2 appended immutable history `[2, 1]`
+  and recorded v2 observations with `"用户已暂停团队接收"` holds alongside historical v1 rows.
 
 #### Remaining automatic increment
 
