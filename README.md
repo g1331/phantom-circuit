@@ -133,6 +133,7 @@ npm test
 npm run check
 npm run build
 npm run test:browser
+npm run doctor
 npm run probe
 ```
 
@@ -151,6 +152,8 @@ the same sequence and cache state across repeated runs, including startup and cl
 Browser checks serve the built `dist/` bundle (run `npm run build` after frontend edits) using a fresh headless Edge profile on Windows and isolated in-memory fixture servers on free local ports (set `PHANTOM_BROWSER_PORT` to pin the main fixture port). Independent browser suites run concurrently in separate contexts. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
 
 The maintenance browser checks additionally serve the real `dist/` build (defaulting to fixture port 4333 when run standalone; set `PHANTOM_MAINTENANCE_PORT` to override). They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
+
+`npm run doctor` runs read-only environment checks (`-- --probe` includes agent backend handshakes in a temporary directory, `-- --json` prints machine-readable JSON, and `GET /api/doctor` exposes the same report).
 
 `npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 

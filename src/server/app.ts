@@ -12,6 +12,7 @@ import { Engine } from './engine.ts';
 import { FollowUps } from './follow-ups.ts';
 import { Previews } from './preview.ts';
 import { Codex } from './codex.ts';
+import { runDoctor } from './doctor.ts';
 import { OmpBackend } from './omp.ts';
 import {
   AgentRuntime,
@@ -377,6 +378,16 @@ export function createApp(
     await agentSettingsReady;
     const { messages } = z.object({ messages: z.literal('none').optional() }).parse(req.query);
     return store.snapshot(messages ? { conversation: 'bounded' } : undefined);
+  });
+  app.get('/api/doctor', async (req) => {
+    const { probe } = z
+      .object({ probe: z.enum(['0', '1', 'true', 'false']).optional() })
+      .strict()
+      .parse(req.query);
+    return runDoctor({
+      dataDir: engine.dataDir,
+      probeAgents: probe === '1' || probe === 'true',
+    });
   });
   app.get('/api/projects/:id/messages', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
