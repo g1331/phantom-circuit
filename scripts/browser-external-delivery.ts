@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, type Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
@@ -201,6 +201,7 @@ async function assertDevelopmentControlsClosed(page: Page) {
 
 export async function checkExternalDelivery(
   artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'),
+  sharedBrowser?: Browser,
 ) {
   await mkdir(artifacts, { recursive: true });
   const root = await mkdtemp(join(tmpdir(), 'phantom-browser-external-'));
@@ -221,32 +222,25 @@ export async function checkExternalDelivery(
   const ws = new Workspaces(join(root, 'workspaces'), store);
   const engine = new Engine(store, new OfflineGitHub(store), ws, root, denyAgent);
   const previews = new Previews(store, ws);
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      assert.ok(address && typeof address !== 'string');
-      probe.close((error) => (error ? fail(error) : done(address.port)));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, previews, port, denyAgent, denyAgent);
   app.addHook('onRequest', async (request, reply) => {
     if (/^\/api\/(agents\/|health(?:\?|$))/.test(request.url))
       return reply.code(403).send({ error: 'Synthetic fixture disables agent probes' });
   });
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
+  let release: (() => Promise<void>) | undefined;
   const errors: string[] = [];
   try {
     const origin = await app.listen({ host: '127.0.0.1', port });
-    browser = await chromium.launch({
-      headless: true,
-      channel: process.platform === 'win32' ? 'msedge' : undefined,
-    });
-    const page = await browser.newPage({
+    const acquired = await acquireBrowser(sharedBrowser);
+    release = acquired.release;
+    context = await acquired.browser.newContext({
       viewport: { width: 1280, height: 1000 },
       locale: 'zh-CN',
       reducedMotion: 'reduce',
     });
+    const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`${origin}/#/p/${fixtures.project.id}`);
     await page.locator('.workspace-project-picker select').waitFor();
@@ -264,12 +258,14 @@ export async function checkExternalDelivery(
               true,
               `synthetic ${view}/${width}/${locale}/${theme} fits viewport`,
             );
-            await page.screenshot({
-              path: resolve(
-                artifacts,
-                `external-synthetic-${view}-${width}-${locale}-${theme}.png`,
-              ),
-            });
+            if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+              await page.screenshot({
+                path: resolve(
+                  artifacts,
+                  `external-synthetic-${view}-${width}-${locale}-${theme}.png`,
+                ),
+              });
+            }
           };
           await openPage(page, 'work');
           for (const item of [fixtures.done, fixtures.issueOnly, fixtures.withoutIssue]) {
@@ -414,7 +410,8 @@ export async function checkExternalDelivery(
     assert.deepEqual(errors, []);
     console.log('External delivery browser checks passed with explicitly synthetic fixtures.');
   } finally {
-    await browser?.close();
+    await context?.close();
+    await release?.();
     await app.close();
     await previews.close();
     await engine.stop();

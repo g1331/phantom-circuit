@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,28 +10,48 @@ import {
   assertNoInstall,
 } from './finalization-fixture.ts';
 
-for (const lineage of ['an-ancestor', 'another-lineage'] as const) {
-  test(`advanced recorded baseline stays pending while the recorded target is ${lineage}`, async (t) => {
-    const f = await advancedRecordedBaselineTask(t);
-    const installed = installProbe(f);
-    // Neither a recorded baseline that MERGE_HEAD descends from nor one from an unrelated lineage
-    // is the later default tip ADR 0014 accepts.
-    f.store.updateTask(f.task().id, { base: lineage === 'an-ancestor' ? f.base : f.oldHead });
-    const result = await f.run();
-    assert.equal(result.control, 'paused', JSON.stringify(result));
-    assert.equal(result.retries, 2);
-    assert.equal(f.turns(), 0);
-    assert.match(
-      result.blocked!,
-      lineage === 'an-ancestor'
-        ? /来源证据不足.*与宿主记录的目标基线 .* 不一致.*是 .* 的祖先/
-        : /来源证据不足.*与宿主记录的目标基线 .* 不一致.*没有祖先关系/,
-    );
-    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-    assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
-    await assertNoInstall(installed);
-  });
-}
+describe('finalization recorded baseline refusal', { concurrency: 3 }, () => {
+test('advanced recorded baseline refuses invalid stored target, lineage, or missing baseline', async (t) => {
+  const f = await advancedRecordedBaselineTask(t);
+  const baseline = structuredClone(f.task());
+  const installed = installProbe(f);
+  const cases: { name: string; patch: Parameters<typeof f.store.updateTask>[1]; match: RegExp }[] = [
+    {
+      name: 'recorded target is an-ancestor',
+      patch: { base: f.base },
+      match: /来源证据不足.*与宿主记录的目标基线 .* 不一致.*是 .* 的祖先/,
+    },
+    {
+      name: 'recorded target is another-lineage',
+      patch: { base: f.oldHead },
+      match: /来源证据不足.*与宿主记录的目标基线 .* 不一致.*没有祖先关系/,
+    },
+    {
+      name: 'recorded integrated base is not the fork',
+      patch: { integratedBase: f.oldHead },
+      match: /来源证据不足.*与已整合基线 .* 不一致/,
+    },
+    {
+      name: 'no target baseline recorded',
+      patch: { base: undefined, targetBase: undefined },
+      match: /来源证据不足.*没有已记录的目标基线/,
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      f.store.put('task', baseline.id, structuredClone(baseline));
+      f.store.updateTask(f.task().id, item.patch);
+      const result = await f.run();
+      assert.equal(result.control, 'paused', JSON.stringify(result));
+      assert.equal(result.retries, 2);
+      assert.equal(f.turns(), 0);
+      assert.match(result.blocked!, item.match);
+      assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+      assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+      await assertNoInstall(installed);
+    });
+  }
+});
 
 test('advanced recorded baseline stays pending when the source no longer contains it', async (t) => {
   const f = await advancedRecordedBaselineTask(t);
@@ -53,18 +73,37 @@ test('advanced recorded baseline stays pending when the source no longer contain
   await assertNoInstall(installed);
 });
 
-test('advanced recorded baseline stays pending when the recorded integrated base is not the fork', async (t) => {
-  const f = await advancedRecordedBaselineTask(t);
+test('advanced recorded baseline requires a matching coordination event', async (t) => {
+  const f = await advancedRecordedBaselineTask(t, undefined, { record: false });
+  const baseline = structuredClone(f.task());
   const installed = installProbe(f);
-  f.store.updateTask(f.task().id, { integratedBase: f.oldHead });
-  const result = await f.run();
-  assert.equal(result.control, 'paused', JSON.stringify(result));
-  assert.equal(result.retries, 2);
-  assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源证据不足.*与已整合基线 .* 不一致/);
-  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
-  await assertNoInstall(installed);
+
+  await t.test('no coordination event recorded', async () => {
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 0);
+    assert.match(result.blocked!, /来源证据不足.*合并协调记录/);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+    await assertNoInstall(installed);
+  });
+
+  await t.test('coordination event names another merge', async () => {
+    f.store.put('task', baseline.id, structuredClone(baseline));
+    f.store.event('merge-conflict', `待完成合并 ${f.recorded} + ${f.recorded}；冲突文件：value.txt`, {
+      projectId: f.task().projectId,
+      taskId: f.task().id,
+    });
+    const result = await f.run();
+    assert.equal(result.control, 'paused', JSON.stringify(result));
+    assert.equal(result.retries, 2);
+    assert.equal(f.turns(), 0);
+    assert.match(result.blocked!, /来源证据不足.*都不指向该待完成合并/);
+    assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
+    assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
+    await assertNoInstall(installed);
+  });
 });
 
 test('advanced recorded baseline stays pending when the source was reverted onto MERGE_HEAD', async (t) => {
@@ -79,50 +118,6 @@ test('advanced recorded baseline stays pending when the source was reverted onto
   assert.equal(result.retries, 2);
   assert.equal(f.turns(), 0);
   assert.match(result.blocked!, /来源不包含目标基线/);
-  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
-  await assertNoInstall(installed);
-});
-
-test('advanced recorded baseline stays pending while no target baseline is recorded', async (t) => {
-  const f = await advancedRecordedBaselineTask(t);
-  const installed = installProbe(f);
-  f.store.updateTask(f.task().id, { base: undefined, targetBase: undefined });
-  const result = await f.run();
-  assert.equal(result.control, 'paused', JSON.stringify(result));
-  assert.equal(result.retries, 2);
-  assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源证据不足.*没有已记录的目标基线/);
-  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
-  await assertNoInstall(installed);
-});
-
-test('advanced recorded baseline stays pending while no coordination event is recorded', async (t) => {
-  const f = await advancedRecordedBaselineTask(t, undefined, { record: false });
-  const installed = installProbe(f);
-  const result = await f.run();
-  assert.equal(result.control, 'paused', JSON.stringify(result));
-  assert.equal(result.retries, 2);
-  assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源证据不足.*合并协调记录/);
-  assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
-  assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
-  await assertNoInstall(installed);
-});
-
-test('advanced recorded baseline stays pending when the coordination event names another merge', async (t) => {
-  const f = await advancedRecordedBaselineTask(t, undefined, { record: false });
-  const installed = installProbe(f);
-  f.store.event('merge-conflict', `待完成合并 ${f.recorded} + ${f.recorded}；冲突文件：value.txt`, {
-    projectId: f.task().projectId,
-    taskId: f.task().id,
-  });
-  const result = await f.run();
-  assert.equal(result.control, 'paused', JSON.stringify(result));
-  assert.equal(result.retries, 2);
-  assert.equal(f.turns(), 0);
-  assert.match(result.blocked!, /来源证据不足.*都不指向该待完成合并/);
   assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
   assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value\.txt/);
   await assertNoInstall(installed);
@@ -159,4 +154,5 @@ test('advanced recorded baseline stays pending when Git cannot answer the ancest
   assert.match(result.blocked!, /祖先关系检查结果未知/);
   assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
   await assertNoInstall(installed);
+});
 });

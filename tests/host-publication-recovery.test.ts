@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -73,6 +73,7 @@ test('host recovery authorizes one controlled publication and completes without 
   }
 });
 
+describe('host publication recovery concurrent cases', { concurrency: 3 }, () => {
 test('two concurrent resumes coordinate once and leave the task publishable', async () => {
   const f = await fixture();
   try {
@@ -232,4 +233,5 @@ test('a revision that moves after verification converges in one more resume, nev
   } finally {
     await f.close();
   }
+});
 });

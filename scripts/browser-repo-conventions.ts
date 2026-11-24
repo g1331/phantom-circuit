@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createServer } from 'node:net';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
@@ -70,7 +70,7 @@ async function greeterRepository(root: string) {
   return source;
 }
 
-export async function checkRepoConventions() {
+export async function checkRepoConventions(sharedBrowser?: Browser) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-browser-conventions-'));
   const store = new Store(':memory:');
   const project = store.createProject('问候组件', '给访客打招呼的小组件。');
@@ -118,24 +118,15 @@ export async function checkRepoConventions() {
     }
   }
   const engine = new Engine(store, new BrowserGitHub(store), ws, root, () => new LearningModel());
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      if (!address || typeof address === 'string') throw new Error('Missing fixture port');
-      probe.close(() => done(address.port));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
   try {
-    const context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
+    context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
     await context.addInitScript((id) => {
       localStorage.setItem('phantom.project', id);
       localStorage.setItem('phantom.locale', 'zh-CN');
@@ -171,21 +162,23 @@ export async function checkRepoConventions() {
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           `${width}/${theme}: no horizontal overflow`,
         );
-        await panel
-          .locator('summary')
-          .filter({ hasText: '当前说明' })
-          .evaluate((element) => element.scrollIntoView({ block: 'start' }));
-        await page.screenshot({
-          path: resolve(artifacts, `repo-conventions-${width}-${theme}.png`),
-          fullPage: false,
-        });
-        await panel
-          .locator('.team-instruction-actions')
-          .evaluate((element) => element.scrollIntoView({ block: 'center' }));
-        await page.screenshot({
-          path: resolve(artifacts, `repo-conventions-${width}-${theme}-actions.png`),
-          fullPage: false,
-        });
+        if ((width === 1440 && theme === 'dark') || (width === 390 && theme === 'light')) {
+          await panel
+            .locator('summary')
+            .filter({ hasText: '当前说明' })
+            .evaluate((element) => element.scrollIntoView({ block: 'start' }));
+          await page.screenshot({
+            path: resolve(artifacts, `repo-conventions-${width}-${theme}.png`),
+            fullPage: false,
+          });
+          await panel
+            .locator('.team-instruction-actions')
+            .evaluate((element) => element.scrollIntoView({ block: 'center' }));
+          await page.screenshot({
+            path: resolve(artifacts, `repo-conventions-${width}-${theme}-actions.png`),
+            fullPage: false,
+          });
+        }
       }
     }
     assert.deepEqual(errors, []);
@@ -194,7 +187,8 @@ export async function checkRepoConventions() {
         'learned block next to user text; 1440/1366/1280/390 dark and light screenshots.',
     );
   } finally {
-    await browser.close();
+    await context?.close();
+    await release();
     await app.close();
     await engine.stop();
     store.close();

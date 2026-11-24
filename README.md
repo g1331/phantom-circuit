@@ -136,9 +136,21 @@ npm run test:browser
 npm run probe
 ```
 
-Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on a free local port (set `PHANTOM_BROWSER_PORT` to pin one). Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
+For a small change, run the relevant files through the same test runner, for example
+`npx tsx --test tests/locale.test.ts`, or select cases with
+`npx tsx --test --test-name-pattern="model normalization" tests/agent-backend.test.ts`.
+The complete commands above remain the delivery checks required by the host.
 
-The maintenance browser checks additionally serve the real `dist/` build on fixture port 4333. They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
+`check` and the type-checking step in `build` share TypeScript's incremental state in
+`.cache/typecheck.tsbuildinfo` (ignored by Git). Both commands still check the project and
+return errors; TypeScript reuses unchanged inputs and checks affected files after edits.
+The first check in a clean checkout is cold. Remove that cache file when measuring a cold
+check; retain it when measuring the normal `check` followed by `build` sequence. Compare
+the same sequence and cache state across repeated runs, including startup and cleanup time.
+
+Browser checks serve the built `dist/` bundle (run `npm run build` after frontend edits) using a fresh headless Edge profile on Windows and isolated in-memory fixture servers on free local ports (set `PHANTOM_BROWSER_PORT` to pin the main fixture port). Independent browser suites run concurrently in separate contexts. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
+
+The maintenance browser checks additionally serve the real `dist/` build (defaulting to fixture port 4333 when run standalone; set `PHANTOM_MAINTENANCE_PORT` to override). They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
 
 `npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 
