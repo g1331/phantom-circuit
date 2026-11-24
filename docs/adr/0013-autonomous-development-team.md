@@ -2,7 +2,9 @@
 
 Direction update: ADR 0019 M1 delivers the visual primary workbench and opt-in, explicitly
 addressed GitHub Issue requests through original-Issue result replies. The user remains the team's
-client. Owner-led platform follow-ups and proactive maintenance remain later milestones.
+client. Owner-led platform follow-ups landed in ADR 0019 M2. M3 versioned maintenance rules and
+observation are implemented pending host and real-platform acceptance; automatic proactive
+implementation remains a later increment.
 
 Status: accepted direction, partly implemented: these parts have landed:
 

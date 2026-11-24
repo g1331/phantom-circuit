@@ -7,6 +7,7 @@ import { useWhen } from './work-list.tsx';
 import { ReceivingForm } from './workbench-receiving.tsx';
 import { routeHref } from './route.ts';
 import { api } from './api.ts';
+import { MaintenancePanel } from './maintenance-panel.tsx';
 
 export function SourcePage({
   projectId,
@@ -161,6 +162,7 @@ export function SourcePage({
                 onSaved={onSaved}
               />
             </section>
+            <MaintenancePanel key={repo.id} repoId={repo.id} />
           </>
         ) : (
           <div className="source-web-actions">

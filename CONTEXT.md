@@ -104,3 +104,16 @@ _Avoid_: Merge, local notification, acknowledgment of completion
 
 **Workbench**: The visual account of received inputs, recorded judgments, observable work, and delivered results.
 _Avoid_: Fixed stage board, raw event log
+
+**Maintenance rule**: A user's versioned receiving mode, candidate conditions and permitted scope
+for one repository's proactive maintenance.
+_Avoid_: Team instructions, repository onboarding, execution capability
+
+**Maintenance candidate**: Retained source evidence of an unaddressed Issue or default-branch CI
+failure that can be judged against maintenance rules.
+_Avoid_: Task, explicit request, authorization
+
+**Maintenance observation**: A recorded candidate judgment at a fixed rule version, including
+proposed scope, recommendation, related work and admission holds. A would-accept result describes
+eligibility; the observation retains its own recorded outcome and creates no work.
+_Avoid_: Active repair, delivered result, automatic execution

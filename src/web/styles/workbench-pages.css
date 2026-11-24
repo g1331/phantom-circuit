@@ -1,3 +1,62 @@
+.maintenance-panel {
+  margin-top: 24px;
+  padding: 16px;
+  background: var(--surface-soft);
+  border-radius: var(--radius);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.maintenance-heading h3 {
+  margin: 0;
+}
+
+.maintenance-rule,
+.maintenance-observation {
+  padding: 12px 0;
+}
+
+.maintenance-observation + .maintenance-observation {
+  border-top: 1px solid var(--line);
+}
+
+.maintenance-panel summary {
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.maintenance-observation summary > * {
+  margin-right: 8px;
+}
+
+.maintenance-observation time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.maintenance-observation pre,
+.maintenance-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-panel li {
+  margin: 8px 0;
+}
+
+.maintenance-rule-form :is(input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+}
+
 /* Work-scoped contributions and feedback. */
 .work-collaboration {
   margin: 20px 0;
