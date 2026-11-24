@@ -23,7 +23,7 @@ class Idle extends Codex {
   }
 }
 
-async function interruptedWithPR(prefix: string, foreignPush: boolean) {
+async function interruptedWithPR(prefix: string, foreignPush: boolean, withoutIssue = false) {
   const f = await devFixture(prefix);
   const ws = new Workspaces(join(f.root, 'ws'), f.store);
   const prepared = await ws.prepare(f.task);
@@ -43,7 +43,17 @@ async function interruptedWithPR(prefix: string, foreignPush: boolean) {
     devPhase: 'finalize',
     pr: 57,
     head: local,
-    issue: 1,
+    issue: withoutIssue ? undefined : 1,
+    ...(withoutIssue
+      ? {
+          issueRegistration: {
+            mode: 'none' as const,
+            basis: 'source' as const,
+            sourceMessageId: f.task.sourceMessageId,
+            quote: 'Do not create Issues.',
+          },
+        }
+      : {}),
   });
   f.store.run('dev', f.project.id, 'backend', f.store.task(f.task.id));
   const file = join(f.root, 'db.sqlite');
@@ -63,6 +73,7 @@ async function interruptedWithPR(prefix: string, foreignPush: boolean) {
       } as unknown as PullState;
     }
     override async api<T = any>(): Promise<T> {
+      assert.equal(withoutIssue, false, 'Issue-free recovery must not read or write an Issue');
       return { state: 'open', body: 'body' } as T;
     }
     override async syncStatus() {}
@@ -79,6 +90,26 @@ async function interruptedWithPR(prefix: string, foreignPush: boolean) {
   );
   return { ...f, store, engine, taskId: f.task.id };
 }
+
+test('Issue-free interruption recovers its PR phase and registration', async () => {
+  const f = await interruptedWithPR('phantom-recovery-no-issue-', false, true);
+  const registration = f.store.task(f.taskId).issueRegistration;
+  try {
+    await f.engine.start();
+    assert.equal(prMoved(f.store), false);
+    const recovered = f.store.task(f.taskId);
+    assert.equal(recovered.control, 'active');
+    assert.equal(recovered.devPhase, 'finalize');
+    assert.equal(recovered.issue, undefined);
+    assert.deepEqual(recovered.issueRegistration, registration);
+    assert.equal(f.store.list('recovery').filter((item) => item.taskId === f.taskId).length, 1);
+    assert.equal(f.store.get('operation', `issue:${f.taskId}`), undefined);
+  } finally {
+    await f.engine.stop();
+    f.store.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
 
 test('recovery accepts local work that moved past the published PR head', async () => {
   const f = await interruptedWithPR('phantom-recovery-pr-ahead-', false);
