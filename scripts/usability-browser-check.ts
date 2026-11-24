@@ -162,6 +162,12 @@ export async function checkUsability() {
     }),
   );
   await page.route('**/api/session', (route) => route.fulfill({ json: { csrf: 'fixture' } }));
+  await page.route(`**/api/repos/${repo.id}`, (route) => {
+    assert.equal(route.request().method(), 'PATCH');
+    const { enabled } = route.request().postDataJSON();
+    assert.equal(typeof enabled, 'boolean');
+    return route.fulfill({ json: store.patchRepo(repo.id, { enabled }) });
+  });
   await page.route('**/api/agents/*/allowance?*', (route) => {
     const url = new URL(route.request().url());
     return route.fulfill({
@@ -252,6 +258,61 @@ export async function checkUsability() {
     });
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
+    await page.locator('.workspace-project-picker select').selectOption(project.id);
+    await openPage(page, 'project');
+    for (const locale of ['zh-CN', 'en']) {
+      await choosePreference(page, 'language', locale);
+      const label = locale === 'zh-CN' ? '允许认领新任务' : 'Allow new task claims';
+      const paused =
+        locale === 'zh-CN'
+          ? '已暂停认领，排队任务等待开启'
+          : 'Claims paused; queued tasks will wait until enabled';
+      const row = page.locator('.repo-control').filter({ hasText: 'fixture-repo' });
+      const toggle = row.getByRole('switch', { name: `fixture-repo ${label}`, exact: true });
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 768 });
+        for (const enabled of [false, true]) {
+          if (enabled) {
+            await toggle.focus();
+            await page.keyboard.press('Space');
+          }
+          await row.getByText(label, { exact: true }).waitFor();
+          await toggle.and(page.locator(`[aria-checked="${enabled}"]`)).waitFor();
+          assert.equal(await toggle.evaluate((el) => el.classList.contains('on')), enabled);
+          assert.equal(store.repo(repo.id).enabled, enabled);
+          assert.equal(await row.getByText(paused, { exact: true }).count(), enabled ? 0 : 1);
+          if (!enabled) {
+            assert.equal(
+              await page
+                .locator(`[id="${await toggle.getAttribute('aria-describedby')}"]`)
+                .innerText(),
+              paused,
+            );
+          }
+          await page.reload();
+          await toggle.and(page.locator(`[aria-checked="${enabled}"]`)).waitFor();
+          await row.getByText(label, { exact: true }).waitFor();
+          assert.equal(await row.getByText(paused, { exact: true }).count(), enabled ? 0 : 1);
+          await toggle.scrollIntoViewIfNeeded();
+          const bounds = await toggle.boundingBox();
+          assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width);
+          assert.equal(
+            await row.evaluate((el) => el.scrollWidth <= el.clientWidth),
+            true,
+            `${width}px repository switch and hint fit`,
+          );
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `repo-claims-${locale}-${width}-${enabled ? 'on' : 'off'}.png`,
+            ),
+          });
+        }
+        await toggle.click();
+        await toggle.and(page.locator('[aria-checked="false"]')).waitFor();
+        assert.equal(store.repo(repo.id).enabled, false);
+      }
+    }
     await page
       .locator('.workspace-project-picker select')
       .selectOption({ label: 'Conversation fixture' });

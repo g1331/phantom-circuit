@@ -2289,7 +2289,21 @@ export class Store {
   }
   updateTask(key: string, patch: Partial<Task>) {
     const previous = this.task(key);
-    const t = { ...previous, ...patch, updatedAt: now() };
+    const at = now();
+    const wasTerminal = ['done', 'cancelled'].includes(previous.stage);
+    const isTerminal = ['done', 'cancelled'].includes(patch.stage ?? previous.stage);
+    const endedAt =
+      patch.endedAt !== undefined
+        ? patch.endedAt
+        : isTerminal && !wasTerminal && !previous.endedAt
+          ? at
+          : previous.endedAt;
+    const t = {
+      ...previous,
+      ...patch,
+      ...(endedAt !== undefined ? { endedAt } : {}),
+      updatedAt: at,
+    };
     if (patch.profile && patch.profile !== previous.profile) {
       delete t.devThreadId;
       delete t.devThreadProviderId;

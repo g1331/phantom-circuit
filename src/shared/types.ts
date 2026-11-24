@@ -301,6 +301,8 @@ export interface Task {
   cost?: CostEstimate;
   createdAt: string;
   updatedAt: string;
+  /** Freezes the first transition into a terminal stage (done or cancelled). */
+  endedAt?: string;
 }
 export interface ReviewResult {
   axis: 'primary' | 'secondary' | 'standards' | 'spec';
