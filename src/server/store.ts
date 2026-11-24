@@ -1,43 +1,43 @@
-import type { IntakeSource, SourceInput, InputAssessment, SourceReply } from '../shared/intake.ts';
-import type {
-  MaintenanceRule,
-  MaintenanceCandidate,
-  MaintenanceObservation,
-  MaintenanceHealth,
-} from '../shared/maintenance.ts';
-import { TEAM_INSTRUCTIONS_LIMIT, teamInstructionsLength } from '../shared/team-instructions.ts';
+import type { SourceInput, SourceReply } from '../shared/intake.ts';
 import {
-  comparePriority,
   priorityValues,
   type PriorityLevel,
   type PriorityChange,
 } from '../shared/priority.ts';
 import {
-  clarificationInput,
-  reviewSchema,
   creationPriorityInput,
   taskInput,
-  incidentInput,
   priorityUpdateInput,
-  profileSetSchema,
-  settingsSchema,
 } from './schemas.ts';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  externalDeliveryHoldReason,
-  externalDevelopmentHeld,
   externalDeliveryNotice,
   issueFree,
   taskAttention,
 } from '../shared/task-history.ts';
 import { hasOwner } from '../shared/team.ts';
-import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { redact, bounded } from './redaction.ts';
-export { redact } from './redaction.ts';
-import { aggregateCosts, costForUsage, normalizeUsage, type UsageMode } from './usage.ts';
 import { engineeringMetadata } from './task-naming.ts';
 import { officialProvider, type Provider } from '../shared/types.ts';
+import type { UsageMode } from './usage.ts';
+import {
+  Fault,
+  id,
+  now,
+  type Entities,
+  type MessageOptions,
+  type RunOptions,
+  type StoreContext,
+} from './store-core.ts';
+export { Fault, id, now, redact, type MessageOptions, type RunOptions } from './store-core.ts';
+import * as storeProfiles from './store-profiles.ts';
+import { defaults, initializeOmpProfiles, ompProfileInitialization } from './store-profiles.ts';
+export { defaults, initializeOmpProfiles, ompProfileInitialization } from './store-profiles.ts';
+import * as storeInstructions from './store-instructions.ts';
+import * as storeIncidents from './store-incidents.ts';
+import * as storeScheduling from './store-scheduling.ts';
+import * as storeRecovery from './store-recovery.ts';
 import type {
   InstructionSuggestion,
   ConversationPage,
@@ -49,17 +49,12 @@ import type {
   AgentSelection,
   Clarification,
   ClarificationAnswer,
-  ClarificationQuestion,
-  ReviewResult,
   CostEstimate,
   Incident,
   ModelIdentity,
-  OmpProfileInitialization,
-  OmpRoleDefault,
   Profile,
   ProfileMode,
   RecoveryItem,
-  RecoveryPolicy,
   SchedulingExplanation,
   Project,
   Repo,
@@ -81,199 +76,57 @@ import type {
   MessageDescriptor,
 } from '../shared/types.ts';
 
-export class Fault extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-    public descriptor?: MessageDescriptor,
-  ) {
-    super(message);
-  }
-}
-export const now = () => new Date().toISOString();
-export const id = () => randomUUID();
-const profileNames = ['backend', 'frontend', 'fullstack', 'complex', 'pm', 'review'] as const;
-type ProfileMap = Record<(typeof profileNames)[number], Profile>;
-
-const codexProfiles: ProfileMap = {
-  backend: { providerId: 'codex', model: 'gpt-5.6-luna', effort: 'max' },
-  frontend: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
-  fullstack: { providerId: 'codex', model: 'gpt-6-astra', effort: 'low' },
-  complex: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
-  pm: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
-  review: { providerId: 'codex', model: 'gpt-6-astra', effort: 'medium' },
-};
-
-// Role names are a one-time snapshot of OMP's modelRoles config. The actual model IDs are loaded
-// by agent-settings.ts from OMP at startup; Store must not invent or persist a user model seed.
-export const ompProfileInitialization: OmpProfileInitialization = {
-  source: 'omp.modelRoles',
-  roleDefaults: {
-    backend: 'default',
-    frontend: 'default',
-    fullstack: 'default',
-    complex: 'slow',
-    pm: 'slow',
-    review: 'slow',
-  },
-};
-
-const ompConfigRequired: Profile = {
-  providerId: 'config-required',
-  model: 'config-required',
-  effort: 'config-required',
-};
-const ompRoleProfiles: Record<OmpRoleDefault, Profile> = {
-  default: ompConfigRequired,
-  slow: ompConfigRequired,
-  advisor: ompConfigRequired,
-};
-const ompSecondaryReviewProfile: Profile = structuredClone(ompConfigRequired);
-
-/** Shape an OMP role mapping; model IDs are replaced by agent-settings bootstrap. */
-export function initializeOmpProfiles(
-  roleDefaults: Partial<Record<ProfileName, OmpRoleDefault>> = {},
-): ProfileMap {
-  return Object.fromEntries(
-    profileNames.map((role) => {
-      const roleDefault = roleDefaults[role] ?? ompProfileInitialization.roleDefaults[role];
-      return [role, structuredClone(ompRoleProfiles[roleDefault])];
-    }),
-  ) as ProfileMap;
-}
-
-export const defaults: Settings = {
-  globalDevLimit: 4,
-  reviewLimit: 2,
-  defaultAgent: 'omp',
-  profiles: structuredClone(codexProfiles),
-  ompProfiles: initializeOmpProfiles(),
-  ompProfileInitialization: structuredClone(ompProfileInitialization),
-  secondaryReviewProfiles: { omp: structuredClone(ompSecondaryReviewProfile) },
-};
-import type { Collaboration, FollowUp } from '../shared/collaboration.ts';
-
-type Entities = {
-  maintenanceRule: MaintenanceRule;
-  maintenanceCandidate: MaintenanceCandidate;
-  maintenanceObservation: MaintenanceObservation;
-  maintenanceHealth: MaintenanceHealth;
-  followUp: FollowUp;
-  collaboration: Collaboration;
-  intakeSource: IntakeSource;
-  sourceInput: SourceInput;
-  inputAssessment: InputAssessment;
-  sourceReply: SourceReply;
-  inputIdentity: { id: string; databaseId: number; nodeId: string };
-  event: Event;
-  activity: PMActivity;
-  provider: Provider;
-  project: Project;
-  repo: Repo;
-  task: Task;
-  run: Run;
-  message: Message;
-  ownerMessage: OwnerMessage;
-  operation: Operation;
-  incident: Incident;
-  clarification: Clarification;
-  recovery: RecoveryItem;
-  allowance: AccountAllowance;
-  settings: Settings;
-  document: DesignDocument;
-  teamInstructions: TeamInstructionsVersion;
-  suggestion: InstructionSuggestion;
-};
-
-const pmRunTitles: Partial<Record<Run['status'], string>> = {
-  completed: 'PM 运行完成',
-  failed: 'PM 运行失败',
-  interrupted: 'PM 运行中断',
-  paused: 'PM 运行暂停',
-};
-
-function pinnedModes(): Record<ProfileName, ProfileMode> {
-  return Object.fromEntries(profileNames.map((name) => [name, 'pinned'])) as Record<
-    ProfileName,
-    ProfileMode
-  >;
-}
-
-function inheritedModes(): Record<ProfileName, ProfileMode> {
-  return Object.fromEntries(profileNames.map((name) => [name, 'inherit'])) as Record<
-    ProfileName,
-    ProfileMode
-  >;
-}
-
-function normalizeProfileMap(
-  value: Partial<ProfileMap> | undefined,
-  fallback: ProfileMap,
-): ProfileMap {
-  return Object.fromEntries(
-    profileNames.map((name) => [name, structuredClone({ ...fallback[name], ...value?.[name] })]),
-  ) as ProfileMap;
-}
-
-function normalizeSettings(value: Settings): Settings {
-  return {
-    ...value,
-    profiles: normalizeProfileMap(value.profiles, codexProfiles),
-    ompProfiles: normalizeProfileMap(value.ompProfiles, initializeOmpProfiles()),
-    ompProfileInitialization: value.ompProfileInitialization
-      ? structuredClone(value.ompProfileInitialization)
-      : structuredClone(ompProfileInitialization),
-    defaultAgent: value.defaultAgent ?? 'omp',
-    secondaryReviewProfiles: {
-      ...(value.secondaryReviewProfiles ? structuredClone(value.secondaryReviewProfiles) : {}),
-      ...(value.secondaryReviewProfile && !value.secondaryReviewProfiles?.codex
-        ? { codex: structuredClone(value.secondaryReviewProfile) }
-        : {}),
-      ...(value.secondaryReviewProfiles?.omp
-        ? {}
-        : { omp: structuredClone(ompSecondaryReviewProfile) }),
-    },
-  };
-}
-
 export type OwnerSource = ReturnType<Store['ownerSource']>;
-
-export interface RunOptions {
-  purpose?: Run['purpose'];
-  collaborationId?: string;
-  workspacePath?: string;
-  profile?: ProfileName;
-  secondaryReview?: boolean;
-  secondaryProfile?: Profile;
-  secondaryReviewProfile?: Profile;
-  sourceMessageId?: string;
-  suppressSource?: boolean;
-  source?: { messageId?: string } | string;
-  recoveryItemId?: string;
-  recovery?: RecoveryItem | string;
-  agentVersion?: string;
-  priceSnapshot?: PriceSnapshot;
-  usage?: RunUsage;
-  revision?: { head?: string; base?: string };
-  reviewAxis?: Run['reviewAxis'];
-  incidentId?: string;
-  incidentPhase?: string;
-  incidentEvidence?: string;
-  ownerMessageId?: string;
-}
-
-export interface MessageOptions {
-  deliveryMode?: Message['deliveryMode'];
-  runId?: string;
-  sourceMessageId?: string;
-  draftId?: string;
-  draftStatus?: Message['draftStatus'];
-}
 
 export class Store {
   private db: DatabaseSync;
   readonly changes = new EventEmitter();
+  private readonly ctx: StoreContext;
+  private createContext(): StoreContext {
+    const self = this;
+    return {
+      get db() {
+        return self.db;
+      },
+      get: (kind, key) => this.get(kind, key),
+      put: (kind, key, value) => this.put(kind, key, value),
+      list: (kind) => this.list(kind),
+      transaction: (fn) => this.transaction(fn),
+      emitChange: () => {
+        this.changes.emit('change');
+      },
+      project: (key) => this.project(key),
+      repo: (key) => this.repo(key),
+      task: (key) => this.task(key),
+      settings: () => this.settings(),
+      event: (type, message, refs, descriptor) => this.event(type, message, refs, descriptor),
+      activeRuns: () => this.activeRuns(),
+      assertTaskExecutable: (key) => this.assertTaskExecutable(key),
+      updateTask: (key, patch) => this.updateTask(key, patch),
+      updateTaskControl: (key, patch, action, context) =>
+        this.updateTaskControl(key, patch, action, context),
+      taskControlEvent: (task, action, context) => this.taskControlEvent(task, action, context),
+      run: (role, projectId, profile, task, options) =>
+        this.run(role, projectId, profile, task, options),
+      finishRun: (key, status, error, options) => this.finishRun(key, status, error, options),
+      activity: (run, key, patch) => this.activity(run, key, patch),
+      patchRepo: (key, patch) => this.patchRepo(key, patch),
+      addMessage: (projectId, role, content, intent, attachments, messageId, options) =>
+        this.addMessage(projectId, role, content, intent, attachments, messageId, options),
+      updateMessage: (key, patch) => this.updateMessage(key, patch),
+      sourceAuthority: (messageId, projectId, repoId) =>
+        this.sourceAuthority(messageId, projectId, repoId),
+      rebindIncidentAssessment: (incidentId, previousRunId, successorRunId) =>
+        this.rebindIncidentAssessment(incidentId, previousRunId, successorRunId),
+      updateIncident: (keyOrProject, patchOrKey, maybePatch) =>
+        this.updateIncident(keyOrProject, patchOrKey, maybePatch),
+      taskUsage: (taskId) => this.taskUsage(taskId),
+      taskCost: (taskId) => this.taskCost(taskId),
+      runCost: (key) => this.runCost(key),
+    };
+  }
   constructor(readonly file: string) {
+    this.ctx = this.createContext();
     this.db = new DatabaseSync(file);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents (kind TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(kind,id));
@@ -295,7 +148,7 @@ export class Store {
     });
     this.transaction(() => {
       const storedSettings = this.get('settings', 'global');
-      const settings = normalizeSettings(storedSettings ?? structuredClone(defaults));
+      const settings = storeProfiles.normalizeSettings(storedSettings ?? structuredClone(defaults));
       this.put('settings', 'global', settings);
       for (const project of this.list('project')) {
         let changed = project.admissionPaused === undefined;
@@ -315,7 +168,7 @@ export class Store {
           changed = true;
         }
         if (!hadProfiles || !project.profileModes) {
-          project.profileModes = pinnedModes();
+          project.profileModes = storeProfiles.pinnedModes();
           changed = true;
         }
         if (!hadProfiles || !project.recoveryPolicy) {
@@ -359,34 +212,13 @@ export class Store {
     });
   }
   teamInstructionsHistory(projectId: string) {
-    this.project(projectId);
-    return this.list('teamInstructions')
-      .filter((v) => v.projectId === projectId)
-      .sort((a, b) => a.version - b.version);
+    return storeInstructions.teamInstructionsHistory(this.ctx, projectId);
   }
   currentTeamInstructions(projectId: string): TeamInstructionsVersion {
-    return (
-      this.teamInstructionsHistory(projectId).at(-1) ?? {
-        projectId,
-        version: 0,
-        sections: { repository: '', engineering: '', delivery: '' },
-        source: 'user',
-        createdAt: '',
-      }
-    );
+    return storeInstructions.currentTeamInstructions(this.ctx, projectId);
   }
   runTeamInstructions(run: Run): TeamInstructionsVersion {
-    if (run.teamInstructionsVersion === undefined || run.teamInstructionsVersion === 0)
-      return {
-        projectId: run.projectId,
-        version: 0,
-        sections: { repository: '', engineering: '', delivery: '' },
-        source: 'user',
-        createdAt: '',
-      };
-    const version = this.get('teamInstructions', `${run.projectId}:${run.teamInstructionsVersion}`);
-    if (!version) throw new Fault('运行使用的团队说明版本不存在', 409);
-    return version;
+    return storeInstructions.runTeamInstructions(this.ctx, run);
   }
   saveTeamInstructions(
     projectId: string,
@@ -401,50 +233,10 @@ export class Store {
       interruptionCategories?: string[];
     },
   ) {
-    return this.transaction(() => {
-      const current = this.currentTeamInstructions(projectId);
-      if (teamInstructionsLength(sections) > TEAM_INSTRUCTIONS_LIMIT)
-        throw new Fault(`团队说明总长度不能超过 ${TEAM_INSTRUCTIONS_LIMIT} 字符；原版本未变`, 400);
-      if (current.version !== provenance.baseVersion)
-        throw new Fault('团队说明已更新，请重新载入后再保存', 409);
-      if (provenance.taskId && this.task(provenance.taskId).projectId !== projectId)
-        throw new Fault('来源任务不属于此项目', 400);
-      const version: TeamInstructionsVersion = {
-        source: provenance.source,
-        taskId: provenance.taskId,
-        restoredFromVersion: provenance.restoredFromVersion,
-        suggestionId: provenance.suggestionId,
-        interruptionIds: provenance.interruptionIds,
-        interruptionCategories: provenance.interruptionCategories,
-        projectId,
-        version: current.version + 1,
-        sections: structuredClone(sections),
-        createdAt: now(),
-      };
-      this.put('teamInstructions', `${projectId}:${version.version}`, version);
-      this.changes.emit('change');
-      return version;
-    });
+    return storeInstructions.saveTeamInstructions(this.ctx, projectId, sections, provenance);
   }
   restoreTeamInstructions(projectId: string, version: number, baseVersion: number) {
-    const previous = this.teamInstructionsHistory(projectId).find((v) => v.version === version);
-    if (!previous) throw new Fault('团队说明版本不存在', 404);
-    return this.transaction(() => {
-      const restored = this.saveTeamInstructions(projectId, previous.sections, {
-        source: 'user',
-        baseVersion,
-        restoredFromVersion: version,
-      });
-      for (const suggestion of this.list('suggestion')) {
-        if (
-          suggestion.projectId === projectId &&
-          suggestion.status === 'adopted' &&
-          suggestion.adoptedVersion! > version
-        )
-          this.put('suggestion', suggestion.id, { ...suggestion, status: 'reverted' });
-      }
-      return restored;
-    });
+    return storeInstructions.restoreTeamInstructions(this.ctx, projectId, version, baseVersion);
   }
   recordRetrospective(
     taskId: string,
@@ -454,81 +246,13 @@ export class Store {
     >,
     status?: InstructionSuggestion['status'],
   ) {
-    const task = this.task(taskId);
-    const id = `retrospective:${taskId}`;
-    const prior = this.get('suggestion', id);
-    if (prior && prior.status !== 'running') return prior;
-    if (input.sections && teamInstructionsLength(input.sections) > TEAM_INSTRUCTIONS_LIMIT)
-      throw new Fault(`团队说明总长度不能超过 ${TEAM_INSTRUCTIONS_LIMIT} 字符；原版本未变`, 400);
-    const change = (sections: TeamInstructionSections | undefined, baseVersion: number) => {
-      if (!sections) return undefined;
-      const base = this.teamInstructionsHistory(task.projectId).find(
-        (v) => v.version === baseVersion,
-      )?.sections ?? { repository: '', engineering: '', delivery: '' };
-      return JSON.stringify(
-        Object.entries(sections).filter(
-          ([key, text]) => base[key as keyof TeamInstructionSections] !== text,
-        ),
-      );
-    };
-    const proposedChange = change(input.sections, input.baseVersion);
-    const duplicate =
-      proposedChange &&
-      this.list('suggestion').some(
-        (s) =>
-          s.projectId === task.projectId &&
-          s.id !== id &&
-          s.category === input.category &&
-          change(s.sections, s.baseVersion) === proposedChange,
-      );
-    const suggestion: InstructionSuggestion = {
-      ...input,
-      id,
-      taskId,
-      projectId: task.projectId,
-      createdAt: prior?.createdAt ?? now(),
-      status: status ?? (duplicate || !input.sections ? 'no_change' : 'pending'),
-      reason: duplicate ? '此前已记录同类修改，保留原决定。' : input.reason,
-    };
-    this.put('suggestion', id, suggestion);
-    this.changes.emit('change');
-    if (suggestion.status === 'pending' && this.project(task.projectId).autoAdoptInstructions)
-      return this.decideSuggestion(task.projectId, id, 'adopt');
-    return suggestion;
+    return storeInstructions.recordRetrospective(this.ctx, taskId, input, status);
   }
   decideSuggestion(projectId: string, id: string, action: 'adopt' | 'ignore') {
-    return this.transaction(() => {
-      this.project(projectId);
-      const suggestion = this.get('suggestion', id);
-      if (!suggestion || suggestion.projectId !== projectId) throw new Fault('建议不存在', 404);
-      if (suggestion.status !== 'pending') throw new Fault('建议已处理', 409);
-      let adoptedVersion: number | undefined;
-      if (action === 'adopt') {
-        if (!suggestion.sections) throw new Fault('建议没有修改内容', 400);
-        adoptedVersion = this.saveTeamInstructions(projectId, suggestion.sections, {
-          source: 'team',
-          baseVersion: suggestion.baseVersion,
-          taskId: suggestion.taskId,
-          suggestionId: id,
-          interruptionIds: suggestion.interruptionIds,
-          interruptionCategories: [suggestion.category],
-        }).version;
-      }
-      const next: InstructionSuggestion = {
-        ...suggestion,
-        status: action === 'adopt' ? 'adopted' : 'ignored',
-        adoptedVersion,
-      };
-      this.put('suggestion', id, next);
-      this.changes.emit('change');
-      return next;
-    });
+    return storeInstructions.decideSuggestion(this.ctx, projectId, id, action);
   }
   setAutoAdoptInstructions(projectId: string, enabled: boolean) {
-    const project = { ...this.project(projectId), autoAdoptInstructions: enabled };
-    this.put('project', projectId, project);
-    this.changes.emit('change');
-    return project;
+    return storeInstructions.setAutoAdoptInstructions(this.ctx, projectId, enabled);
   }
   close() {
     this.db.close();
@@ -596,298 +320,29 @@ export class Store {
     return this.get('settings', 'global')!;
   }
   saveSettings(settings: Settings) {
-    const previous = this.settings();
-    settings = normalizeSettings(settingsSchema.parse(settings) as Settings);
-    this.validateProfiles(settings.profiles, 'codex');
-    if (settings.secondaryReviewProfiles?.codex)
-      this.validateCodexProvider(settings.secondaryReviewProfiles.codex, 'secondaryReview.codex');
-    // OMP profile provider IDs are resolved by OMP and are deliberately not required to exist in
-    // the local Provider table. Validate the shape, but never ask Providers for credentials here.
-    profileSetSchema.parse(settings.ompProfiles);
-    for (const project of this.list('project'))
-      this.validateEffectiveSecondaryReview(project, settings);
-    this.transaction(() => {
-      this.put('settings', 'global', settings);
-      this.invalidateInheritedThreads(previous, settings);
-    });
-    this.event('settings', '运行配置已更新');
-    return settings;
-  }
-  private validateProfiles(profiles: Settings['profiles'], agent: AgentKind = 'codex') {
-    profileSetSchema.parse(profiles);
-    if (agent === 'omp') return;
-    for (const [role, profile] of Object.entries(profiles))
-      this.validateCodexProvider(profile, role);
-  }
-  private validateCodexProvider(profile: Profile, role: string) {
-    if (profile.providerId !== 'codex' && !this.get('provider', profile.providerId))
-      throw new Fault(`${role}: Provider 不存在：${profile.providerId}`, 409);
-  }
-
-  private effectiveAgent(project: Project, settings = this.settings()): AgentKind {
-    return project.agentSelection?.mode === 'override'
-      ? project.agentSelection.agent
-      : (settings.defaultAgent ?? 'codex');
-  }
-
-  private secondaryReviewProfile(project: Project, agent: AgentKind, settings: Settings) {
-    return (
-      project.secondaryReviewProfiles?.[agent] ??
-      settings.secondaryReviewProfiles?.[agent] ??
-      project.secondaryReviewProfile ??
-      settings.secondaryReviewProfile
-    );
-  }
-
-  private validateEffectiveSecondaryReview(project: Project, settings = this.settings()) {
-    const agent = this.effectiveAgent(project, settings);
-    const profile = this.secondaryReviewProfile(project, agent, settings);
-    if (agent === 'codex' && profile) this.validateCodexProvider(profile, 'secondaryReview');
-  }
-
-  private invalidateInheritedThreads(previous: Settings, next: Settings) {
-    for (const project of this.list('project')) {
-      const selection = project.agentSelection ?? { mode: 'override', agent: 'codex' as const };
-      const beforeAgent =
-        selection.mode === 'override' ? selection.agent : (previous.defaultAgent ?? 'codex');
-      const afterAgent =
-        selection.mode === 'override' ? selection.agent : (next.defaultAgent ?? 'codex');
-      const modes = project.profileModes ?? pinnedModes();
-      const changedRoles = profileNames.filter((role) => {
-        if (modes[role] !== 'inherit') return false;
-        const before =
-          beforeAgent === 'omp' ? previous.ompProfiles?.[role] : previous.profiles[role];
-        const after = afterAgent === 'omp' ? next.ompProfiles?.[role] : next.profiles[role];
-        return beforeAgent !== afterAgent || JSON.stringify(before) !== JSON.stringify(after);
-      });
-      if (!changedRoles.length) continue;
-      project.profileVersion = (project.profileVersion ?? 0) + 1;
-      if (changedRoles.includes('pm')) {
-        delete project.pmThreadId;
-        delete project.pmThreadProviderId;
-        delete project.pmThreadAgentKind;
-        delete project.pmThreadProfileVersion;
-        delete project.pmThreadProfile;
-      }
-      if (
-        changedRoles.some((role) => ['backend', 'frontend', 'fullstack', 'complex'].includes(role))
-      ) {
-        for (const task of this.list('task')) {
-          if (task.projectId !== project.id) continue;
-          const mode = modes[task.profile];
-          if (mode !== 'inherit') continue;
-          delete task.devThreadId;
-          delete task.devThreadProviderId;
-          delete task.devThreadAgentKind;
-          delete task.devThreadProfileVersion;
-          delete task.devThreadProfile;
-          this.put('task', task.id, task);
-        }
-      }
-      this.put('project', project.id, project);
-    }
+    return storeProfiles.saveSettings(this.ctx, settings);
   }
   assertProviderUnused(providerId: string) {
-    const references: string[] = [];
-    const inspect = (name: string, profiles: Settings['profiles']) => {
-      for (const [role, profile] of Object.entries(profiles))
-        if (profile.providerId === providerId) references.push(`${name} / ${role}`);
-    };
-    inspect('全局默认值', this.settings().profiles);
-    if (this.settings().secondaryReviewProfile?.providerId === providerId)
-      references.push('全局默认值 / secondaryReview');
-    if (this.settings().secondaryReviewProfiles?.codex?.providerId === providerId)
-      references.push('全局默认值 / secondaryReviewProfiles.codex');
-    for (const project of this.list('project')) {
-      inspect(`Project ${project.name} (${project.id})`, project.profiles);
-      if (project.secondaryReviewProfile?.providerId === providerId)
-        references.push(`Project ${project.name} (${project.id}) / secondaryReview`);
-      if (project.secondaryReviewProfiles?.codex?.providerId === providerId)
-        references.push(`Project ${project.name} (${project.id}) / secondaryReviewProfiles.codex`);
-    }
-    for (const run of this.activeRuns())
-      if (run.profileConfig?.providerId === providerId)
-        references.push(`进行中的 Run ${run.id} / ${run.role}`);
-    if (references.length) throw new Fault(`Provider 仍被引用：${references.join('；')}`, 409);
+    return storeProfiles.assertProviderUnused(this.ctx, providerId);
   }
   saveProjectProfiles(projectId: string, profiles: Settings['profiles']) {
-    this.validateProfiles(profiles, 'codex');
-    return this.transaction(() => {
-      const project = this.project(projectId);
-      const changed = profileNames.filter(
-        (role) => JSON.stringify(profiles[role]) !== JSON.stringify(project.profiles[role]),
-      );
-      if (changed.length) project.profileVersion = (project.profileVersion ?? 0) + 1;
-      if (changed.includes('pm')) {
-        delete project.pmThreadId;
-        delete project.pmThreadProviderId;
-        delete project.pmThreadAgentKind;
-        delete project.pmThreadProfileVersion;
-        delete project.pmThreadProfile;
-      }
-      for (const task of this.list('task')) {
-        if (task.projectId === projectId && changed.includes(task.profile)) {
-          delete task.devThreadId;
-          delete task.devThreadProviderId;
-          delete task.devThreadAgentKind;
-          delete task.devThreadProfileVersion;
-          delete task.devThreadProfile;
-          this.put('task', task.id, task);
-        }
-      }
-      project.profiles = structuredClone(profiles);
-      project.profileModes = {
-        ...(project.profileModes ?? pinnedModes()),
-        ...Object.fromEntries(changed.map((role) => [role, 'pinned'])),
-      } as Record<ProfileName, ProfileMode>;
-      this.put('project', projectId, project);
-      this.event('project', '项目模型分配已更新', { projectId });
-      return project;
-    });
+    return storeProfiles.saveProjectProfiles(this.ctx, projectId, profiles);
   }
-
   saveProjectOmpProfiles(projectId: string, profiles: NonNullable<Settings['ompProfiles']>) {
-    profileSetSchema.parse(profiles);
-    return this.transaction(() => {
-      const project = this.project(projectId);
-      const changed = profileNames.filter(
-        (role) => JSON.stringify(profiles[role]) !== JSON.stringify(project.ompProfiles?.[role]),
-      );
-      if (changed.length) project.profileVersion = (project.profileVersion ?? 0) + 1;
-      if (changed.includes('pm')) {
-        delete project.pmThreadId;
-        delete project.pmThreadProviderId;
-        delete project.pmThreadAgentKind;
-        delete project.pmThreadProfileVersion;
-        delete project.pmThreadProfile;
-      }
-      for (const task of this.list('task')) {
-        if (task.projectId === projectId && changed.includes(task.profile)) {
-          delete task.devThreadId;
-          delete task.devThreadProviderId;
-          delete task.devThreadAgentKind;
-          delete task.devThreadProfileVersion;
-          delete task.devThreadProfile;
-          this.put('task', task.id, task);
-        }
-      }
-      project.ompProfiles = structuredClone(profiles);
-      project.profileModes = {
-        ...(project.profileModes ?? pinnedModes()),
-        ...Object.fromEntries(changed.map((role) => [role, 'pinned'])),
-      } as Record<ProfileName, ProfileMode>;
-      this.put('project', projectId, project);
-      this.event('project', '项目 OMP 模型分配已更新', { projectId });
-      return project;
-    });
+    return storeProfiles.saveProjectOmpProfiles(this.ctx, projectId, profiles);
   }
-
   saveProjectAgentSelection(projectId: string, selection: AgentSelection) {
     return this.saveProjectRuntimeConfig(projectId, { agentSelection: selection });
   }
-
-  private applyProjectAgentSelection(projectId: string, selection: AgentSelection) {
-    if (selection.mode === 'override' && !['omp', 'codex'].includes(selection.agent))
-      throw new Fault('Agent 类型无效');
-    return this.transaction(() => {
-      const project = this.project(projectId);
-      if (JSON.stringify(project.agentSelection) === JSON.stringify(selection)) return project;
-      project.agentSelection = structuredClone(selection);
-      project.profileVersion = (project.profileVersion ?? 0) + 1;
-      delete project.pmThreadId;
-      delete project.pmThreadProviderId;
-      delete project.pmThreadAgentKind;
-      delete project.pmThreadProfileVersion;
-      delete project.pmThreadProfile;
-      for (const task of this.list('task')) {
-        if (task.projectId !== projectId) continue;
-        delete task.devThreadId;
-        delete task.devThreadProviderId;
-        delete task.devThreadAgentKind;
-        delete task.devThreadProfileVersion;
-        delete task.devThreadProfile;
-        this.put('task', task.id, task);
-      }
-      this.put('project', projectId, project);
-      this.event('project', '项目 Agent 分配已更新', { projectId });
-      return project;
-    });
-  }
-
   saveProjectProfileModes(projectId: string, modes: Record<ProfileName, ProfileMode>) {
-    for (const role of profileNames)
-      if (!['inherit', 'pinned'].includes(modes[role])) throw new Fault('Profile 模式无效');
-    return this.transaction(() => {
-      const project = this.project(projectId);
-      const old = project.profileModes ?? pinnedModes();
-      const changed = profileNames.filter((role) => old[role] !== modes[role]);
-      if (changed.length) project.profileVersion = (project.profileVersion ?? 0) + 1;
-      if (changed.includes('pm')) {
-        delete project.pmThreadId;
-        delete project.pmThreadProviderId;
-        delete project.pmThreadAgentKind;
-        delete project.pmThreadProfileVersion;
-        delete project.pmThreadProfile;
-      }
-      if (changed.some((role) => ['backend', 'frontend', 'fullstack', 'complex'].includes(role)))
-        for (const task of this.list('task')) {
-          if (task.projectId !== projectId || !changed.includes(task.profile)) continue;
-          delete task.devThreadId;
-          delete task.devThreadProviderId;
-          delete task.devThreadAgentKind;
-          delete task.devThreadProfileVersion;
-          delete task.devThreadProfile;
-          this.put('task', task.id, task);
-        }
-      project.profileModes = structuredClone(modes);
-      this.put('project', projectId, project);
-      return project;
-    });
+    return storeProfiles.saveProjectProfileModes(this.ctx, projectId, modes);
   }
-
   saveProjectRuntimeConfig(
     projectId: string,
-    patch: Partial<
-      Pick<
-        Project,
-        | 'agentSelection'
-        | 'profileModes'
-        | 'profiles'
-        | 'ompProfiles'
-        | 'secondaryReviewProfiles'
-        | 'recoveryPolicy'
-      >
-    > & { secondaryReviewProfile?: Profile | null },
+    patch: storeProfiles.ProjectRuntimePatch,
   ) {
-    const previous = this.project(projectId);
-    const project = {
-      ...previous,
-      ...patch,
-      secondaryReviewProfile:
-        patch.secondaryReviewProfile === null
-          ? undefined
-          : (patch.secondaryReviewProfile ?? previous.secondaryReviewProfile),
-    };
-    this.validateEffectiveSecondaryReview(project);
-    if (patch.secondaryReviewProfiles?.codex)
-      this.validateCodexProvider(patch.secondaryReviewProfiles.codex, 'secondaryReview.codex');
-    return this.transaction(() => {
-      if (patch.profiles) this.saveProjectProfiles(projectId, patch.profiles);
-      if (patch.ompProfiles) this.saveProjectOmpProfiles(projectId, patch.ompProfiles);
-      if (patch.agentSelection) this.applyProjectAgentSelection(projectId, patch.agentSelection);
-      if (patch.profileModes) this.saveProjectProfileModes(projectId, patch.profileModes);
-      const current = this.project(projectId);
-      if (patch.secondaryReviewProfile === null) delete current.secondaryReviewProfile;
-      else if (patch.secondaryReviewProfile !== undefined)
-        current.secondaryReviewProfile = structuredClone(patch.secondaryReviewProfile);
-      if (patch.secondaryReviewProfiles !== undefined)
-        current.secondaryReviewProfiles = structuredClone(patch.secondaryReviewProfiles);
-      if (patch.recoveryPolicy !== undefined) current.recoveryPolicy = patch.recoveryPolicy;
-      this.put('project', projectId, current);
-      return current;
-    });
+    return storeProfiles.saveProjectRuntimeConfig(this.ctx, projectId, patch);
   }
-
   saveProjectSecondaryReviewProfile(projectId: string, profile: Profile) {
     return this.saveProjectRuntimeConfig(projectId, { secondaryReviewProfile: profile });
   }
@@ -996,55 +451,8 @@ export class Store {
     message?: string,
     evidence?: string,
   ): Incident {
-    const input =
-      typeof inputOrProject === 'string'
-        ? { projectId: inputOrProject, runId, phase: phase!, message: message ?? '', evidence }
-        : inputOrProject;
-    // Bound host-made text before validation; the limits below are for storage, not a reason to lose the Incident.
-    const parsed = incidentInput.parse({
-      ...input,
-      message: input.message.slice(0, 16000),
-      ...(input.evidence !== undefined ? { evidence: input.evidence.slice(0, 32000) } : {}),
-    });
-    this.project(parsed.projectId);
-    if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
-      throw new Fault('Incident 任务不属于当前项目', 403);
-    if (parsed.runId) {
-      const run = this.get('run', parsed.runId);
-      if (!run || run.projectId !== parsed.projectId)
-        throw new Fault('Incident Run 不属于当前项目', 403);
-    }
-    const existing = this.list('incident').find(
-      (incident) =>
-        !incident.supersededByExternalCompletionAt &&
-        incident.projectId === parsed.projectId &&
-        incident.phase === parsed.phase &&
-        (parsed.runId ? incident.runId === parsed.runId : incident.taskId === parsed.taskId),
-    );
-    if (existing) return structuredClone(existing);
-    const at = now();
-    const incident: Incident = {
-      id: id(),
-      projectId: parsed.projectId,
-      ...(parsed.taskId ? { taskId: parsed.taskId } : {}),
-      ...(parsed.runId ? { runId: parsed.runId } : {}),
-      phase: parsed.phase,
-      status: 'open',
-      message: redact(parsed.message).slice(0, 16000),
-      ...(parsed.descriptor ? { descriptor: structuredClone(parsed.descriptor) } : {}),
-      ...(parsed.evidence ? { evidence: redact(parsed.evidence).slice(0, 32000) } : {}),
-      createdAt: at,
-      updatedAt: at,
-    };
-    this.put('incident', incident.id, incident);
-    this.event('incident', `发生运行事件：${incident.phase}`, {
-      projectId: incident.projectId,
-      taskId: incident.taskId,
-      runId: incident.runId,
-    });
-    return structuredClone(incident);
+    return storeIncidents.createIncident(this.ctx, inputOrProject, runId, phase, message, evidence);
   }
-
   updateIncident(
     keyOrProject: string,
     patchOrKey:
@@ -1062,347 +470,35 @@ export class Store {
       >
     >,
   ) {
-    const projectId = maybePatch ? keyOrProject : undefined;
-    const key = maybePatch ? String(patchOrKey) : keyOrProject;
-    const patch = (maybePatch ?? patchOrKey) as Partial<
-      Pick<
-        Incident,
-        'status' | 'message' | 'evidence' | 'descriptor' | 'assessmentRunId' | 'assessmentAt'
-      >
-    >;
-    const incident = this.get('incident', key);
-    if (!incident) throw new Fault('Incident 不存在', 404);
-    if (projectId && incident.projectId !== projectId) throw new Fault('跨项目操作被拒绝', 403);
-    if (
-      patch.assessmentRunId &&
-      incident.assessmentRunId &&
-      patch.assessmentRunId !== incident.assessmentRunId
-    )
-      throw new Fault('Incident 已由另一个 Run 评估', 409);
-    const next: Incident = {
-      ...incident,
-      ...(patch.status ? { status: patch.status } : {}),
-      ...(patch.message !== undefined ? { message: redact(patch.message).slice(0, 16000) } : {}),
-      ...(patch.descriptor !== undefined ? { descriptor: structuredClone(patch.descriptor) } : {}),
-      ...(patch.evidence !== undefined ? { evidence: redact(patch.evidence).slice(0, 32000) } : {}),
-      ...(patch.assessmentRunId ? { assessmentRunId: patch.assessmentRunId } : {}),
-      ...(patch.assessmentAt ? { assessmentAt: patch.assessmentAt } : {}),
-      updatedAt: now(),
-    };
-    this.put('incident', key, next);
-    return structuredClone(next);
+    return storeIncidents.updateIncident(this.ctx, keyOrProject, patchOrKey, maybePatch);
   }
-
   claimIncidentAssessment(key: string, assessmentRunId: string) {
-    const incident = this.get('incident', key);
-    if (!incident) throw new Fault('Incident 不存在', 404);
-    if (incident.assessmentRunId && incident.assessmentRunId !== assessmentRunId)
-      return structuredClone(incident);
-    return this.updateIncident(key, {
-      assessmentRunId,
-      assessmentAt: now(),
-      status: incident.status === 'open' ? 'assessing' : incident.status,
-    });
+    return storeIncidents.claimIncidentAssessment(this.ctx, key, assessmentRunId);
   }
-
   assessIncident(key: string, assessmentRunId: string) {
     return this.claimIncidentAssessment(key, assessmentRunId);
   }
-
   createClarification(input: unknown): Clarification {
-    const parsed = clarificationInput.parse(input);
-    const authority = this.sourceAuthority(parsed.sourceMessageId, parsed.projectId);
-    if (authority.external?.assessment.disposition.status === 'no_action')
-      throw new Fault('此请求已记录无需行动判断', 409);
-    const source = authority.message;
-    if (!source || source.projectId !== parsed.projectId)
-      throw new Fault('Clarification 来源消息不属于当前项目', 403);
-    if (parsed.taskId && this.task(parsed.taskId).projectId !== parsed.projectId)
-      throw new Fault('Clarification 任务不属于当前项目', 403);
-    if (parsed.review) {
-      const run = this.get('run', parsed.review.runId);
-      const task = parsed.taskId ? this.task(parsed.taskId) : undefined;
-      if (
-        !run ||
-        !task ||
-        run.role !== 'review' ||
-        run.projectId !== parsed.projectId ||
-        run.taskId !== task.id ||
-        run.repoId !== task.repoId ||
-        run.reviewAxis !== parsed.review.axis ||
-        task.sourceMessageId !== parsed.sourceMessageId ||
-        run.revision?.head !== parsed.review.head ||
-        run.revision?.base !== parsed.review.base ||
-        task.head !== parsed.review.head ||
-        task.base !== parsed.review.base
-      )
-        throw new Fault('Review Clarification 绑定不匹配', 409);
-      const pullRequest = parsed.review.pullRequest;
-      if (
-        task.pr !== pullRequest?.number ||
-        (pullRequest &&
-          (pullRequest.repository !== this.repo(task.repoId).github ||
-            pullRequest.headBranch !== task.branch ||
-            pullRequest.baseBranch !== this.repo(task.repoId).defaultBranch))
-      )
-        throw new Fault('Review Clarification PR 绑定不匹配', 409);
-    }
-    const sourceIntent = parsed.sourceIntent ?? source.intent;
-    if (
-      !sourceIntent ||
-      (source.intent && parsed.sourceIntent && source.intent !== parsed.sourceIntent)
-    )
-      throw new Fault('Clarification 必须保留原始消息意图', 409);
-    const existing = this.list('clarification').find(
-      (clarification) =>
-        clarification.projectId === parsed.projectId &&
-        clarification.sourceMessageId === parsed.sourceMessageId &&
-        (parsed.review
-          ? clarification.review?.runId === parsed.review.runId
-          : !clarification.review) &&
-        clarification.status === 'open',
-    );
-    if (existing) return structuredClone(existing);
-    const cancelled = this.list('clarification').find(
-      (clarification) =>
-        clarification.projectId === parsed.projectId &&
-        clarification.sourceMessageId === parsed.sourceMessageId &&
-        !parsed.review &&
-        !clarification.review &&
-        clarification.status === 'cancelled',
-    );
-    if (cancelled)
-      throw new Fault('原始用户消息的 Clarification 已取消，不能重新开启', 409, {
-        code: 'clarification_cancelled',
-        params: { sourceMessageId: parsed.sourceMessageId },
-      });
-    const questions: ClarificationQuestion[] = parsed.questions.map((question, index) => ({
-      id: question.id ?? `q${index + 1}`,
-      question: question.question ?? question.prompt!,
-      ...(question.recommendation ? { recommendation: question.recommendation } : {}),
-      ...(question.options?.length
-        ? { options: question.options.map((option) => ({ ...option })) }
-        : {}),
-    }));
-    const at = now();
-    const clarification: Clarification = {
-      id: id(),
-      projectId: parsed.projectId,
-      sourceMessageId: parsed.sourceMessageId,
-      ...(parsed.taskId ? { taskId: parsed.taskId } : {}),
-      sourceIntent,
-      ...(parsed.review ? { review: parsed.review } : {}),
-      questions,
-      status: 'open',
-      createdAt: at,
-      updatedAt: at,
-    };
-    this.put('clarification', clarification.id, clarification);
-    this.event('clarification', '等待用户产品澄清', { projectId: parsed.projectId });
-    return structuredClone(clarification);
+    return storeIncidents.createClarification(this.ctx, input);
   }
-
-  /** One host-accepted review result, its user wait and questions share one durable commit. */
   recordReviewClarification(runId: string, input: unknown): Clarification {
-    const parsed = reviewSchema.parse(input);
-    if (parsed.verdict !== 'needs_user') throw new Fault('需要 needs_user 判定', 400);
-    return this.transaction(() => {
-      const run = this.get('run', runId);
-      if (!run || run.role !== 'review' || !run.taskId || !run.reviewAxis)
-        throw new Fault('Review Run 绑定无效', 409);
-      const task = this.task(run.taskId);
-      if (
-        run.projectId !== task.projectId ||
-        run.repoId !== task.repoId ||
-        run.sourceMessageId !== task.sourceMessageId ||
-        run.revision?.head !== parsed.head ||
-        run.revision?.base !== parsed.base ||
-        task.head !== parsed.head ||
-        task.base !== parsed.base
-      )
-        throw new Fault('Review revision 绑定不匹配', 409);
-      const existing = this.list('clarification').find((c) => c.review?.runId === runId);
-      if (existing) return existing;
-      this.assertTaskExecutable(task.id);
-      if (!['running', 'waiting'].includes(run.status))
-        throw new Fault('Review Run 已结束，不能接受新判定', 409);
-      if (task.control !== 'active' || task.stage !== 'reviewing' || task.reviewClarificationId)
-        throw new Fault('Task 当前不能接受 Review 提问', 409);
-      const clarification = this.createClarification({
-        projectId: task.projectId,
-        taskId: task.id,
-        sourceMessageId: task.sourceMessageId,
-        questions: parsed.questions,
-        review: {
-          runId,
-          axis: run.reviewAxis,
-          head: task.head!,
-          base: task.base!,
-          ...(task.pr
-            ? {
-                pullRequest: {
-                  number: task.pr,
-                  repository: this.repo(task.repoId).github,
-                  headBranch: task.branch!,
-                  baseBranch: this.repo(task.repoId).defaultBranch,
-                },
-              }
-            : {}),
-        },
-      });
-      const review: ReviewResult = {
-        ...parsed,
-        axis: run.reviewAxis,
-        runId,
-        head: task.head!,
-        base: task.base!,
-        questions: clarification.questions,
-        tests: structuredClone(task.tests),
-        model: run.modelIdentity,
-        modelIdentity: run.modelIdentity,
-        agentKind: run.agentKind,
-        agentVersion: run.agentVersion,
-      };
-      this.updateTask(task.id, {
-        reviews: [
-          ...task.reviews.filter((r) => r.axis !== run.reviewAxis || r.supersededByRunId),
-          review,
-        ],
-        reviewClarificationId: clarification.id,
-        control: 'paused',
-        pausedByUser: false,
-        blocked: '评审需要用户补充',
-        blockedDescriptor: {
-          code: 'review_needs_user',
-          params: { clarificationId: clarification.id },
-        },
-      });
-      this.taskControlEvent(task, 'pause', { source: 'host', reason: 'review_needs_user', runId });
-      // A crash after accepting the verdict must not recover the asking Run as unfinished work.
-      this.finishRun(runId, 'completed');
-      return clarification;
-    });
+    return storeIncidents.recordReviewClarification(this.ctx, runId, input);
   }
-
-  /** Called only after Engine verifies the pinned local and remote revision. */
   claimClarificationReview(clarificationId: string): Run | undefined {
-    return this.transaction(() => {
-      const c = this.get('clarification', clarificationId);
-      if (!c?.review || !c.taskId || c.status !== 'answered' || c.successorRunId) return;
-      const task = this.task(c.taskId);
-      const original = this.get('run', c.review.runId);
-      if (
-        task.projectId !== c.projectId ||
-        task.stage !== 'reviewing' ||
-        task.pausedByUser ||
-        task.sourceMessageId !== c.sourceMessageId ||
-        original?.repoId !== task.repoId ||
-        task.pr !== c.review.pullRequest?.number ||
-        task.reviewClarificationId !== c.id ||
-        task.head !== c.review.head ||
-        task.base !== c.review.base ||
-        (task.blocked && task.blockedDescriptor?.code !== 'review_needs_user') ||
-        (task.control !== 'active' && task.blockedDescriptor?.code !== 'review_needs_user') ||
-        this.activeRuns().some((r) => r.taskId === task.id)
-      )
-        return;
-      const asking = task.reviews.find(
-        (r) => r.runId === c.review!.runId && r.verdict === 'needs_user' && !r.supersededByRunId,
-      );
-      if (!asking) throw new Fault('Review Clarification 原判定丢失', 409);
-      const run = this.run('review', task.projectId, 'review', task, {
-        reviewAxis: c.review.axis,
-        secondaryReview: c.review.axis === 'secondary',
-        revision: { head: c.review.head, base: c.review.base },
-      });
-      this.put('clarification', c.id, { ...c, successorRunId: run.id, updatedAt: now() });
-      this.updateTask(task.id, {
-        reviews: task.reviews.map((r) => (r === asking ? { ...r, supersededByRunId: run.id } : r)),
-        reviewClarificationId: undefined,
-        control: 'active',
-        blocked: undefined,
-        blockedDescriptor: undefined,
-      });
-      this.taskControlEvent(task, 'resume', {
-        source: 'host',
-        reason: 'review_clarification_answered',
-        runId: run.id,
-      });
-      return run;
-    });
+    return storeIncidents.claimClarificationReview(this.ctx, clarificationId);
   }
-
   answerClarification(
     keyOrProject: string,
     answersOrKey: ClarificationAnswer[] | Record<string, string | string[]> | string,
     maybeAnswers?: ClarificationAnswer[] | Record<string, string | string[]>,
   ) {
-    const projectId = maybeAnswers === undefined ? undefined : keyOrProject;
-    const key = maybeAnswers === undefined ? keyOrProject : String(answersOrKey);
-    const rawAnswers = (maybeAnswers ?? answersOrKey) as
-      ClarificationAnswer[] | Record<string, string | string[]>;
-    const clarification = this.get('clarification', key);
-    if (!clarification) throw new Fault('Clarification 不存在', 404);
-    if (projectId && clarification.projectId !== projectId)
-      throw new Fault('跨项目操作被拒绝', 403);
-    if (clarification.status === 'cancelled') throw new Fault('Clarification 已取消', 409);
-    if (clarification.status === 'answered') return structuredClone(clarification);
-    const answers: ClarificationAnswer[] = Array.isArray(rawAnswers)
-      ? rawAnswers.map((answer) => ({ questionId: answer.questionId, value: answer.value }))
-      : Object.entries(rawAnswers).map(([questionId, value]) => ({ questionId, value }));
-    const questionIds = new Set(clarification.questions.map((question) => question.id));
-    if (
-      answers.some((answer) =>
-        typeof answer.value === 'string'
-          ? !answer.value.trim()
-          : !Array.isArray(answer.value) ||
-            !answer.value.length ||
-            answer.value.some((value) => typeof value !== 'string' || !value.trim()),
-      )
-    )
-      throw new Fault('Clarification 回答不能为空', 400);
-    if (answers.some((answer) => !questionIds.has(answer.questionId)))
-      throw new Fault('Clarification 问题编号无效', 400);
-    const merged = new Map(
-      (clarification.answers ?? []).map((answer) => [answer.questionId, answer]),
-    );
-    for (const answer of answers) merged.set(answer.questionId, answer);
-    const normalizedAnswers = [...merged.values()];
-    const complete = clarification.questions.every((question) => merged.has(question.id));
-    const at = now();
-    const next: Clarification = {
-      ...clarification,
-      status: complete ? 'answered' : 'open',
-      answers: normalizedAnswers,
-      ...(complete ? { answeredAt: at } : { answeredAt: undefined }),
-      updatedAt: at,
-    };
-    this.put('clarification', key, next);
-    this.event('clarification', '用户已回答产品澄清', { projectId: next.projectId });
-    return structuredClone(next);
+    return storeIncidents.answerClarification(this.ctx, keyOrProject, answersOrKey, maybeAnswers);
   }
-
   cancelClarification(keyOrProject: string, maybeKey?: string) {
-    const projectId = maybeKey === undefined ? undefined : keyOrProject;
-    const key = maybeKey ?? keyOrProject;
-    const clarification = this.get('clarification', key);
-    if (!clarification) throw new Fault('Clarification 不存在', 404);
-    if (projectId && clarification.projectId !== projectId)
-      throw new Fault('跨项目操作被拒绝', 403);
-    if (clarification.status === 'cancelled') return structuredClone(clarification);
-    if (clarification.status === 'answered') throw new Fault('Clarification 已回答', 409);
-    const next = { ...clarification, status: 'cancelled' as const, updatedAt: now() };
-    this.put('clarification', key, next);
-    this.event('clarification', '产品澄清已取消', { projectId: next.projectId });
-    return structuredClone(next);
+    return storeIncidents.cancelClarification(this.ctx, keyOrProject, maybeKey);
   }
   clarificationGate(sourceMessageId: string) {
-    return this.list('clarification').find(
-      (clarification) =>
-        clarification.sourceMessageId === sourceMessageId &&
-        !clarification.review &&
-        ['open', 'cancelled'].includes(clarification.status),
-    );
+    return storeIncidents.clarificationGate(this.ctx, sourceMessageId);
   }
   conversationPage(projectId: string, query: ConversationQuery = {}): ConversationPage {
     this.project(projectId);
@@ -1614,7 +710,7 @@ export class Store {
         profiles: structuredClone(this.settings().profiles),
         ompProfiles: structuredClone(this.settings().ompProfiles),
         agentSelection: { mode: 'inherit' },
-        profileModes: inheritedModes(),
+        profileModes: storeProfiles.inheritedModes(),
         secondaryReviewProfile: this.settings().secondaryReviewProfile
           ? structuredClone(this.settings().secondaryReviewProfile)
           : undefined,
@@ -2338,34 +1434,11 @@ export class Store {
       'secondaryReview' | 'secondaryProfile' | 'secondaryReviewProfile'
     > = {},
   ): { agentKind: AgentKind; profile: Profile } {
-    const project = this.project(projectId);
-    const settings = this.settings();
-    const agentKind = this.effectiveAgent(project, settings);
-    const secondaryProfile =
-      options.secondaryProfile ??
-      options.secondaryReviewProfile ??
-      this.secondaryReviewProfile(project, agentKind, settings);
-    if (options.secondaryReview && secondaryProfile)
-      return {
-        agentKind,
-        profile: structuredClone(secondaryProfile),
-      };
-    const mode = project.profileModes?.[profile] ?? 'pinned';
-    const profiles =
-      mode === 'inherit'
-        ? agentKind === 'omp'
-          ? settings.ompProfiles
-          : settings.profiles
-        : agentKind === 'omp'
-          ? project.ompProfiles
-          : project.profiles;
-    const selected = profiles?.[profile];
-    if (!selected) throw new Fault(`缺少 ${agentKind} / ${profile} 模型配置`, 409);
-    return { agentKind, profile: structuredClone(selected) };
+    return storeProfiles.resolveEffectiveProfile(this.ctx, projectId, profile, options);
   }
 
   effectiveAgentForProject(projectId: string): AgentKind {
-    return this.effectiveAgent(this.project(projectId));
+    return storeProfiles.effectiveAgent(this.ctx, this.project(projectId));
   }
 
   ownerSource(taskId: string) {
@@ -2611,63 +1684,17 @@ export class Store {
     return r;
   }
   updateRunUsage(key: string, usage: RunUsage, mode: UsageMode = 'cumulative') {
-    const run = this.get('run', key);
-    if (!run) throw new Fault('Run 不存在', 404);
-    if (run.usage?.final || ['completed', 'failed', 'interrupted', 'paused'].includes(run.status))
-      return structuredClone(run);
-    const previous = run.usage;
-    const merged = normalizeUsage(previous, usage, mode);
-    run.usage = {
-      ...merged,
-      mode: mode === 'delta' ? 'per-run' : mode,
-      ...(previous?.final ? { final: true } : {}),
-    };
-    this.put('run', key, run);
-    this.changes.emit('change');
-    return structuredClone(run);
+    return storeScheduling.updateRunUsage(this.ctx, key, usage, mode);
   }
-
   recordRunUsage(key: string, usage: RunUsage, mode: UsageMode = 'cumulative') {
     return this.updateRunUsage(key, usage, mode);
   }
-
   recordRunDiagnostic(key: string, diagnostic: string) {
-    const run = this.get('run', key);
-    if (!run) throw new Fault('Run 不存在', 404);
-    const value = redact(String(diagnostic)).slice(-3000);
-    const diagnostics = [...new Set([...(run.diagnostics ?? []), value])].slice(-20);
-    run.diagnostics = diagnostics;
-    run.diagnostic = diagnostics.at(-1);
-    this.put('run', key, run);
-    this.changes.emit('change');
-    return structuredClone(run);
+    return storeScheduling.recordRunDiagnostic(this.ctx, key, diagnostic);
   }
   pinRunRevision(key: string, revision: { head?: string; base?: string }) {
-    const run = this.get('run', key);
-    if (!run) throw new Fault('Run 不存在', 404);
-    const next = { ...run, revision: structuredClone(revision) };
-    this.put('run', key, next);
-    this.changes.emit('change');
-    return structuredClone(next);
+    return storeScheduling.pinRunRevision(this.ctx, key, revision);
   }
-
-  private freezeRun(run: Run, endedAt: string, priceSnapshot?: PriceSnapshot) {
-    run.endedAt ??= endedAt;
-    const duration = Date.parse(run.endedAt) - Date.parse(run.startedAt);
-    if (Number.isFinite(duration) && duration >= 0) run.durationMs ??= duration;
-    if (run.usage) run.usage = { ...run.usage, final: true };
-    const officialCodex = run.agentKind === 'codex' && run.profileConfig?.providerId === 'codex';
-    if (priceSnapshot && !run.priceSnapshot && !officialCodex) {
-      const snapshot = structuredClone({
-        ...priceSnapshot,
-        capturedAt: priceSnapshot.capturedAt ?? endedAt,
-      });
-      run.priceSnapshot = snapshot;
-      run.price = structuredClone(snapshot);
-    }
-    return run;
-  }
-
   finishRun(
     key: string,
     status: Run['status'],
@@ -2680,283 +1707,43 @@ export class Store {
       descriptor?: MessageDescriptor;
     } = {},
   ) {
-    const r = this.get('run', key);
-    if (!r) return;
-    if (
-      options.usage &&
-      !r.usage?.final &&
-      !['completed', 'failed', 'interrupted', 'paused'].includes(r.status)
-    )
-      r.usage = {
-        ...normalizeUsage(r.usage, options.usage, options.usageMode ?? 'cumulative'),
-        mode: options.usageMode === 'delta' ? 'per-run' : (options.usageMode ?? 'cumulative'),
-      };
-    const endedAt = r.endedAt ?? now();
-    if (!r.endedAt) r.endedAt = endedAt;
-    if (!['completed', 'failed', 'interrupted', 'paused'].includes(r.status)) r.status = status;
-    else if (r.status === 'interrupted' && status === 'interrupted') r.status = status;
-    if (error && !r.error) r.error = redact(error);
-    if (options.descriptor) r.errorDescriptor = structuredClone(options.descriptor);
-    if (options.durationMs !== undefined && r.durationMs === undefined)
-      r.durationMs = options.durationMs;
-    this.freezeRun(r, endedAt, options.priceSnapshot);
-    this.put('run', key, r);
-    if (r.taskId) {
-      const task = this.get('task', r.taskId);
-      if (task) {
-        const usage = this.taskUsage(r.taskId);
-        const cost = this.taskCost(r.taskId);
-        this.put('task', task.id, {
-          ...task,
-          ...(Object.keys(usage).length ? { usage } : {}),
-          ...(cost ? { cost } : { cost: undefined }),
-          updatedAt: now(),
-        });
-      }
-      // A later clean Run of the same phase is the evidence that an operational Incident is over.
-      const phase = r.role === 'dev' ? 'dev' : r.role === 'review' ? `review:${r.reviewAxis}` : '';
-      if (r.status === 'completed' && phase && !r.ownerMessageId && !r.purpose)
-        for (const incident of this.list('incident').filter(
-          (i) => i.taskId === r.taskId && i.phase === phase && i.status !== 'resolved',
-        )) {
-          const detail = `同阶段 Run ${r.id} 已成功完成，宿主自动结束此 Incident。原因：${incident.message}`;
-          this.updateIncident(incident.id, {
-            status: 'resolved',
-            message: detail,
-            descriptor: { code: 'incident_resolved', detail: redact(detail).slice(-3000) },
-          });
-        }
-    }
-    if (r.role === 'pm') {
-      for (const a of this.list('activity').filter(
-        (a) => a.runId === key && ['running', 'waiting', 'queued'].includes(a.status),
-      ))
-        this.activity(r, a.id.slice(key.length + 1), {
-          ...a,
-          status: r.status,
-          details: { ...a.details, ...(error ? { error } : {}) },
-        });
-      this.activity(r, 'result', {
-        kind: 'phase',
-        title: pmRunTitles[status] ?? 'PM 运行结束',
-        status: r.status,
-        details: error ? { error } : {},
-      });
-    }
-    this.event('run', error ?? `${r.role} ${r.status}`, {
-      projectId: r.projectId,
-      taskId: r.taskId,
-      runId: r.id,
-    });
-    return structuredClone(r);
+    return storeScheduling.finishRun(this.ctx, key, status, error, options);
   }
-
   runUsage(key: string): RunUsage | undefined {
     return structuredClone(this.get('run', key)?.usage);
   }
-
   taskUsage(taskId: string): UsageAggregate {
-    const runs = this.list('run').filter((run) => run.taskId === taskId);
-    const usage = runs.reduce((result, run) => {
-      if (!run.usage) return result;
-      const { contextWindow: _contextWindow, ...tokens } = run.usage;
-      return normalizeUsage(result, tokens, 'per-run');
-    }, {} as RunUsage);
-    if (!runs.length) return usage;
-    return {
-      ...usage,
-      runs: runs.length,
-      complete: runs.every((run) => run.usage !== undefined),
-    };
+    return storeScheduling.taskUsage(this.ctx, taskId);
   }
-
   runCost(key: string): CostEstimate | undefined {
-    const run = this.get('run', key);
-    if (!run) return undefined;
-    if (run.agentKind === 'codex' && run.profileConfig?.providerId === 'codex') return undefined;
-    const price = run.priceSnapshot ?? run.price;
-    return price ? costForUsage(run.usage, price) : undefined;
+    return storeScheduling.runCost(this.ctx, key);
   }
-
   taskCosts(taskId: string): CostEstimate[] {
-    const runs = this.list('run').filter((run) => run.taskId === taskId);
-    const costs = aggregateCosts(runs.map((run) => this.runCost(run.id)));
-    if (!costs.length) return costs;
-    if (runs.some((run) => this.runCost(run.id) === undefined))
-      for (const cost of costs) cost.partial = true;
-    return costs;
+    return storeScheduling.taskCosts(this.ctx, taskId);
   }
-
   taskCost(taskId: string): CostEstimate | undefined {
     const costs = this.taskCosts(taskId);
     return costs.length === 1 ? costs[0] : undefined;
   }
-
   saveAccountAllowance(allowance: AccountAllowance) {
     const value = structuredClone(allowance);
     this.put('allowance', `${allowance.agentKind}:${allowance.providerId}`, value);
     return value;
   }
-
   accountAllowance(agentKind: AgentKind, providerId: string) {
     return this.get('allowance', `${agentKind}:${providerId}`);
   }
   activeRuns() {
     return this.list('run').filter((r) => r.status === 'running' || r.status === 'waiting');
   }
-  private schedulingSnapshot() {
-    const snapshot = {
-      projects: this.list('project'),
-      repos: this.list('repo'),
-      tasks: this.list('task'),
-      runs: this.list('run'),
-      settings: this.settings(),
-    };
-    const cursor = (
-      this.db.prepare("SELECT value FROM meta WHERE key='cursor'").get() as
-        { value: string } | undefined
-    )?.value;
-    const start = cursor ? Math.max(0, snapshot.projects.findIndex((p) => p.id === cursor) + 1) : 0;
-    const projects = [...snapshot.projects.slice(start), ...snapshot.projects.slice(0, start)];
-    const active = snapshot.runs.filter((r) => ['running', 'waiting'].includes(r.status));
-    const dev = active.filter((r) => r.role === 'dev');
-    const at = now();
-    return projects.map((project) => {
-      const tasks = snapshot.tasks
-        .filter((t) => t.projectId === project.id)
-        .sort(comparePriority)
-        .map((task) => {
-          const reasons: SchedulingExplanation['tasks'][number]['reasons'] = [];
-          const repo = snapshot.repos.find((r) => r.id === task.repoId)!;
-          const attention = taskAttention(task);
-          if (task.issueOrigin) {
-            const source = this.get('message', task.sourceMessageId);
-            const assessment = this.get('inputAssessment', task.issueOrigin.assessmentId);
-            if (
-              project.admissionPaused ||
-              source?.status !== 'completed' ||
-              assessment?.disposition.status !== 'accepted'
-            )
-              reasons.push({ code: 'blocked', detail: '外部请求判断未完成或团队暂停' });
-          }
-          if (attention.paused) reasons.push({ code: 'paused' });
-          if (attention.blocked) reasons.push({ code: 'blocked', detail: attention.blocked });
-          if (
-            !attention.historicalReason &&
-            (task.pendingFeedback?.length ||
-              this.list('followUp').some(
-                (input) =>
-                  input.taskId === task.id && ['queued', 'processing'].includes(input.status),
-              ))
-          )
-            reasons.push({ code: 'feedback' });
-          if (!['ready', 'developing'].includes(task.stage))
-            reasons.push({ code: 'stage', detail: task.stage });
-          if (!repo.authorized) reasons.push({ code: 'unauthorized' });
-          if (repo.blocked) reasons.push({ code: 'repositoryBlocked', detail: repo.blocked });
-          if (task.stage === 'ready' && !repo.enabled) reasons.push({ code: 'workSwitch' });
-          for (const run of active.filter((r) => r.taskId === task.id))
-            reasons.push({ code: 'activeRun', detail: run.id });
-          for (const key of task.dependencies) {
-            const dependency = snapshot.tasks.find((t) => t.id === key);
-            if (dependency?.stage !== 'done')
-              reasons.push({ code: 'dependency', detail: dependency?.title ?? key });
-          }
-          if (dev.length >= snapshot.settings.globalDevLimit)
-            reasons.push({ code: 'globalCapacity' });
-          if (dev.filter((r) => r.projectId === project.id).length >= project.devLimit)
-            reasons.push({ code: 'projectCapacity' });
-          if (dev.filter((r) => r.repoId === repo.id).length >= repo.devLimit)
-            reasons.push({ code: 'repositoryCapacity' });
-          return {
-            taskId: task.id,
-            title: task.title,
-            priority: task.priority,
-            stage: task.stage,
-            reasons,
-          };
-        });
-      return {
-        projectId: project.id,
-        at,
-        projectOrder: projects.map((p) => p.id),
-        tasks,
-        candidates: tasks.filter((t) => !t.reasons.length).map((t) => t.taskId),
-      };
-    });
-  }
   explainScheduling(projectId: string): SchedulingExplanation {
-    this.project(projectId);
-    this.db.exec('BEGIN');
-    try {
-      const result = this.schedulingSnapshot().find((p) => p.projectId === projectId)!;
-      this.db.exec('COMMIT');
-      return result;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    return storeScheduling.explainScheduling(this.ctx, projectId);
   }
   claimNext(): Run | undefined {
-    return this.transaction(() => {
-      const candidate = this.schedulingSnapshot().find((p) => p.candidates.length)?.candidates[0];
-      if (!candidate) return;
-      const task = this.task(candidate);
-      task.stage = 'developing';
-      this.put('task', task.id, task);
-      const recovery = this.list('recovery').find(
-        (item) =>
-          item.taskId === task.id &&
-          item.status === 'resumed' &&
-          !item.successorRunId &&
-          (item.role === 'dev' || this.get('run', item.oldRunId)?.role === 'dev'),
-      );
-      const run = this.run('dev', task.projectId, task.profile, task, {
-        ...(recovery ? { recoveryItemId: recovery.id } : {}),
-      });
-      if (recovery && !recovery.successorRunId)
-        this.put('recovery', recovery.id, {
-          ...recovery,
-          status: 'resumed',
-          successorRunId: run.id,
-          updatedAt: now(),
-        });
-      this.db
-        .prepare(
-          "INSERT INTO meta VALUES ('cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        )
-        .run(task.projectId);
-      return run;
-    });
+    return storeScheduling.claimNext(this.ctx);
   }
-  /** Shared execution gate; observing a remote merge never rewrites engineering history. */
   assertTaskExecutable(key: string) {
-    const task = this.task(key);
-    if (task.issueOrigin) {
-      const authority = this.sourceAuthority(task.sourceMessageId, task.projectId, task.repoId);
-      if (
-        !authority.external ||
-        authority.external.input.id !== task.issueOrigin.inputId ||
-        authority.external.assessment.id !== task.issueOrigin.assessmentId ||
-        task.issue !== authority.external.input.number ||
-        task.issueNodeId !== authority.external.input.nativeId ||
-        task.issueUrl !== authority.external.input.url
-      )
-        throw new Fault('外部任务来源绑定不一致', 409);
-      if (authority.external.assessment.disposition.status !== 'accepted')
-        throw new Fault('外部请求等待判断或范围决定', 409);
-      if (this.project(task.projectId).admissionPaused) throw new Fault('团队已暂停接收工作', 409);
-    }
-    if (externalDevelopmentHeld(task)) {
-      const completed = task.completion?.source === 'external';
-      const reason = completed
-        ? '远端交付已经结案，原工程记录保留供查阅'
-        : externalDeliveryHoldReason(task);
-      throw new Fault(reason, 409, {
-        code: completed ? 'external_delivery_completed' : 'external_merge_pending',
-        detail: reason,
-      });
-    }
+    storeScheduling.assertTaskExecutable(this.ctx, key);
   }
   /** Local-only external settlement. Host merge evidence is neither invented nor modified. */
   completeExternalTask(
@@ -3089,48 +1876,14 @@ export class Store {
     });
   }
   resumeRecovery(key: string) {
-    const item = this.get('recovery', key);
-    if (!item) throw new Fault('Recovery item 不存在', 404);
-    if (item.taskId) this.assertTaskExecutable(item.taskId);
-    if (item.status === 'resumed') return structuredClone(item);
-    if (item.status === 'cancelled') throw new Fault('Recovery item 已取消', 409);
-    // This is only a request marker. Worktree/remote reconciliation and successor creation happen
-    // in Engine; marking resumed here would let the scheduler claim before that safe phase.
-    this.event('recovery', '已请求恢复中断运行，等待宿主核对', {
-      projectId: item.projectId,
-      taskId: item.taskId,
-      runId: item.oldRunId,
-    });
-    return structuredClone(item);
+    return storeRecovery.resumeRecovery(this.ctx, key);
   }
-
   recoveryForProject(projectId: string, key?: string) {
-    const items = this.list('recovery').filter((item) => item.projectId === projectId);
-    if (!key) return items;
-    const item = items.find((candidate) => candidate.id === key);
-    if (!item) throw new Fault('Recovery item 不属于当前项目', 403);
-    return item;
+    return storeRecovery.recoveryForProject(this.ctx, projectId, key);
   }
-
   cancelRecovery(key: string) {
-    const item = this.get('recovery', key);
-    if (!item) throw new Fault('Recovery item 不存在', 404);
-    if (item.status === 'cancelled') return structuredClone(item);
-    if (item.status === 'resumed') throw new Fault('Recovery item 已恢复', 409);
-    const next = { ...item, status: 'cancelled' as const, updatedAt: now() };
-    this.put('recovery', key, next);
-    this.event('recovery', '中断运行恢复已取消', {
-      projectId: next.projectId,
-      taskId: next.taskId,
-      runId: next.oldRunId,
-    });
-    return structuredClone(next);
+    return storeRecovery.cancelRecovery(this.ctx, key);
   }
-
-  /**
-   * Create exactly one successor Run for a recovered Run. The recovery row and its successor
-   * pointer are committed together, so repeated startup/manual recovery cannot duplicate work.
-   */
   ensureRecoverySuccessor(
     recoveryId: string,
     options: {
@@ -3147,265 +1900,12 @@ export class Store {
       recoveryPrompt?: string;
     },
   ) {
-    return this.transaction(() => {
-      const item = this.get('recovery', recoveryId);
-      if (!item) throw new Fault('Recovery item 不存在', 404);
-      if (item.successorRunId) {
-        const successor = this.get('run', item.successorRunId);
-        if (successor) return structuredClone(successor);
-        throw new Fault('Recovery successor Run 丢失，拒绝重复创建', 409);
-      }
-      const taskId = options.task?.id ?? options.taskId ?? item.taskId;
-      const task = taskId ? this.task(taskId) : undefined;
-      if (task && options.role !== 'pm') this.assertTaskExecutable(task.id);
-      const run = this.run(options.role, item.projectId, options.profile, task, {
-        recoveryItemId: item.id,
-        ...(options.secondaryReview ? { secondaryReview: true } : {}),
-        ...(options.reviewAxis ? { reviewAxis: options.reviewAxis } : {}),
-        ...(options.sourceMessageId ? { sourceMessageId: options.sourceMessageId } : {}),
-        ...(options.incidentId ? { suppressSource: true } : {}),
-        ...(options.incidentId ? { incidentId: options.incidentId } : {}),
-        ...(options.incidentPhase ? { incidentPhase: options.incidentPhase } : {}),
-        ...(options.incidentEvidence ? { incidentEvidence: options.incidentEvidence } : {}),
-        ...(item.revision ? { revision: item.revision } : {}),
-      });
-      if (options.incidentId)
-        this.rebindIncidentAssessment(options.incidentId, item.oldRunId, run.id);
-      const next: RecoveryItem = {
-        ...item,
-        status: 'resumed',
-        successorRunId: run.id,
-        ...(options.sourceMessageId
-          ? { sourceMessageId: options.sourceMessageId, messageId: options.sourceMessageId }
-          : {}),
-        ...(options.reviewAxis ? { reviewAxis: options.reviewAxis } : {}),
-        ...(options.incidentId ? { incidentId: options.incidentId } : {}),
-        ...(options.recoveryPrompt ? { recoveryPrompt: options.recoveryPrompt } : {}),
-        updatedAt: now(),
-      };
-      this.put('recovery', item.id, next);
-      return structuredClone(run);
-    });
+    return storeRecovery.ensureRecoverySuccessor(this.ctx, recoveryId, options);
   }
   finishRecovery(key: string, status: Extract<RecoveryItem['status'], 'cancelled' | 'resumed'>) {
-    const item = this.get('recovery', key);
-    if (!item) throw new Fault('Recovery item 不存在', 404);
-    if (status === 'resumed' && item.taskId) this.assertTaskExecutable(item.taskId);
-    if (item.successorRunId && status === 'cancelled')
-      throw new Fault('Recovery item 已创建 successor Run', 409);
-    const next = { ...item, status, updatedAt: now() };
-    this.put('recovery', key, next);
-    return structuredClone(next);
+    return storeRecovery.finishRecovery(this.ctx, key, status);
   }
-
   recover(): RecoveryItem[] {
-    for (const input of this.list('followUp'))
-      if (input.status === 'processing')
-        this.put('followUp', input.id, { ...input, status: 'queued', runId: undefined });
-    for (const assignment of this.list('collaboration'))
-      if (assignment.status === 'running')
-        this.put('collaboration', assignment.id, {
-          ...assignment,
-          status: 'failed',
-          error: '服务重启中断协作，保留工作区与结果供负责人恢复。',
-          updatedAt: now(),
-        });
-    for (const suggestion of this.list('suggestion')) {
-      if (suggestion.status === 'running')
-        this.put('suggestion', suggestion.id, {
-          ...suggestion,
-          status: 'failed',
-          reason: '服务重启中断复盘；保留记录，不重复模型调用。',
-        });
-    }
-    const interruptedRuns = this.list('run').filter((run) =>
-      ['running', 'waiting', 'interrupted'].includes(run.status),
-    );
-    for (const operation of this.list('operation'))
-      if (operation.kind === 'steer' && operation.status === 'pending')
-        this.put('operation', operation.id, {
-          ...operation,
-          status: 'uncertain',
-          error: operation.error ?? '服务重启时 Steer 结果未知，必须先核对后重试',
-        });
-    const steers = this.list('operation').filter((operation) => operation.kind === 'steer');
-    for (const m of this.list('message'))
-      if ((m.role === 'user' || m.origin) && m.status === 'running') {
-        const operation = steers.find((op) => op.clientUserMessageId === m.id);
-        if (operation && ['pending', 'uncertain'].includes(operation.status)) {
-          this.updateMessage(m.id, {
-            status: 'failed',
-            draftStatus: 'failed',
-            descriptor: { code: 'steer_uncertain', detail: '调整结果待核对' },
-          });
-          continue;
-        }
-        if (
-          m.deliveryMode === 'steer' &&
-          m.descriptor?.code === 'steer_waiting' &&
-          m.runId &&
-          !operation
-        ) {
-          this.updateMessage(m.id, {
-            status: 'queued',
-            draftStatus: 'queued',
-            runId: undefined,
-            sourceMessageId: undefined,
-            descriptor: { code: 'steer_recovering', detail: '重启前调整尚未发送，等待继续处理' },
-          });
-          continue;
-        }
-        // Automatic recovery resumes this message's PM Run and settles the message itself.
-        const resumes =
-          (this.project(m.projectId).recoveryPolicy ?? 'automatic') === 'automatic' &&
-          interruptedRuns.some((r) => r.role === 'pm' && r.sourceMessageId === m.id);
-        if (resumes) continue;
-        this.put('message', m.id, { ...m, status: 'failed', draftStatus: 'failed' });
-        this.addMessage(
-          m.projectId,
-          'system',
-          '上次 PM 响应被中断，已保留会话和已创建的任务；可重新发送该消息继续。',
-          undefined,
-          undefined,
-          undefined,
-          { sourceMessageId: m.id },
-        );
-      }
-    const recovered: RecoveryItem[] = this.list('recovery').map((item) => structuredClone(item));
-    for (const r of interruptedRuns) {
-      if (r.purpose) {
-        this.finishRun(
-          r.id,
-          'failed',
-          r.purpose === 'retrospective'
-            ? '复盘已中断，不重复模型调用'
-            : '仓库约定学习已中断，可在项目页重新读取',
-        );
-        continue;
-      }
-      const existing = this.list('recovery').find((item) => item.oldRunId === r.id);
-      if (existing) {
-        if (!recovered.some((item) => item.id === existing.id))
-          recovered.push(structuredClone(existing));
-        continue;
-      }
-      if (r.ownerMessageId) {
-        // A read-only answer holds no work: the question fails and the user may ask again.
-        this.finishRun(r.id, 'interrupted', '服务重启，回答中断');
-        const question = this.get('ownerMessage', r.ownerMessageId);
-        if (question)
-          this.put('ownerMessage', question.id, {
-            ...question,
-            status: 'failed',
-            failureReason: 'answer_interrupted',
-          });
-        continue;
-      }
-      const task = r.taskId ? this.get('task', r.taskId) : undefined;
-      if (r.incidentPhase === 'validation_recovery' && r.incidentId) {
-        const incident = this.get('incident', r.incidentId);
-        if (incident && ['waiting_user', 'resolved'].includes(incident.status)) {
-          // A recorded disposition owns the next step even if its asking turn never returned.
-          if (r.status !== 'interrupted')
-            this.finishRun(r.id, 'interrupted', 'Incident 处置已记录，保留其等待或恢复决定');
-          continue;
-        }
-      }
-      const draft = this.list('message').find(
-        (message) =>
-          message.role === 'assistant' &&
-          message.runId === r.id &&
-          message.draftStatus !== 'completed',
-      );
-      const project = this.project(r.projectId);
-      const policy: RecoveryPolicy = project.recoveryPolicy ?? 'automatic';
-      if (r.role === 'pm')
-        this.activity(r, `recovery:${r.id}`, {
-          kind: 'trigger',
-          title: '服务重启恢复',
-          status: 'interrupted',
-          details: {
-            source: '服务重启恢复',
-            summary:
-              policy === 'automatic'
-                ? '上次运行中断，将从最后持久化阶段继续。'
-                : '上次运行中断，等待用户恢复核对。',
-          },
-        });
-      const reason = '服务重启；保留工作区和已有证据，等待恢复核对';
-      this.finishRun(r.id, 'interrupted', reason);
-      if (draft)
-        this.updateMessage(draft.id, {
-          status: 'queued',
-          draftStatus: 'draft',
-        });
-      const preserveTask =
-        !!task && (task.pausedByUser === true || ['done', 'cancelled'].includes(task.stage));
-      if (task && !preserveTask && !externalDevelopmentHeld(task))
-        this.updateTaskControl(
-          task.id,
-          {
-            control: 'paused',
-            pausedByUser: false,
-            blocked: `运行中断：${reason}`,
-            blockedDescriptor: { code: 'run_interrupted', params: { runId: r.id }, detail: reason },
-          },
-          'pause',
-          { source: 'host', reason: 'startup_interrupted', runId: r.id },
-        );
-      const at = now();
-      const item: RecoveryItem = {
-        id: id(),
-        projectId: r.projectId,
-        oldRunId: r.id,
-        runId: r.id,
-        ...(r.taskId ? { taskId: r.taskId } : {}),
-        role: r.role,
-        ...(r.threadId ? { threadId: r.threadId } : {}),
-        ...(task ? { revision: { head: task.head, base: task.base } } : {}),
-        ...(draft?.draftId ? { draftId: draft.draftId } : {}),
-        ...(r.sourceMessageId
-          ? { messageId: r.sourceMessageId, sourceMessageId: r.sourceMessageId }
-          : {}),
-        ...(r.reviewAxis ? { reviewAxis: r.reviewAxis } : {}),
-        ...(r.incidentId ? { incidentId: r.incidentId } : {}),
-        ...(r.incidentId
-          ? {
-              recoveryPrompt: `Incident ${r.incidentId}（${r.incidentPhase ?? 'unknown'}）评估：${r.incidentEvidence ?? r.error ?? reason}`,
-            }
-          : {}),
-        ...(task ? { stage: task.stage } : {}),
-        status: policy === 'automatic' && !preserveTask ? 'pending' : 'recoverable',
-        policy,
-        pauseProvenance: preserveTask
-          ? task?.stage === 'done' || task?.stage === 'cancelled'
-            ? 'terminal'
-            : 'user'
-          : 'runtime',
-        pausedByUser: preserveTask && task?.control === 'paused',
-        reason,
-        reasonDescriptor: {
-          code:
-            preserveTask && task?.control === 'paused' ? 'recovery_user_paused' : 'run_interrupted',
-          params: { runId: r.id },
-          detail: reason,
-        },
-        createdAt: at,
-        updatedAt: at,
-      };
-      this.put('recovery', item.id, item);
-      this.event('recovery', policy === 'automatic' ? '已排队自动恢复' : '等待手动恢复', {
-        projectId: item.projectId,
-        taskId: item.taskId,
-        runId: item.oldRunId,
-      });
-      recovered.push(structuredClone(item));
-    }
-    for (const r of this.list('repo'))
-      if (r.preview?.status === 'running' || r.preview?.status === 'starting')
-        this.patchRepo(r.id, {
-          preview: { status: 'stopped', error: '服务重启，体验环境需重新启动' },
-        });
-    return recovered;
+    return storeRecovery.recover(this.ctx);
   }
 }
