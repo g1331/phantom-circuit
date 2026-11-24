@@ -11,6 +11,7 @@ import {
 } from './retrospective.ts';
 import { Providers } from './providers.ts';
 import {
+  issueFree,
   historicalCompletionReason,
   legacyCompletionGap,
   pendingExternalMerge,
@@ -168,7 +169,15 @@ const deliveryTextInput = z.object({
     .regex(/^[^\0]*$/),
 });
 const deliveryTextRequest = `
-Write this delivery's commit message and pull request body the way the repository conventions in the team instructions ask (commit style, pull request template). End your report with exactly one JSON block: {"commitMessage": "subject line, blank line, optional body", "pullRequestBody": "the filled template"}. The host commits with commitMessage, titles the pull request with its subject line, and links the Issue itself.`;
+Write this delivery's commit message and pull request body following the repository conventions
+in the team instructions (commit style, pull request template). End your report with exactly one
+JSON block:
+{
+  "commitMessage": "subject line, blank line, optional body",
+  "pullRequestBody": "the filled template"
+}
+The host commits with commitMessage, titles the pull request with its subject line,
+and links any associated Issue itself.`;
 const configureInput = z
   .object({ repoId: z.string(), commands: commandSchema, requiredChecks: z.array(z.string()) })
   .strict();
@@ -4255,7 +4264,12 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
         if (task.stage === 'done') {
           // Fast path: a settled terminal Task has nothing left to reconcile remotely.
           if (task.completionSyncedAt && !task.blocked && !task.completionDeliveryPending) continue;
-          if (!task.pr || !task.issue || !mergeReady(task) || !this.historicalMergeAccepted(task)) {
+          if (
+            !task.pr ||
+            (!task.issue && !issueFree(task)) ||
+            !mergeReady(task) ||
+            !this.historicalMergeAccepted(task)
+          ) {
             throw new Fault(
               legacyCompletionGap,
               409,
@@ -4274,7 +4288,11 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           }
           continue;
         }
-        if (!task.issue && !pendingExternalMerge(task)) {
+        if (
+          !task.issue &&
+          !pendingExternalMerge(task) &&
+          (!issueFree(task) || this.store.get('operation', `issue:${task.id}`))
+        ) {
           // A queued retry authorization must remain unused while the user or host holds work.
           if (this.store.task(task.id).control === 'paused') continue;
           await this.github.publishIssue(task);
@@ -4296,8 +4314,8 @@ You are the liaison: decide. Revise the Task with your tools when the change is 
           this.holdExternalMerge(t.id);
           await this.completed(t);
           const current = this.store.task(t.id);
-          if (current.stage !== 'done' && current.issue) {
-            const issue = await this.github.issue(current);
+          if (current.stage !== 'done' && (current.issue || issueFree(current))) {
+            const issue = current.issue ? await this.github.issue(current) : undefined;
             if (Date.now() >= this.syncRetryAt) await this.completeExternal(current, issue);
           }
           continue;

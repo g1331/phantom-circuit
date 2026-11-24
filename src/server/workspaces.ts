@@ -5,6 +5,7 @@ import { command, shellCommand } from './process.ts';
 import { Store, Fault, now, redact } from './store.ts';
 import type { Repo, Task, Evidence } from '../shared/types.ts';
 import { commitMessage, expectedTaskBranch } from './task-naming.ts';
+import { issueFree } from '../shared/task-history.ts';
 
 /** Persisted cleanup states are intentionally separate from Task.stage and retry accounting. */
 export type WorkspaceCleanupStatus =
@@ -1123,7 +1124,7 @@ export class Workspaces {
   private async cleanupHandoff(task: CleanupTask) {
     if (task.stage !== 'done') return '任务尚未进入 done，保留工作区';
     if (task.completionDeliveryPending !== false) return '外部交接尚未确认完成';
-    if (!task.head || !task.base || !task.branch || !task.pr || !task.issue)
+    if (!task.head || !task.base || !task.branch || !task.pr || (!task.issue && !issueFree(task)))
       return '完成任务缺少固定 head、branch、base、PR 或 Issue 证据';
     const merge = this.store.get('operation', `merge:${task.id}:${task.head}`);
     if (merge?.status !== 'done' || merge.kind !== 'merge-pr')
@@ -1142,6 +1143,7 @@ export class Workspaces {
       mergeResult.base?.sha !== task.base
     )
       return 'PR merge 完成证据与任务固定 revision 不匹配';
+    if (issueFree(task)) return undefined;
     const issue = this.store.get(
       'operation',
       `complete-issue:${task.id}:${task.head}:${task.base}`,
