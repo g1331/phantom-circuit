@@ -303,6 +303,8 @@ export interface Task {
   updatedAt: string;
   /** Freezes the first transition into a terminal stage (done or cancelled). */
   endedAt?: string;
+  /** Increments whenever spec or acceptance changes so PR requirement syncs distinguish revision instances. */
+  requirementsVersion?: number;
 }
 export interface ReviewResult {
   axis: 'primary' | 'secondary' | 'standards' | 'spec';

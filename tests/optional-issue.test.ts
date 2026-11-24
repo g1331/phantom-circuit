@@ -215,6 +215,80 @@ test('PR revisions preserve authored content and reconcile lost responses', asyn
   }
 });
 
+test('PR requirement revisions can return to an earlier version while still detecting manual drift', async () => {
+  const f = fixture();
+  const task = f.store.createTask(f.input);
+  const original = f.store.updateTask(task.id, {
+    branch: `phantom/${task.id}`,
+    head: 'a'.repeat(40),
+    base: 'b'.repeat(40),
+  });
+  let pr = {
+    number: 8,
+    html_url: 'https://github.com/test/repo/pull/8',
+    state: 'open',
+    merged: false,
+    body: `${pullRequestBody(original)}\n\nAuthor notes to keep.`,
+    head: { sha: original.head, ref: original.branch, repo: { full_name: 'test/repo' } },
+    base: { sha: original.base, ref: 'main', repo: { full_name: 'test/repo' } },
+  };
+  f.store.put('operation', `pr:${task.id}`, {
+    id: `pr:${task.id}`,
+    kind: 'create-pr',
+    status: 'done',
+    result: pr,
+  });
+  let writes = 0;
+  let loseNextWrite = false;
+  class Remote extends GitHub {
+    override async api<T = unknown>(endpoint: string, method = 'GET', body?: any): Promise<T> {
+      assert.equal(endpoint, 'repos/test/repo/pulls/8');
+      if (method === 'PATCH') {
+        writes++;
+        pr = { ...pr, ...body };
+        if (loseNextWrite) {
+          loseNextWrite = false;
+          throw new Error('Lost round-trip response');
+        }
+      } else assert.equal(method, 'GET');
+      return pr as T;
+    }
+  }
+  try {
+    const github = new Remote(f.store);
+    const revB = f.store.updateTask(task.id, { spec: 'Requirement B', acceptance: ['Accept B'] });
+    await github.publishPR(revB);
+    assert.equal(writes, 1);
+    assert.ok(pr.body.includes('Requirement B'));
+
+    const revC = f.store.updateTask(task.id, { spec: 'Requirement C', acceptance: ['Accept C'] });
+    await github.publishPR(revC);
+    assert.equal(writes, 2);
+    assert.ok(pr.body.includes('Requirement C'));
+
+    loseNextWrite = true;
+    const revB2 = f.store.updateTask(task.id, { spec: 'Requirement B', acceptance: ['Accept B'] });
+    await assert.rejects(github.publishPR(revB2), /Lost round-trip response/);
+    assert.equal(writes, 3);
+    assert.ok(pr.body.includes('Requirement B'));
+    assert.ok(pr.body.includes('Author notes to keep.'));
+
+    await github.publishPR(f.store.task(task.id));
+    assert.equal(writes, 3, 'reconciles uncertain write without issuing another PATCH');
+    await github.publishPR(f.store.task(task.id));
+    assert.equal(writes, 3, 'idempotent repeat on unchanged synced revision performs no write');
+
+    pr = { ...pr, body: pr.body.replace('Requirement B', 'Manual GitHub edit') };
+    await assert.rejects(
+      github.publishPR(f.store.task(task.id)),
+      /PR 已同步的需求区段发生变化，需要核对正文/,
+    );
+    assert.equal(writes, 3);
+  } finally {
+    f.store.close();
+  }
+});
+
 test('Web coordination creates and revises Issue-free work from adopted instructions', async () => {
   const root = mkdtempSync(join(tmpdir(), 'phantom-registration-pm-'));
   const f = fixture();

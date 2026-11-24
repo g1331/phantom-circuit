@@ -2304,6 +2304,12 @@ export class Store {
       ...(endedAt !== undefined ? { endedAt } : {}),
       updatedAt: at,
     };
+    const requirementsChanged =
+      previous.spec !== t.spec ||
+      JSON.stringify(previous.acceptance ?? []) !== JSON.stringify(t.acceptance ?? []);
+    if (requirementsChanged && patch.requirementsVersion === undefined) {
+      t.requirementsVersion = (previous.requirementsVersion ?? 0) + 1;
+    }
     if (patch.profile && patch.profile !== previous.profile) {
       delete t.devThreadId;
       delete t.devThreadProviderId;

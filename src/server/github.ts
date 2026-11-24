@@ -1101,7 +1101,7 @@ export class GitHub {
     const begin = `<!-- phantom-requirements:${task.id} -->`;
     const end = `<!-- /phantom-requirements:${task.id} -->`;
     const digest = createHash('sha256').update(desired).digest('hex');
-    const key = `pr-requirements:${task.id}:${task.pr}:${digest}`;
+    const key = `pr-requirements:${task.id}:${task.pr}:v${task.requirementsVersion ?? 0}:${digest}`;
     const read = async () => {
       const pr = await this.pull(task);
       this.store.assertTaskExecutable(task.id);
