@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { resolve } from 'node:path';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
@@ -20,7 +21,7 @@ import {
 } from './browser-pages.ts';
 
 /** Exercises the built production assets, never a Vite development server. */
-export async function checkMaintenance() {
+export async function checkMaintenance(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('Maintenance fixture', '');
   const repo = store.createRepo({
@@ -93,13 +94,14 @@ export async function checkMaintenance() {
   });
   const ws = new Workspaces(resolve('.cache/maintenance-workspaces'), store);
   const engine = new Engine(store, new GitHub(store), ws, resolve('.cache/maintenance'));
-  const port = 4333;
+  const port = process.env.PHANTOM_MAINTENANCE_PORT
+    ? Number(process.env.PHANTOM_MAINTENANCE_PORT)
+    : sharedBrowser
+      ? await freePort()
+      : 4333;
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
   try {
@@ -586,7 +588,7 @@ export async function checkMaintenance() {
         'Evidence: test-results/maintenance-*.',
     );
   } finally {
-    await browser.close();
+    await release();
     await app.close();
     await engine.stop();
     store.close();

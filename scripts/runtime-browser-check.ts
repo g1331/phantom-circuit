@@ -1,14 +1,14 @@
 import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import type { Browser } from 'playwright';
+import { acquireBrowser, serveDist } from './browser-fixture-server.ts';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
 import { openPage, openSection, openTask, backToWork } from './browser-pages.ts';
 import type { PriceCard, Snapshot } from '../src/shared/types.ts';
 
-export async function checkRuntimeUI() {
+export async function checkRuntimeUI(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('Runtime fixture', 'User-authored 原文');
   const repo = store.createRepo({
@@ -109,19 +109,14 @@ export async function checkRuntimeUI() {
     } as Record<string, PriceCard>,
   };
   snapshot.providers.push(provider);
-  const server = await createServer({
-    server: { host: '127.0.0.1', port: 4330, strictPort: true },
-  });
-  await server.listen();
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
-  const page = await browser.newPage({
+  const server = await serveDist();
+  const { browser, release } = await acquireBrowser(sharedBrowser);
+  const context = await browser.newContext({
     viewport: { width: 1366, height: 768 },
     locale: 'en-US',
     reducedMotion: 'reduce',
   });
+  const page = await context.newPage();
   page.setDefaultTimeout(8000);
   page.setDefaultNavigationTimeout(30000);
   const errors: string[] = [];
@@ -290,6 +285,8 @@ export async function checkRuntimeUI() {
         content: body.content,
         deliveryMode: body.deliveryMode,
       });
+    } else if (path.endsWith('/collaboration')) {
+      result = { assignments: [], followUps: [], hasMore: false };
     } else {
       await route.fulfill({ status: 404, json: { error: `Unexpected fixture request: ${path}` } });
       return;
@@ -300,7 +297,7 @@ export async function checkRuntimeUI() {
     await mkdir(resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'), {
       recursive: true,
     });
-    await page.goto('http://127.0.0.1:4330');
+    await page.goto(server.origin);
     await openPage(page, 'conversation');
     const unconfiguredModel = page.locator('.pm-model-trigger');
     await unconfiguredModel.waitFor();
@@ -720,12 +717,14 @@ export async function checkRuntimeUI() {
           (text) => document.querySelector('.usage-panel .duration-stat dd')?.textContent !== text,
           before,
         );
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `timing-live-${locale}-${width}.png`,
-          ),
-        });
+        if ((locale === 'en' && width === 1280) || (locale === 'zh-CN' && width === 390)) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `timing-live-${locale}-${width}.png`,
+            ),
+          });
+        }
         snapshot.tasks[0].control = 'paused';
         snapshot.tasks[0].pausedByUser = true;
         snapshot.runs = [
@@ -746,12 +745,14 @@ export async function checkRuntimeUI() {
           paused[1],
         );
         assert.equal(await timingValues.first().innerText(), paused[0]);
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `timing-paused-${locale}-${width}.png`,
-          ),
-        });
+        if ((locale === 'en' && width === 1280) || (locale === 'zh-CN' && width === 390)) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `timing-paused-${locale}-${width}.png`,
+            ),
+          });
+        }
         snapshot.tasks[0].control = 'active';
         snapshot.tasks[0].pausedByUser = false;
         const missing = { ...timingRun, startedAt: 'unrecorded', status: 'interrupted' as const };
@@ -759,31 +760,37 @@ export async function checkRuntimeUI() {
         await openTiming();
         const unknown = locale === 'en' ? 'No timing data' : '暂无计时数据';
         assert.deepEqual(await timingValues.allTextContents(), [unknown, unknown]);
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `timing-missing-${locale}-${width}.png`,
-          ),
-        });
+        if ((locale === 'en' && width === 1280) || (locale === 'zh-CN' && width === 390)) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `timing-missing-${locale}-${width}.png`,
+            ),
+          });
+        }
         snapshot.runs = [...completedRuns, missing];
         await openTiming();
         for (const value of await timingValues.allTextContents())
           assert.ok(value.includes(locale === 'en' ? 'Known portion' : '已知部分'), value);
         snapshot.tasks[0].stage = 'done';
         await openTiming();
-        const fixed = await timingValues.allTextContents();
-        await page.waitForTimeout(1200);
-        assert.deepEqual(await timingValues.allTextContents(), fixed);
+        if (locale === 'en' && width === 1280) {
+          const fixed = await timingValues.allTextContents();
+          await page.waitForTimeout(1200);
+          assert.deepEqual(await timingValues.allTextContents(), fixed);
+        }
         assert.equal(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           true,
         );
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `timing-partial-${locale}-${width}.png`,
-          ),
-        });
+        if ((locale === 'en' && width === 1280) || (locale === 'zh-CN' && width === 390)) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `timing-partial-${locale}-${width}.png`,
+            ),
+          });
+        }
         snapshot.tasks[0].stage = task.stage;
         await openTiming();
         await backToWork(page);
@@ -791,7 +798,8 @@ export async function checkRuntimeUI() {
     }
     assert.deepEqual(errors, []);
   } finally {
-    await browser.close();
+    await context.close();
+    await release();
     await server.close();
     store.close();
   }

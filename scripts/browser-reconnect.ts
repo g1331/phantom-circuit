@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { createServer as createPortProbe, type Socket } from 'node:net';
+import { type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium } from 'playwright';
-import { createServer } from 'vite';
-import react from '@vitejs/plugin-react';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort, serveDist } from './browser-fixture-server.ts';
 import { createApp } from '../src/server/app.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
@@ -15,13 +14,8 @@ import { Previews } from '../src/server/preview.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { openPage } from './browser-pages.ts';
 
-export async function checkReconnect() {
-  const probe = createPortProbe();
-  await new Promise<void>((done) => probe.listen(0, '127.0.0.1', done));
-  const address = probe.address();
-  assert.ok(address && typeof address !== 'string');
-  const port = address.port;
-  await new Promise<void>((done, fail) => probe.close((error) => (error ? fail(error) : done())));
+export async function checkReconnect(sharedBrowser?: Browser) {
+  const port = await freePort();
   await mkdir(resolve('.phantom'), { recursive: true });
   const root = await mkdtemp(resolve('.phantom/browser-reconnect-'));
   const store = new Store(join(root, 'state.sqlite'));
@@ -50,33 +44,10 @@ export async function checkReconnect() {
     for (const socket of sockets) socket.destroy();
     await app.close();
   };
-  const web = await createServer({
-    configFile: false,
-    plugins: [react()],
-    server: {
-      host: '127.0.0.1',
-      port: 0,
-      proxy: {
-        '/api': {
-          target: `http://127.0.0.1:${port}`,
-          // The isolated frontend port is outside the production dev-origin allowlist.
-          changeOrigin: true,
-          headers: { origin: `http://127.0.0.1:${port}` },
-          configure(proxy) {
-            proxy.on('proxyRes', (response, _request, outgoing) => {
-              response.on('aborted', () => outgoing.destroy());
-            });
-          },
-        },
-      },
-    },
-    logLevel: 'silent',
-  });
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
-  const page = await browser.newPage({ locale: 'zh-CN' });
+  const web = await serveDist({ apiTarget: `http://127.0.0.1:${port}` });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
+  const context = await browser.newContext({ locale: 'zh-CN' });
+  const page = await context.newPage();
   const writes: string[] = [];
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -85,9 +56,7 @@ export async function checkReconnect() {
   });
   try {
     await app.listen({ host: '127.0.0.1', port });
-    await web.listen();
-    const origin = web.resolvedUrls?.local[0];
-    assert.ok(origin);
+    const origin = web.origin;
     await page.goto(origin);
     await page.locator('.connection .live').waitFor();
     await openPage(page, 'conversation');
@@ -148,7 +117,7 @@ export async function checkReconnect() {
 
     await page.close();
     await stopApp();
-    const initial = await browser.newPage({ locale: 'zh-CN' });
+    const initial = await context.newPage();
     initial.on('pageerror', (error) => errors.push(error.message));
     const unavailable = initial.waitForResponse((response) =>
       response.url().endsWith('/api/session'),
@@ -166,7 +135,7 @@ export async function checkReconnect() {
       'recovered startup clears connection failure',
     );
     console.log('Reconnect browser: initially unavailable service recovered without page refresh.');
-    const interruptedStream = await browser.newPage({ locale: 'zh-CN' });
+    const interruptedStream = await context.newPage();
     interruptedStream.on('pageerror', (error) => errors.push(error.message));
     await interruptedStream.route('**/api/events', (route) =>
       route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' }),
@@ -180,7 +149,8 @@ export async function checkReconnect() {
     assert.deepEqual(errors, []);
     console.log('Reconnect browser: HTTP progress remains visible when the event stream closes.');
   } finally {
-    await browser.close();
+    await context.close();
+    await release();
     await web.close();
     await stopApp();
     await engine.stop();

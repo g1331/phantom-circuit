@@ -1,10 +1,11 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { command } from '../src/server/process.ts';
 import { fixture } from './finalization-fixture.ts';
 
+describe('finalization', { concurrency: 3 }, () => {
 for (const method of ['UI', 'PM'] as const) {
   test(`${method} resume adopts a legacy paused dirty worktree without another Dev turn`, async (t) => {
     const f = await fixture(t, async () => {
@@ -123,4 +124,5 @@ test('only an unchanged worktree enters missing-implementation rework', async (t
   assert.equal(result.control, 'active');
   assert.equal(result.retries, 1);
   assert.match(result.feedback[0], /没有可交付的实现差异/);
+});
 });

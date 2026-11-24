@@ -1,9 +1,10 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { environmentBlock, fixture, conflictingTask } from './finalization-fixture.ts';
 
+describe('finalization merge resume', { concurrency: 3 }, () => {
 for (const failure of ['install', 'validation'] as const) {
   test(`resume keeps the merged finalize checkpoint after ${failure} fails before pushing an existing PR`, async (t) => {
     const f = await conflictingTask(
@@ -250,4 +251,5 @@ test('a pending merge cannot adopt edits when its recorded Dev Run is unknown', 
   assert.equal(result.retries, 2);
   assert.equal((await f.git(f.path, ['rev-parse', 'HEAD'])).stdout.trim(), f.oldHead);
   assert.match((await f.git(f.path, ['status', '--porcelain'])).stdout, /UU value.txt/);
+});
 });

@@ -1,16 +1,16 @@
 import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { checkTyping } from './composer-browser-check.ts';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
-import { createServer } from 'vite';
+import { acquireBrowser, serveDist } from './browser-fixture-server.ts';
 import { stageLabels, type Stage } from '../src/shared/types.ts';
 import { clickInSidebar, closeDrawer, openDrawer, openPage, openTask } from './browser-pages.ts';
 
 // Browser-only fixtures: no live database, repository work switch or model calls.
-export async function checkUsability() {
+export async function checkUsability(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('UI fixture', '用户内容 stays unchanged');
   const repo = store.createRepo({
@@ -107,23 +107,17 @@ export async function checkUsability() {
     const run = store.run('pm', project.id, 'pm');
     store.finishRun(run.id, 'completed');
   }
-  const server = await createServer({
-    server: { host: '127.0.0.1', port: 4329, strictPort: true },
-  });
-  await server.listen();
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
-  const page = await browser.newPage({
+  const server = await serveDist();
+  const { browser, release } = await acquireBrowser(sharedBrowser);
+  const context = await browser.newContext({
     viewport: { width: 1366, height: 768 },
     locale: 'zh-CN',
     reducedMotion: 'reduce',
   });
+  const page = await context.newPage();
   const errors: string[] = [];
   page.setDefaultTimeout(8000);
-  // Cold Vite module loading is separate from the UI behavior assertion budget.
-  page.setDefaultNavigationTimeout(60_000);
+  page.setDefaultNavigationTimeout(30_000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(`(() => {
     class FixtureEvents extends EventTarget {
@@ -179,6 +173,9 @@ export async function checkUsability() {
       },
     });
   });
+  await page.route('**/api/tasks/*/collaboration*', (route) =>
+    route.fulfill({ json: { assignments: [], followUps: [], hasMore: false } }),
+  );
   await page.route('**/api/tasks/*/usage', (route) =>
     route.fulfill({
       json: {
@@ -257,7 +254,7 @@ export async function checkUsability() {
       recursive: true,
     });
     await page.emulateMedia({ colorScheme: 'light' });
-    await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
+    await page.goto(server.origin, { waitUntil: 'domcontentloaded' });
     await page.locator('.workspace-project-picker select').selectOption(project.id);
     await openPage(page, 'project');
     for (const locale of ['zh-CN', 'en']) {
@@ -1043,12 +1040,14 @@ export async function checkUsability() {
       await modal.locator('.modal-body').evaluate((element) => {
         element.scrollTop = 0;
       });
-      await page.screenshot({
-        path: resolve(
-          process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-          `audit-${name}-${width}-${theme}.png`,
-        ),
-      });
+      if (theme === 'light' || width === 390) {
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `audit-${name}-${width}-${theme}.png`,
+          ),
+        });
+      }
       await modal.getByRole('button', { name: 'Close dialog', exact: true }).click();
       await modal.waitFor({ state: 'detached' });
     }
@@ -1071,12 +1070,14 @@ export async function checkUsability() {
           true,
           `${width}px project page overflow`,
         );
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `audit-project-page-${width}-${theme}.png`,
-          ),
-        });
+        if (theme === 'light' || width === 390) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `audit-project-page-${width}-${theme}.png`,
+            ),
+          });
+        }
         await projectPage
           .getByRole('button', { name: 'Configure fixture-repo', exact: true })
           .click();
@@ -1098,7 +1099,8 @@ export async function checkUsability() {
     }
     assert.deepEqual(errors, []);
   } finally {
-    await browser.close();
+    await context.close();
+    await release();
     await server.close();
     store.close();
   }

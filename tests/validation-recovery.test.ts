@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -139,6 +139,7 @@ if (runs < ${failures}) { console.error('original failed check'); process.exit(1
   };
 }
 
+describe('validation recovery', { concurrency: 3 }, () => {
 test('restarted diagnosis waits for capacity and continues the failure once', async () => {
   const s = await scenario();
   try {
@@ -487,4 +488,5 @@ test('a valid fix starts fresh diagnosis on the next failing revision', async ()
   } finally {
     await s.close();
   }
+});
 });

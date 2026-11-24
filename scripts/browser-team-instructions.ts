@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createServer } from 'node:net';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
@@ -15,7 +15,7 @@ import { createApp } from '../src/server/app.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { choosePreference } from './browser-preferences.ts';
 
-export async function checkTeamInstructions() {
+export async function checkTeamInstructions(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('团队说明验证', '查看、修改和恢复项目团队的工作约定。');
   const sections = {
@@ -26,24 +26,15 @@ export async function checkTeamInstructions() {
   const root = await mkdtemp(join(tmpdir(), 'phantom-browser-team-'));
   const ws = new Workspaces(join(root, 'workspaces'), store);
   const engine = new Engine(store, new GitHub(store), ws, root);
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      if (!address || typeof address === 'string') throw new Error('Missing fixture port');
-      probe.close(() => done(address.port));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
   try {
-    const context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
+    context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
     await context.addInitScript((id) => {
       localStorage.setItem('phantom.project', id);
       localStorage.setItem('phantom.locale', 'zh-CN');
@@ -70,9 +61,11 @@ export async function checkTeamInstructions() {
         await choosePreference(page, 'theme', theme);
         await panel.scrollIntoViewIfNeeded();
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-        await page.screenshot({
-          path: resolve(artifacts, `team-instructions-${width}-${theme}-empty.png`),
-        });
+        if ((width === 1280 && theme === 'dark') || (width === 390 && theme === 'light')) {
+          await page.screenshot({
+            path: resolve(artifacts, `team-instructions-${width}-${theme}-empty.png`),
+          });
+        }
       }
     }
     store.saveTeamInstructions(project.id, sections, { source: 'team', baseVersion: 0 });
@@ -117,6 +110,7 @@ export async function checkTeamInstructions() {
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           `${width}/${theme}: no horizontal overflow`,
         );
+        const capture = (width === 1440 && theme === 'dark') || (width === 390 && theme === 'light');
         for (const part of ['current', 'history', 'diff']) {
           const label = { current: '当前说明', history: '版本历史', diff: '比较版本' }[part]!;
           const fold = panel
@@ -125,19 +119,23 @@ export async function checkTeamInstructions() {
           await fold
             .locator(':scope > summary')
             .evaluate((element) => element.scrollIntoView({ block: 'start' }));
-          await page.screenshot({
-            path: resolve(artifacts, `team-instructions-${width}-${theme}-${part}.png`),
-            fullPage: false,
-          });
+          if (capture) {
+            await page.screenshot({
+              path: resolve(artifacts, `team-instructions-${width}-${theme}-${part}.png`),
+              fullPage: false,
+            });
+          }
         }
         await panel.getByRole('button', { name: '编辑说明' }).click();
         await panel
           .locator('form')
           .evaluate((element) => element.scrollIntoView({ block: 'start' }));
-        await page.screenshot({
-          path: resolve(artifacts, `team-instructions-${width}-${theme}-editor.png`),
-          fullPage: false,
-        });
+        if (capture) {
+          await page.screenshot({
+            path: resolve(artifacts, `team-instructions-${width}-${theme}-editor.png`),
+            fullPage: false,
+          });
+        }
         await panel.getByRole('button', { name: '取消', exact: true }).click();
       }
     }
@@ -158,7 +156,8 @@ export async function checkTeamInstructions() {
         'comparisons, pinned Run text; 1440/1366/1280/390 dark and light screenshots.',
     );
   } finally {
-    await browser.close();
+    await context?.close();
+    await release();
     await app.close();
     await engine.stop();
     store.close();

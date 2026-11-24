@@ -1,10 +1,11 @@
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { command } from '../src/server/process.ts';
 import { fixture, conflictingTask } from './finalization-fixture.ts';
 
+describe('finalization merge conflicts', { concurrency: 3 }, () => {
 test('legacy target base in MERGE_HEAD is resolved by editing only before installation', async (t) => {
   const f = await fixture(t, async (cwd) => {
     assert.match((await command('git', ['status', '--porcelain'], cwd)).stdout, /UU value.txt/);
@@ -185,4 +186,5 @@ test('PM guidance can authorize a new conflict editing attempt without product r
   assert.equal(result.retries, 2);
   assert.equal(f.turns(), 2);
   assert.deepEqual(result.mergeHistory![0].previousRunIds, [previousRun]);
+});
 });

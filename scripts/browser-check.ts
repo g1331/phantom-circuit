@@ -11,10 +11,9 @@ import { checkAttentionBrowser } from './browser-client-attention.ts';
 import { checkExternalDelivery } from './browser-external-delivery.ts';
 import { mkdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { createServer, type AddressInfo } from 'node:net';
-import { join } from 'node:path';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
+import { freePort, runConcurrent } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
@@ -44,22 +43,6 @@ import {
 } from './browser-pages.ts';
 
 const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
-// A fixed default port collided when two checkouts ran browser checks at once.
-// Chromium refuses some ports outright (net::ERR_UNSAFE_PORT); those above 1024 are skipped.
-const unsafePorts = new Set([
-  1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697,
-  10080,
-]);
-const freePort = async (): Promise<number> => {
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address() as AddressInfo;
-      probe.close(() => done(port));
-    });
-  });
-  return unsafePorts.has(port) ? freePort() : port;
-};
 const port = process.env.PHANTOM_BROWSER_PORT
   ? Number(process.env.PHANTOM_BROWSER_PORT)
   : await freePort();
@@ -1216,24 +1199,31 @@ try {
       await longReply.locator('table').evaluate((el) => {
         el.parentElement!.scrollLeft = 0;
       });
+      const capture = (width === 1440 && theme === 'dark') || (width === 390 && theme === 'light');
       await longReply.scrollIntoViewIfNeeded();
-      await page.screenshot({
-        path: resolve(artifacts, `markdown-${width}-${theme}.png`),
-        fullPage: true,
-      });
+      if (capture) {
+        await page.screenshot({
+          path: resolve(artifacts, `markdown-${width}-${theme}.png`),
+          fullPage: true,
+        });
+      }
       await longReply.locator('pre').scrollIntoViewIfNeeded();
-      await page.screenshot({
-        path: resolve(artifacts, `markdown-code-${width}-${theme}.png`),
-        fullPage: true,
-      });
+      if (capture) {
+        await page.screenshot({
+          path: resolve(artifacts, `markdown-code-${width}-${theme}.png`),
+          fullPage: true,
+        });
+      }
       await page
         .getByRole('heading', { name: '交付说明', exact: true })
         .first()
         .scrollIntoViewIfNeeded();
-      await page.screenshot({
-        path: resolve(artifacts, `markdown-structure-${width}-${theme}.png`),
-        fullPage: true,
-      });
+      if (capture) {
+        await page.screenshot({
+          path: resolve(artifacts, `markdown-structure-${width}-${theme}.png`),
+          fullPage: true,
+        });
+      }
 
       await longReply.getByRole('button', { name: '复制', exact: true }).click();
       await longReply.getByRole('status').getByText('已复制').waitFor();
@@ -1263,9 +1253,11 @@ try {
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
         true,
       );
-      await page.screenshot({
-        path: resolve(artifacts, `markdown-task-${width}-${theme}.png`),
-      });
+      if (capture) {
+        await page.screenshot({
+          path: resolve(artifacts, `markdown-task-${width}-${theme}.png`),
+        });
+      }
       await backToWork(page);
       await openPage(page, 'project');
       await openSection(page, 'project.tab.docs');
@@ -1295,7 +1287,9 @@ try {
         true,
       );
       await documentBlock.locator('pre').scrollIntoViewIfNeeded();
-      await page.screenshot({ path: resolve(artifacts, `markdown-doc-${width}-${theme}.png`) });
+      if (capture) {
+        await page.screenshot({ path: resolve(artifacts, `markdown-doc-${width}-${theme}.png`) });
+      }
       if (width === 390) {
         await page.evaluate(
           "Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, " +
@@ -1385,35 +1379,46 @@ try {
   await page.reload();
   await checkPMModels(page, store, project.id);
   await checkLocale(page, artifacts);
-  await checkUsability();
-  await checkRuntimeUI();
-  await checkReviewClarification();
-  await checkMaintenance();
-  await checkWorkspace();
-  await checkAttentionBrowser();
-  await checkExternalDelivery(artifacts);
-  await checkTeamInstructions();
-  await checkRepoConventions();
-  await checkReconnect();
-  await checkPMSteering(
-    browser,
-    'C:/Users/admin/AppData/Local/Temp/opencode/pm-steer-browser',
-    await freePort(),
-  );
-  await checkIntakeWorkbench(page, store, engine, artifacts);
-  const historyPage = await browser.newPage({
-    locale: 'zh-CN',
-    viewport: { width: 1280, height: 900 },
-    reducedMotion: 'reduce',
-  });
-  historyPage.setDefaultTimeout(8000);
-  historyPage.setDefaultNavigationTimeout(60_000);
-  historyPage.on('pageerror', recordPageError);
+  const pmSteerArtifacts = await mkdtemp(join(tmpdir(), 'phantom-pm-steer-'));
   try {
-    await historyPage.goto(origin);
-    await checkHistory(historyPage, store, artifacts);
+    await Promise.all([
+      (async () => {
+        await checkIntakeWorkbench(page, store, engine, artifacts);
+        const historyPage = await browser.newPage({
+          locale: 'zh-CN',
+          viewport: { width: 1280, height: 900 },
+          reducedMotion: 'reduce',
+        });
+        historyPage.setDefaultTimeout(8000);
+        historyPage.setDefaultNavigationTimeout(60_000);
+        historyPage.on('pageerror', recordPageError);
+        try {
+          await historyPage.goto(origin);
+          await checkHistory(historyPage, store, artifacts);
+        } finally {
+          await historyPage.close();
+        }
+      })(),
+      runConcurrent(
+        [
+          () => checkUsability(browser),
+          () => checkRuntimeUI(browser),
+          () => checkReviewClarification(browser),
+          () => checkMaintenance(browser),
+          () => checkWorkspace(browser),
+          () => checkAttentionBrowser(browser),
+          () => checkExternalDelivery(artifacts, browser),
+          () => checkTeamInstructions(browser),
+          () => checkRepoConventions(browser),
+          () => checkReconnect(browser),
+          async () => checkPMSteering(browser, pmSteerArtifacts, await freePort()),
+        ],
+        4,
+        (job) => job(),
+      ),
+    ]);
   } finally {
-    await historyPage.close();
+    await rm(pmSteerArtifacts, { recursive: true, force: true });
   }
   assert.deepEqual(errors, []);
   console.log(

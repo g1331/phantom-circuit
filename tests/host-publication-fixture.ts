@@ -8,6 +8,7 @@ import { Engine } from '../src/server/engine.ts';
 import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
 import { FakeGitHub } from './fake-github.ts';
+import { seedGitRepo } from './git-fixture.ts';
 import type { Task } from '../src/shared/types.ts';
 
 /**
@@ -19,18 +20,8 @@ import type { Task } from '../src/shared/types.ts';
  */
 export async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'phantom-publication-'));
-  const source = join(root, 'source');
-  const remote = join(root, 'remote.git');
-  await command('git', ['init', '--bare', remote]);
-  await command('git', ['init', '-b', 'main', source]);
+  const { source } = await seedGitRepo(root, { 'implementation.txt': 'baseline\n' });
   const git = (args: string[], cwd = source) => command('git', args, cwd);
-  await git(['config', 'user.name', 'Phantom Test']);
-  await git(['config', 'user.email', 'test@example.invalid']);
-  await writeFile(join(source, 'implementation.txt'), 'baseline\n');
-  await git(['add', '.']);
-  await git(['commit', '-m', 'Fixture']);
-  await git(['remote', 'add', 'origin', remote]);
-  await git(['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
   store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });

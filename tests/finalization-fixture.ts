@@ -9,6 +9,7 @@ import { GitHub, type PullState } from '../src/server/github.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Codex } from '../src/server/codex.ts';
 import { command } from '../src/server/process.ts';
+import { seedGitRepo } from './git-fixture.ts';
 import type { Task } from '../src/shared/types.ts';
 
 /** A configured-command failure the host must read as an environment block, not product rework. */
@@ -21,23 +22,13 @@ export async function fixture(
   files: Record<string, string> = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-finalization-'));
-  const source = join(root, 'source');
-  const remote = join(root, 'remote.git');
-  await command('git', ['init', '--bare', remote]);
-  await command('git', ['init', '-b', 'main', source]);
+  const { source, remote } = await seedGitRepo(root, {
+    'value.txt': 'before',
+    'verify.cjs':
+      "require('node:assert/strict').equal(require('node:fs').readFileSync('value.txt','utf8'),'after');",
+    ...files,
+  });
   const git = (cwd: string, args: string[]) => command('git', args, cwd);
-  await git(source, ['config', 'user.name', 'Phantom Test']);
-  await git(source, ['config', 'user.email', 'test@example.invalid']);
-  await writeFile(join(source, 'value.txt'), 'before');
-  for (const [path, content] of Object.entries(files)) await writeFile(join(source, path), content);
-  await writeFile(
-    join(source, 'verify.cjs'),
-    "require('node:assert/strict').equal(require('node:fs').readFileSync('value.txt','utf8'),'after');",
-  );
-  await git(source, ['add', '.']);
-  await git(source, ['commit', '-m', 'Fixture']);
-  await git(source, ['remote', 'add', 'origin', remote]);
-  await git(source, ['push', 'origin', 'main']);
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
   store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });
