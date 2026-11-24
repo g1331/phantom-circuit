@@ -3,7 +3,8 @@ import { openPage } from './browser-pages.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
@@ -12,7 +13,7 @@ import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 
 /** Real HTTP answers with the same Clarification card in Project and Task views. */
-export async function checkReviewClarification() {
+export async function checkReviewClarification(sharedBrowser?: Browser) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-review-browser-'));
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Review clarification', '');
@@ -59,23 +60,24 @@ export async function checkReviewClarification() {
   });
   const ws = new Workspaces(join(root, 'workspaces'), store);
   const engine = new Engine(store, new GitHub(store), ws, root);
-  const app = createApp(store, engine, new Previews(store, ws), 4329);
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  const port = await freePort();
+  const app = createApp(store, engine, new Previews(store, ws), port);
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
+  let release: (() => Promise<void>) | undefined;
   try {
-    await app.listen({ host: '127.0.0.1', port: 4329 });
-    browser = await chromium.launch({
-      headless: true,
-      channel: process.platform === 'win32' ? 'msedge' : undefined,
-    });
-    const page = await browser.newPage({
+    const origin = await app.listen({ host: '127.0.0.1', port });
+    const acquired = await acquireBrowser(sharedBrowser);
+    release = acquired.release;
+    context = await acquired.browser.newContext({
       viewport: { width: 1366, height: 900 },
       locale: 'zh-CN',
       reducedMotion: 'reduce',
     });
+    const page = await context.newPage();
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     // The host serves the built UI itself, as in the main check, so 5173 stays free for `npm run dev`.
-    await page.goto('http://127.0.0.1:4329');
+    await page.goto(origin);
     await openPage(page, 'conversation');
     const projectCard = page.locator('.conversation-content .clarification-card');
     await projectCard.getByText('需要用户', { exact: true }).waitFor();
@@ -109,7 +111,8 @@ export async function checkReviewClarification() {
     assert.equal(store.task(task.id).retries, 0);
     assert.deepEqual(errors, []);
   } finally {
-    await browser?.close();
+    await context?.close();
+    await release?.();
     await app.close();
     await engine.stop();
     store.close();

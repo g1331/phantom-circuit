@@ -1,27 +1,17 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 import { GitHub } from '../src/server/github.ts';
 import { command } from '../src/server/process.ts';
+import { seedGitRepo } from './git-fixture.ts';
 import type { Task } from '../src/shared/types.ts';
 
 /** A real temporary Git source with a bare origin and one claimable Dev Task. */
 export async function devFixture(prefix: string) {
   const root = await mkdtemp(join(tmpdir(), prefix));
-  const source = join(root, 'source');
-  const remote = join(root, 'remote.git');
-  await command('git', ['init', '--bare', remote]);
-  await command('git', ['init', '-b', 'main', source]);
-  const git = (args: string[]) => command('git', args, source);
-  await git(['config', 'user.name', 'Phantom Test']);
-  await git(['config', 'user.email', 'test@example.invalid']);
-  await writeFile(join(source, 'index.cjs'), 'module.exports = 1;\n');
-  await git(['add', '.']);
-  await git(['commit', '-m', 'Fixture']);
-  await git(['remote', 'add', 'origin', remote]);
-  await git(['push', '-u', 'origin', 'main']);
+  const { source } = await seedGitRepo(root, { 'index.cjs': 'module.exports = 1;\n' });
   const store = new Store(join(root, 'db.sqlite'));
   const project = store.createProject('Fixture', '');
   store.saveProjectAgentSelection(project.id, { mode: 'override', agent: 'codex' });

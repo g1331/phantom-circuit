@@ -16,6 +16,25 @@ npm start
 
 Open **http://127.0.0.1:4317**. Create a project, connect a repository and explicitly grant its engineering permissions. Repositories start with new task claims disabled. Ask the PM to inspect project scripts and configure install/build/test/start commands before opening work. `聊一聊` never authorizes tasks; `交给 PM 做` and `体验反馈` do. No sample data is inserted into the real workspace.
 
+### Delivering work without creating Issues
+
+In the existing project **Team instructions**, adopt an explicit agreement in the relevant
+repository block, for example: `For owner/repository, do not create Issues; deliver requested
+work through pull requests.` You can also explicitly request no Issue registration in your Web
+implementation request. The coordinator records the choice and its quoted basis for each new
+Task. Repositories without an explicit agreement keep the existing Issue registration behavior.
+
+Submit requirements from the Web as usual. The workbench retains the request, owner, progress,
+verification, independent review, PR and delivery result. The PR includes the requirements and
+acceptance criteria. Restarting or revising work preserves its registration choice and user
+pauses. Later agreement changes leave existing work and linked Issues intact; uncertain earlier
+Issue writes still require the existing reconciliation process. External completion of no-Issue
+work requires its linked merged PR and verified remote revision.
+
+Issue receiving is configured separately: opting out of new registration still permits explicitly
+enabled requests from existing Issues, retaining the original discussion and result replies.
+This repository continues using its current Issue registration convention.
+
 ### GitHub Issue receiving
 
 Open a project and choose **Workbench** in the project navigation. Open **Receiving settings** from the header settings button or the repository's source row, then select the repository. Issue receiving starts disabled. Repository engineering authorization is granted separately when connecting the repository; it does not enable receiving or select who may request work.
@@ -117,9 +136,21 @@ npm run test:browser
 npm run probe
 ```
 
-Browser checks use a fresh headless Edge profile on Windows and a separate in-memory fixture server on a free local port (set `PHANTOM_BROWSER_PORT` to pin one). Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
+For a small change, run the relevant files through the same test runner, for example
+`npx tsx --test tests/locale.test.ts`, or select cases with
+`npx tsx --test --test-name-pattern="model normalization" tests/agent-backend.test.ts`.
+The complete commands above remain the delivery checks required by the host.
 
-The maintenance browser checks additionally serve the real `dist/` build on fixture port 4333. They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
+`check` and the type-checking step in `build` share TypeScript's incremental state in
+`.cache/typecheck.tsbuildinfo` (ignored by Git). Both commands still check the project and
+return errors; TypeScript reuses unchanged inputs and checks affected files after edits.
+The first check in a clean checkout is cold. Remove that cache file when measuring a cold
+check; retain it when measuring the normal `check` followed by `build` sequence. Compare
+the same sequence and cache state across repeated runs, including startup and cleanup time.
+
+Browser checks serve the built `dist/` bundle (run `npm run build` after frontend edits) using a fresh headless Edge profile on Windows and isolated in-memory fixture servers on free local ports (set `PHANTOM_BROWSER_PORT` to pin the main fixture port). Independent browser suites run concurrently in separate contexts. Screenshots go to ignored `test-results/`; fixture projects never enter the real database. On other platforms install Playwright Chromium first.
+
+The maintenance browser checks additionally serve the real `dist/` build (defaulting to fixture port 4333 when run standalone; set `PHANTOM_MAINTENANCE_PORT` to override). They verify cold/first/repeated module requests, delayed and failed chunk loads, both settings entry points, keyboard close/reopen, refreshed drafts/focus and historical Task presentation. `test-results/maintenance-network.json` records initial and accessed script URLs; `maintenance-*` screenshots cover desktop/390px, Chinese/English and light/dark states. Run `npx tsx scripts/maintenance-browser-check.ts` after a production build for this targeted check. The complete browser command also retains the existing PM typing/response checks.
 
 `npm run probe` checks OMP by default; use `-- --agent codex` for Codex. Adding `--turn` makes metered model calls to verify a response and session recovery across process restart in a temporary directory, without repository writes.
 

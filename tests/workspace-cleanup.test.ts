@@ -7,7 +7,7 @@ import { command } from '../src/server/process.ts';
 import { Store } from '../src/server/store.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, withoutIssue = false) {
   const root = await mkdtemp(join(tmpdir(), 'phantom-cleanup-'));
   const source = join(root, 'source');
   const remote = join(root, 'remote.git');
@@ -32,7 +32,12 @@ async function fixture(t: TestContext) {
     defaultBranch: 'main',
     authorized: true,
   });
-  const message = store.addMessage(project.id, 'user', 'Implement', 'implement');
+  const message = store.addMessage(
+    project.id,
+    'user',
+    'Implement without creating Issues.',
+    'implement',
+  );
   const task = store.createTask({
     projectId: project.id,
     repoId: repo.id,
@@ -44,13 +49,22 @@ async function fixture(t: TestContext) {
     kind: 'backend',
     complexity: 'normal',
     priority: 0,
+    ...(withoutIssue
+      ? {
+          registrationDecision: {
+            mode: 'none' as const,
+            basis: 'source' as const,
+            quote: 'without creating Issues',
+          },
+        }
+      : {}),
   });
   const workspaces = new Workspaces(join(root, 'workspaces'), store);
   const prepared = await workspaces.prepare(task);
   const head = await workspaces.git(prepared.worktree!, ['rev-parse', 'HEAD']);
   store.updateTask(task.id, {
     stage: 'done',
-    issue: 1,
+    issue: withoutIssue ? undefined : 1,
     pr: 2,
     base: head,
     head,
@@ -67,12 +81,13 @@ async function fixture(t: TestContext) {
       base: { sha: head },
     },
   });
-  store.put('operation', `complete-issue:${task.id}:${head}:${head}`, {
-    id: `complete-issue:${task.id}:${head}:${head}`,
-    kind: 'complete-issue',
-    status: 'done',
-    result: { number: 1, state: 'closed' },
-  });
+  if (!withoutIssue)
+    store.put('operation', `complete-issue:${task.id}:${head}:${head}`, {
+      id: `complete-issue:${task.id}:${head}:${head}`,
+      kind: 'complete-issue',
+      status: 'done',
+      result: { number: 1, state: 'closed' },
+    });
   t.after(async () => {
     store.close();
     await rm(root, { recursive: true, force: true });
@@ -90,6 +105,18 @@ async function fixture(t: TestContext) {
     head,
   };
 }
+
+test('Issue-free cleanup requires confirmed merge and delivery', async (t) => {
+  const f = await fixture(t, true);
+  const result = await f.workspaces.cleanup(f.task());
+  assert.equal(result.status, 'completed');
+  assert.equal(f.task().issue, undefined);
+  assert.equal(
+    f.store.list('operation').some((op) => op.kind.includes('issue')),
+    false,
+  );
+  assert.equal(await readFile(join(f.source, 'value.txt'), 'utf8'), 'original\n');
+});
 
 test('cleanup removes only the registered task worktree and preserves source, mirror and branch', async (t) => {
   const f = await fixture(t);

@@ -2,7 +2,15 @@
 
 Accepted. A customer can finish work outside Phantom Circuit. Once the host verifies the linked remote delivery, the Task completes with an external source and releases its dependencies. Requiring another Phantom Circuit development and review cycle would repeat work the customer already completed.
 
-The host checks the authorized repository, linked merged PR, fixed remote head and merge commit, target branch, completed Issue, and the relationships between those objects. If another merged PR closed the Issue, its identity and version remain part of the evidence. The external head can differ from the original local checkpoint. Both versions remain recorded. Incomplete or failed remote reads keep the original development on hold until the evidence is available.
+The host checks the authorized repository, linked merged PR, fixed remote head and merge commit,
+and target branch. For work registered without an Issue under ADR 0016, that bound PR supplies
+the external completion evidence; an unrelated PR or incomplete merge observation cannot settle
+the Task. Work with an associated Issue also requires its completed state and the verified
+relationships between those objects. If another merged PR closed the Issue, its identity and
+version remain part of the evidence. The external head can differ from the original local
+checkpoint. Both versions remain recorded. Incomplete or failed remote reads keep the original
+development on hold until the evidence is available. Receipts and delivery notices omit Issue
+closure information only for work with the recorded no-Issue decision.
 
 External completion has its own provenance. Existing tests, reviews, approval, pause events, and work history retain their original revisions and sources. The interface distinguishes the external merge from the validation and review actually recorded locally. Phantom Circuit's own merge authorization continues to require the fixed-revision evidence in ADR 0009.
 

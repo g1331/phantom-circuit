@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createServer } from 'node:net';
 import { createServer as createHTTPServer } from 'node:http';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { GitHub } from '../src/server/github.ts';
@@ -18,7 +18,7 @@ import { legacyCompletionGap } from '../src/shared/task-history.ts';
 import { checkReferenceStates } from './browser-reference-states.ts';
 import { completionNotice } from '../src/server/delivery-runtime.ts';
 
-export async function checkWorkspace() {
+export async function checkWorkspace(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('Client workspace', '');
   const repo = store.createRepo({
@@ -68,14 +68,7 @@ export async function checkWorkspace() {
   const live = store.run('dev', project.id, 'frontend', store.task(task.id));
   const ws = new Workspaces(resolve('.phantom/browser-workspace'), store);
   const engine = new Engine(store, new GitHub(store), ws, resolve('.phantom/browser-workspace'));
-  const port = await new Promise<number>((resolve, reject) => {
-    const probe = createServer().once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      if (!address || typeof address === 'string') throw new Error('Missing fixture port');
-      probe.close(() => resolve(address.port));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
   const previewServer = createHTTPServer((_request, response) => response.end('Delivered result'));
@@ -84,14 +77,12 @@ export async function checkWorkspace() {
   if (!previewAddress || typeof previewAddress === 'string')
     throw new Error('Missing preview port');
   const previewUrl = `http://127.0.0.1:${previewAddress.port}/`;
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results');
   await mkdir(artifacts, { recursive: true });
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
   try {
-    const context = await browser.newContext({
+    context = await browser.newContext({
       viewport: { width: 1440, height: 1000 },
       locale: 'zh-CN',
       reducedMotion: 'reduce',
@@ -426,7 +417,8 @@ export async function checkWorkspace() {
       'Client workspace: verified previews, feedback, bilingual delivery and history passed.',
     );
   } finally {
-    await browser.close();
+    await context?.close();
+    await release();
     await app.close();
     await new Promise<void>((done, fail) =>
       previewServer.close((error) => (error ? fail(error) : done())),

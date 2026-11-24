@@ -86,23 +86,41 @@ export function commitMessage(task: Pick<Task, 'id' | 'title' | 'issue'> & Engin
   return `${subject}\n\nTask: ${task.id}${issue}`;
 }
 
-/**
- * Compact PR body for new engineering-named tasks. Legacy PRs retain their full historical spec
- * body so an already published delivery is never rewritten by an upgrade.
- */
+/** Host-owned requirements stay editable independently of the author's surrounding PR body. */
+export function pullRequestRequirements(
+  task: Pick<Task, 'id' | 'spec'> & Partial<Pick<Task, 'acceptance'>>,
+) {
+  return [
+    `<!-- phantom-requirements:${task.id} -->`,
+    '## Requirements',
+    task.spec,
+    '',
+    '## Acceptance criteria',
+    ...(task.acceptance ?? []).map((item) => `- ${item}`),
+    `<!-- /phantom-requirements:${task.id} -->`,
+  ].join('\n');
+}
+
 export function pullRequestBody(
-  task: Pick<Task, 'id' | 'title' | 'issue' | 'spec' | 'tests'> & EngineeringFields,
+  task: Pick<Task, 'id' | 'title' | 'issue' | 'spec' | 'tests'> &
+    Partial<Pick<Task, 'acceptance'>> &
+    EngineeringFields,
 ) {
   const marker = `<!-- phantom-task:${task.id} -->`;
+  const requirements = !task.issue ? `\n\n${pullRequestRequirements(task)}` : '';
+  const closure = task.issue ? `\n\nCloses #${task.issue}` : '';
   if (task.deliveryText) {
     const body = task.deliveryText.pullRequestBody;
     // The marker finds this PR again after a restart; the Issue link is the host's to keep.
     const link = task.issue && !new RegExp(`#${task.issue}\\b`).test(body);
-    return `${marker}\n${body}${link ? `\n\nCloses #${task.issue}` : ''}`;
+    return `${marker}\n${body}${requirements}${link ? closure : ''}`;
   }
   if (!engineeringMetadata(task)) {
     const evidence = task.tests.map((t) => `- ${t.command}: exit ${t.exitCode}`).join('\n');
-    return `${marker}\n${task.spec}\n\n## Validation\n${evidence}\n\nCloses #${task.issue}`;
+    return (
+      `${marker}\n${task.issue ? task.spec : ''}\n\n## Validation\n` +
+      `${evidence}${requirements}${closure}`
+    );
   }
   const metadata = engineeringMetadata(task)!;
   const evidence = task.tests.length
@@ -122,7 +140,7 @@ export function pullRequestBody(
     '## Limitations',
     'None recorded.',
     '',
-    `Closes #${task.issue}`,
+    requirements || closure.trim(),
   ].join('\n');
 }
 

@@ -8,6 +8,244 @@ import { Previews } from '../src/server/preview.ts';
 import { createApp } from '../src/server/app.ts';
 import type { Snapshot, Task } from '../src/shared/types.ts';
 
+test('task timing counts live execution once and freezes stopped records', async (t) => {
+  const start = Date.parse('2026-11-12T00:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const store = new Store(':memory:');
+  const ws = new Workspaces('/test', store);
+  const app = createApp(
+    store,
+    new Engine(store, new GitHub(store), ws, '/test'),
+    new Previews(store, ws),
+  );
+  t.after(async () => {
+    await app.close();
+    store.close();
+  });
+  const project = store.createProject('Timing', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'timing',
+    path: '/test',
+    github: 'example/timing',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const task = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId: store.addMessage(project.id, 'user', 'Timing', 'implement').id,
+    title: 'Timing',
+    spec: 'Timing',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+  const headers = {
+    host: '127.0.0.1:4317',
+    cookie: String(init.headers['set-cookie']).split(';')[0],
+  };
+  const timing = async () => {
+    const response = await app.inject({ url: `/api/tasks/${task.id}/usage`, headers });
+    assert.equal(response.statusCode, 200);
+    return response.json();
+  };
+  const empty = await timing();
+  const run = store.run('dev', project.id, 'frontend', task);
+  store.updateRunUsage(run.id, { totalTokens: 100 });
+  t.mock.timers.setTime(start + 65_000);
+  assert.equal((await timing()).durationMs, 65_000);
+  assert.equal(empty.durationMs, null);
+  t.mock.timers.setTime(start + 70_000);
+  assert.equal((await timing()).durationMs, 70_000);
+  store.finishRun(run.id, 'paused');
+  store.control(task.id, 'pause');
+  t.mock.timers.setTime(start + 170_000);
+  assert.equal((await timing()).durationMs, 70_000);
+  assert.equal((await timing()).elapsedMs, 170_000, 'total elapsed includes paused waiting');
+  store.control(task.id, 'resume');
+  const resumed = store.run('dev', project.id, 'frontend', task);
+  t.mock.timers.setTime(start + 200_000);
+  assert.equal((await timing()).durationMs, 100_000);
+  assert.equal((await timing()).elapsedMs, 200_000);
+  store.finishRun(resumed.id, 'completed');
+  store.finishRun(resumed.id, 'completed');
+  assert.equal((await timing()).active, true, 'a finished Run does not finish its Task');
+  store.updateTask(task.id, { stage: 'done' });
+  assert.equal((await timing()).active, false, 'a finished Task freezes the elapsed clock');
+  t.mock.timers.setTime(start + 300_000);
+  assert.equal((await timing()).durationMs, 100_000);
+  assert.equal((await timing()).elapsedMs, 200_000);
+  assert.equal((await timing()).durationMs, 100_000, 'refresh reads the same execution evidence');
+  store.put('run', 'legacy', {
+    ...run,
+    id: 'legacy',
+    status: 'interrupted',
+    startedAt: 'unrecorded',
+  });
+  const partial = await timing();
+  assert.equal(partial.durationMs, 100_000);
+  assert.equal(partial.durationPartial, true);
+  assert.equal(partial.elapsedPartial, true);
+  store.put('run', 'legacy', {
+    ...run,
+    id: 'legacy',
+    status: 'interrupted',
+    durationMs: 0,
+  });
+  const stopped = await timing();
+  assert.equal(stopped.durationMs, 100_000);
+  assert.equal(stopped.durationPartial, false, 'recorded zero remains a known duration');
+  assert.equal(stopped.elapsedPartial, true, 'a stopped Run without its end stays partial');
+  t.mock.timers.setTime(start + 400_000);
+  assert.equal((await timing()).durationMs, 100_000, 'interruption wait is excluded');
+  for (const id of ['parallel-one', 'parallel-two']) {
+    store.put('run', id, {
+      ...resumed,
+      id,
+      startedAt: new Date(start).toISOString(),
+      endedAt: new Date(start + 200_000).toISOString(),
+      status: 'completed',
+    });
+  }
+  const beforeRead = store.list('run');
+  const parallel = await timing();
+  assert.equal(parallel.durationMs, 500_000);
+  assert.equal(parallel.elapsedMs, 200_000);
+  assert.deepEqual(store.list('run'), beforeRead, 'timing reads preserve historical evidence');
+  store.updateTask(task.id, { stage: 'cancelled' });
+  t.mock.timers.setTime(start + 500_000);
+  assert.equal((await timing()).elapsedMs, 200_000);
+  assert.equal((await timing()).active, false, 'cancellation also freezes the elapsed clock');
+});
+
+test('task timing preserves paused waiting time when cancelled or finished after waiting', async (t) => {
+  const start = Date.parse('2026-11-12T01:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const store = new Store(':memory:');
+  const ws = new Workspaces('/test', store);
+  const app = createApp(
+    store,
+    new Engine(store, new GitHub(store), ws, '/test'),
+    new Previews(store, ws),
+  );
+  t.after(async () => {
+    await app.close();
+    store.close();
+  });
+  const project = store.createProject('Timing Pause', '');
+  const repo = store.createRepo({
+    projectId: project.id,
+    name: 'timing-pause',
+    path: '/test',
+    github: 'example/timing-pause',
+    defaultBranch: 'main',
+    authorized: true,
+  });
+  const sourceMessageId = store.addMessage(project.id, 'user', 'Timing Pause', 'implement').id;
+  const cancelledTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Cancel after wait',
+    spec: 'Cancel after wait',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const init = await app.inject({ url: '/api/session', headers: { host: '127.0.0.1:4317' } });
+  const headers = {
+    host: '127.0.0.1:4317',
+    cookie: String(init.headers['set-cookie']).split(';')[0],
+  };
+  const readTiming = async (taskId: string) => {
+    const response = await app.inject({ url: `/api/tasks/${taskId}/usage`, headers });
+    assert.equal(response.statusCode, 200);
+    return response.json();
+  };
+
+  const run1 = store.run('dev', project.id, 'frontend', cancelledTask);
+  t.mock.timers.setTime(start + 10_000);
+  store.finishRun(run1.id, 'paused');
+  store.control(cancelledTask.id, 'pause');
+  t.mock.timers.setTime(start + 70_000);
+  const beforeCancel = await readTiming(cancelledTask.id);
+  assert.equal(beforeCancel.durationMs, 10_000);
+  assert.equal(beforeCancel.elapsedMs, 70_000);
+  assert.equal(beforeCancel.active, true);
+
+  store.control(cancelledTask.id, 'cancel');
+  assert.equal(store.task(cancelledTask.id).endedAt, new Date(start + 70_000).toISOString());
+  const atCancel = await readTiming(cancelledTask.id);
+  assert.equal(atCancel.durationMs, 10_000);
+  assert.equal(atCancel.elapsedMs, 70_000);
+  assert.equal(atCancel.active, false);
+
+  t.mock.timers.setTime(start + 130_000);
+  store.updateTask(cancelledTask.id, { blocked: undefined });
+  assert.equal(store.task(cancelledTask.id).endedAt, new Date(start + 70_000).toISOString());
+  const afterMetadata = await readTiming(cancelledTask.id);
+  assert.equal(afterMetadata.durationMs, 10_000);
+  assert.equal(afterMetadata.elapsedMs, 70_000);
+  assert.equal(afterMetadata.active, false);
+
+  const doneTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Done after wait',
+    spec: 'Done after wait',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  const run2 = store.run('dev', project.id, 'frontend', doneTask);
+  t.mock.timers.setTime(start + 140_000);
+  store.finishRun(run2.id, 'paused');
+  store.control(doneTask.id, 'pause');
+  t.mock.timers.setTime(start + 200_000);
+  store.updateTask(doneTask.id, { stage: 'done' });
+  t.mock.timers.setTime(start + 260_000);
+  const doneTiming = await readTiming(doneTask.id);
+  assert.equal(doneTiming.durationMs, 10_000);
+  assert.equal(doneTiming.elapsedMs, 70_000);
+  assert.equal(doneTiming.active, false);
+
+  const legacyTask = store.createTask({
+    projectId: project.id,
+    repoId: repo.id,
+    sourceMessageId,
+    title: 'Legacy done',
+    spec: 'Legacy done',
+    acceptance: [],
+    dependencies: [],
+    kind: 'frontend',
+    complexity: 'normal',
+    priority: 0,
+  });
+  store.put('run', 'legacy-run', {
+    ...run2,
+    id: 'legacy-run',
+    taskId: legacyTask.id,
+    startedAt: new Date(start).toISOString(),
+    endedAt: new Date(start + 25_000).toISOString(),
+    durationMs: 25_000,
+    status: 'completed',
+  });
+  store.put('task', legacyTask.id, { ...store.task(legacyTask.id), stage: 'done' });
+  const legacyTiming = await readTiming(legacyTask.id);
+  assert.equal(legacyTiming.durationMs, 25_000);
+  assert.equal(legacyTiming.elapsedMs, 25_000);
+  assert.equal(legacyTiming.active, false);
+});
+
 test('state retains original historical evidence while scheduling excludes only settled known gaps', async () => {
   const store = new Store(':memory:');
   const ws = new Workspaces('/test', store);

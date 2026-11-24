@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, type Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { GitHub } from '../src/server/github.ts';
 import { Workspaces } from '../src/server/workspaces.ts';
@@ -28,8 +28,13 @@ function syntheticExternalFixtures(store: Store) {
     defaultBranch: 'main',
     authorized: true,
   });
-  const source = store.addMessage(project.id, 'user', 'Synthetic delivery request', 'implement');
-  const task = (title: string) =>
+  const source = store.addMessage(
+    project.id,
+    'user',
+    'Synthetic delivery request. No new Issues.',
+    'implement',
+  );
+  const task = (title: string, withoutIssue = false) =>
     store.createTask({
       projectId: project.id,
       repoId: repo.id,
@@ -41,6 +46,15 @@ function syntheticExternalFixtures(store: Store) {
       kind: 'frontend',
       complexity: 'normal',
       priority: 0,
+      ...(withoutIssue
+        ? {
+            registrationDecision: {
+              mode: 'none' as const,
+              basis: 'source' as const,
+              quote: 'No new Issues.',
+            },
+          }
+        : {}),
     });
   const oldHead = 'a'.repeat(40);
   const remoteHead = 'b'.repeat(40);
@@ -116,6 +130,17 @@ function syntheticExternalFixtures(store: Store) {
   const issueOnly = prepare(task('Synthetic issue-only external delivery'), undefined);
   store.completeExternalTask(issueOnly.id, evidence(82));
   assert.equal(store.task(issueOnly.id).pr, undefined);
+  const withoutIssue = prepare(task('Synthetic Web delivery without an Issue', true), 83);
+  store.updateTask(withoutIssue.id, {
+    issue: undefined,
+    issueUrl: undefined,
+    issueState: undefined,
+  });
+  store.completeExternalTask(withoutIssue.id, {
+    primary: observation(83),
+    closing: observation(83),
+    checkedAt: at,
+  });
   const unknown = prepare(task('Synthetic unknown delivery relationship'), 81);
   store.updateTask(unknown.id, {
     externalCompletionPendingReason: 'Synthetic relationship read unavailable',
@@ -138,7 +163,18 @@ function syntheticExternalFixtures(store: Store) {
     message: 'Synthetic new incident after external delivery',
   });
   store.updateIncident(freshIncident.id, { status: 'waiting_user' });
-  return { project, done, issueOnly, unknown, issueUnknown, later, repo, oldHead, remoteHead };
+  return {
+    project,
+    done,
+    issueOnly,
+    withoutIssue,
+    unknown,
+    issueUnknown,
+    later,
+    repo,
+    oldHead,
+    remoteHead,
+  };
 }
 
 async function expandReceipt(page: Page) {
@@ -165,6 +201,7 @@ async function assertDevelopmentControlsClosed(page: Page) {
 
 export async function checkExternalDelivery(
   artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results'),
+  sharedBrowser?: Browser,
 ) {
   await mkdir(artifacts, { recursive: true });
   const root = await mkdtemp(join(tmpdir(), 'phantom-browser-external-'));
@@ -185,32 +222,25 @@ export async function checkExternalDelivery(
   const ws = new Workspaces(join(root, 'workspaces'), store);
   const engine = new Engine(store, new OfflineGitHub(store), ws, root, denyAgent);
   const previews = new Previews(store, ws);
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      assert.ok(address && typeof address !== 'string');
-      probe.close((error) => (error ? fail(error) : done(address.port)));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, previews, port, denyAgent, denyAgent);
   app.addHook('onRequest', async (request, reply) => {
     if (/^\/api\/(agents\/|health(?:\?|$))/.test(request.url))
       return reply.code(403).send({ error: 'Synthetic fixture disables agent probes' });
   });
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
+  let release: (() => Promise<void>) | undefined;
   const errors: string[] = [];
   try {
     const origin = await app.listen({ host: '127.0.0.1', port });
-    browser = await chromium.launch({
-      headless: true,
-      channel: process.platform === 'win32' ? 'msedge' : undefined,
-    });
-    const page = await browser.newPage({
+    const acquired = await acquireBrowser(sharedBrowser);
+    release = acquired.release;
+    context = await acquired.browser.newContext({
       viewport: { width: 1280, height: 1000 },
       locale: 'zh-CN',
       reducedMotion: 'reduce',
     });
+    const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`${origin}/#/p/${fixtures.project.id}`);
     await page.locator('.workspace-project-picker select').waitFor();
@@ -228,15 +258,17 @@ export async function checkExternalDelivery(
               true,
               `synthetic ${view}/${width}/${locale}/${theme} fits viewport`,
             );
-            await page.screenshot({
-              path: resolve(
-                artifacts,
-                `external-synthetic-${view}-${width}-${locale}-${theme}.png`,
-              ),
-            });
+            if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+              await page.screenshot({
+                path: resolve(
+                  artifacts,
+                  `external-synthetic-${view}-${width}-${locale}-${theme}.png`,
+                ),
+              });
+            }
           };
           await openPage(page, 'work');
-          for (const item of [fixtures.done, fixtures.issueOnly]) {
+          for (const item of [fixtures.done, fixtures.issueOnly, fixtures.withoutIssue]) {
             const row = page.locator('.work-row').filter({ hasText: item.title });
             assert.match((await row.getAttribute('class')) ?? '', /group-delivered/);
           }
@@ -244,6 +276,7 @@ export async function checkExternalDelivery(
           for (const [item, pr] of [
             [fixtures.done, 81],
             [fixtures.issueOnly, 82],
+            [fixtures.withoutIssue, 83],
           ] as const) {
             await openTask(page, item.title);
             const taskPage = page.locator('.task-page');
@@ -268,6 +301,10 @@ export async function checkExternalDelivery(
             if (!(await controls.evaluate((element) => element.hasAttribute('open'))))
               await controls.locator(':scope > summary').click();
             await controls.locator(`a[href="${prUrl}"]`).waitFor();
+            if (pr === 83) {
+              assert.equal(await taskPage.locator('a[href*="/issues/"]').count(), 0);
+              assert.doesNotMatch(await taskPage.innerText(), /#undefined|Issue #/);
+            }
             assert.equal(
               await taskPage
                 .getByRole('button', {
@@ -285,7 +322,7 @@ export async function checkExternalDelivery(
               0,
               'superseded history creates no current incident or recovery badge',
             );
-            await capture(pr === 81 ? 'done' : 'issue-only');
+            await capture(pr === 81 ? 'done' : pr === 82 ? 'issue-only' : 'without-issue');
           }
           await openTask(page, fixtures.unknown.title);
           const status = page.locator('.task-status');
@@ -373,7 +410,8 @@ export async function checkExternalDelivery(
     assert.deepEqual(errors, []);
     console.log('External delivery browser checks passed with explicitly synthetic fixtures.');
   } finally {
-    await browser?.close();
+    await context?.close();
+    await release?.();
     await app.close();
     await previews.close();
     await engine.stop();

@@ -46,7 +46,7 @@ _Avoid_: Kill switch, pause
 **Engineering completion**: Confirmed merge of work satisfying the task's verification and review requirements.
 _Avoid_: User acceptance, turn completion
 
-**External delivery**: A Task completed outside Phantom Circuit, with its linked merged work and completed Issue verified.
+**External delivery**: A Task completed outside Phantom Circuit, with its linked merged work and any associated Issue completion verified.
 _Avoid_: Phantom Circuit validation, reassign
 
 **Experience feedback**: A user's observations of delivered behavior, used to initiate a related improvement or repair.

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { openPage } from './browser-pages.ts';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -15,7 +16,7 @@ import { createApp } from '../src/server/app.ts';
 import { profileProtocol } from '../tests/profile-protocol.ts';
 import { choosePreference } from './browser-preferences.ts';
 
-const defaultArtifacts = 'C:/Users/admin/AppData/Local/Temp/opencode/pm-steer-browser';
+const defaultArtifacts = join(tmpdir(), 'phantom-pm-steer-browser');
 type Scenario = 'before-thread' | 'after-thread' | 'ended' | 'unknown' | 'ended-after-click';
 
 function gate() {
@@ -85,7 +86,12 @@ async function appearanceMatrix(page: Page, artifacts: string, state: 'preparing
         if (state === 'unknown') {
           assert.equal(await article.locator('.runtime-badge.warning').count(), 1);
         }
-        await screenshot(page, artifacts, `${state}-${width}-${language}-${theme}`);
+        if (
+          (width === 1280 && language === 'zh-CN' && theme === 'light') ||
+          (width === 390 && language === 'en' && theme === 'dark')
+        ) {
+          await screenshot(page, artifacts, `${state}-${width}-${language}-${theme}`);
+        }
       }
     }
   }

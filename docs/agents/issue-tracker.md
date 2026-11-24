@@ -1,6 +1,18 @@
 # Issue tracker
 
-Target projects use GitHub Issues, Projects and repository Milestones. The host exposes scoped tools and performs mutations through `src/server/github.ts`; agents must not bypass that broker using `gh`, network calls or other connectors. Onboarding authorization permits those engineering operations for that repository, excluding production deployment. External PR triage is off by default.
+Target projects use GitHub Issues, Projects and repository Milestones by default. A repository's
+explicit adopted no-Issue agreement or the user's explicit request can retain work solely as a
+local Task through PR delivery. Coordination records `registrationDecision` with the exact
+supporting quote when calling `create_task`; the host retains the decision and source/version
+on the Task. Read the relevant repository block in the adopted team instructions. Do not infer
+policy from an empty Issue list. Existing Tasks keep their original decision across revisions
+and recovery, and existing source Issues stay associated even when new registration is disabled.
+
+The host exposes scoped tools and performs mutations through `src/server/github.ts`; agents
+must not bypass that broker using `gh`, network calls or other connectors. Onboarding
+authorization permits those engineering operations for that repository, excluding production
+deployment. External PR triage is off by default. No-Issue work retains all existing validation,
+independent review and PR merge gates, with requirements and acceptance in its PR body.
 
 For a retained Task blocked by an uncertain `create-issue`, the Project PM calls the host tool
 `reconcile_task_issue` with `{ "taskId": "<original task id>" }`. Keep the original Task and all

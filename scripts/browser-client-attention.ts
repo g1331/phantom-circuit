@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { chromium, type Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
+import { acquireBrowser, freePort } from './browser-fixture-server.ts';
 import { Store } from '../src/server/store.ts';
 import { Engine } from '../src/server/engine.ts';
 import { Codex } from '../src/server/codex.ts';
@@ -414,12 +414,14 @@ export async function checkProjectQuestion(page: Page, store: Store, artifacts: 
               };
             });
           viewportChecks[`${entryPoint}-${width}-${locale}-${theme}`] = bounds;
-          await page.screenshot({
-            path: resolve(
-              artifacts,
-              `project-question-${entryPoint}-${width}-${locale}-${theme}.png`,
-            ),
-          });
+          if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+            await page.screenshot({
+              path: resolve(
+                artifacts,
+                `project-question-${entryPoint}-${width}-${locale}-${theme}.png`,
+              ),
+            });
+          }
           assert.ok(
             bounds.top >= bounds.viewportTop && bounds.bottom <= bounds.viewportBottom,
             `${entryPoint}: answer input must remain inside the conversation viewport: ` +
@@ -427,14 +429,18 @@ export async function checkProjectQuestion(page: Page, store: Store, artifacts: 
           );
         };
         await assertFocused('from-work');
-        await page.screenshot({
-          path: resolve(artifacts, `project-question-home-${width}-${locale}-${theme}.png`),
-        });
+        if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+          await page.screenshot({
+            path: resolve(artifacts, `project-question-home-${width}-${locale}-${theme}.png`),
+          });
+        }
         await openQuestionEntry('brief');
         await page.locator('.brief-page .brief-request .brief-link').waitFor();
-        await page.screenshot({
-          path: resolve(artifacts, `project-question-brief-${width}-${locale}-${theme}.png`),
-        });
+        if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+          await page.screenshot({
+            path: resolve(artifacts, `project-question-brief-${width}-${locale}-${theme}.png`),
+          });
+        }
         await page.locator('.brief-page .brief-request .brief-link').click();
         await assertFocused('from-brief');
         await openQuestionEntry('team');
@@ -450,9 +456,11 @@ export async function checkProjectQuestion(page: Page, store: Store, artifacts: 
           await answer.getAttribute('href'),
           `#/p/${project.id}/requests/${question.id}`,
         );
-        await page.screenshot({
-          path: resolve(artifacts, `project-question-team-${width}-${locale}-${theme}.png`),
-        });
+        if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+          await page.screenshot({
+            path: resolve(artifacts, `project-question-team-${width}-${locale}-${theme}.png`),
+          });
+        }
         await answer.click();
         await assertFocused('from-team');
         assert.equal(
@@ -480,7 +488,7 @@ export async function checkProjectQuestion(page: Page, store: Store, artifacts: 
     assert.equal(store.get('message', message.id)?.content, message.content);
 }
 
-export async function checkAttentionBrowser() {
+export async function checkAttentionBrowser(sharedBrowser?: Browser) {
   const root = await mkdtemp(resolve(tmpdir(), 'attention-'));
   const artifacts = resolve(process.env.PHANTOM_BROWSER_ARTIFACTS ?? root);
   await mkdir(artifacts, { recursive: true });
@@ -502,22 +510,13 @@ export async function checkAttentionBrowser() {
     }
   }
   const engine = new Engine(store, new GitHub(store), ws, root, () => new OfflinePM());
-  const port = await new Promise<number>((done, fail) => {
-    const probe = createServer().once('error', fail);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      if (!address || typeof address === 'string') throw new Error('Missing fixture port');
-      probe.close(() => done(address.port));
-    });
-  });
+  const port = await freePort();
   const app = createApp(store, engine, new Previews(store, ws), port, profileProtocol);
   const origin = await app.listen({ host: '127.0.0.1', port });
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
+  const { browser, release } = await acquireBrowser(sharedBrowser);
+  const context = await browser.newContext({ locale: 'zh-CN', reducedMotion: 'reduce' });
   try {
-    const page = await browser.newPage({ locale: 'zh-CN', reducedMotion: 'reduce' });
+    const page = await context.newPage();
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.route('**/api/agents/*/models', (route) =>
@@ -537,16 +536,19 @@ export async function checkAttentionBrowser() {
           await page.setViewportSize({ width, height: 844 });
           await page.goto(`${origin}/#/p/${project.id}/brief`);
           await page.locator('.brief-page .brief-empty').waitFor();
-          await page.screenshot({
-            path: resolve(artifacts, `attention-empty-${width}-${locale}-${theme}.png`),
-          });
+          if ((width === 1280 && locale === 'zh-CN' && theme === 'light') || (width === 390 && locale === 'en' && theme === 'dark')) {
+            await page.screenshot({
+              path: resolve(artifacts, `attention-empty-${width}-${locale}-${theme}.png`),
+            });
+          }
         }
       }
     }
     await checkClientAttention({ page, store, project, repo, source, artifacts });
     assert.deepEqual(errors, []);
   } finally {
-    await browser.close();
+    await context.close();
+    await release();
     await app.close();
     store.close();
     await rm(root, { recursive: true, force: true });

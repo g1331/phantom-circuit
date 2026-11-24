@@ -1,16 +1,16 @@
 import { choosePreference, settingsPage } from './browser-preferences.ts';
 import assert from 'node:assert/strict';
 import { checkTyping } from './composer-browser-check.ts';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
 import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { Store } from '../src/server/store.ts';
-import { createServer } from 'vite';
+import { acquireBrowser, serveDist } from './browser-fixture-server.ts';
 import { stageLabels, type Stage } from '../src/shared/types.ts';
 import { clickInSidebar, closeDrawer, openDrawer, openPage, openTask } from './browser-pages.ts';
 
 // Browser-only fixtures: no live database, repository work switch or model calls.
-export async function checkUsability() {
+export async function checkUsability(sharedBrowser?: Browser) {
   const store = new Store(':memory:');
   const project = store.createProject('UI fixture', '用户内容 stays unchanged');
   const repo = store.createRepo({
@@ -107,23 +107,17 @@ export async function checkUsability() {
     const run = store.run('pm', project.id, 'pm');
     store.finishRun(run.id, 'completed');
   }
-  const server = await createServer({
-    server: { host: '127.0.0.1', port: 4329, strictPort: true },
-  });
-  await server.listen();
-  const browser = await chromium.launch({
-    headless: true,
-    channel: process.platform === 'win32' ? 'msedge' : undefined,
-  });
-  const page = await browser.newPage({
+  const server = await serveDist();
+  const { browser, release } = await acquireBrowser(sharedBrowser);
+  const context = await browser.newContext({
     viewport: { width: 1366, height: 768 },
     locale: 'zh-CN',
     reducedMotion: 'reduce',
   });
+  const page = await context.newPage();
   const errors: string[] = [];
   page.setDefaultTimeout(8000);
-  // Cold Vite module loading is separate from the UI behavior assertion budget.
-  page.setDefaultNavigationTimeout(60_000);
+  page.setDefaultNavigationTimeout(30_000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(`(() => {
     class FixtureEvents extends EventTarget {
@@ -162,6 +156,12 @@ export async function checkUsability() {
     }),
   );
   await page.route('**/api/session', (route) => route.fulfill({ json: { csrf: 'fixture' } }));
+  await page.route(`**/api/repos/${repo.id}`, (route) => {
+    assert.equal(route.request().method(), 'PATCH');
+    const { enabled } = route.request().postDataJSON();
+    assert.equal(typeof enabled, 'boolean');
+    return route.fulfill({ json: store.patchRepo(repo.id, { enabled }) });
+  });
   await page.route('**/api/agents/*/allowance?*', (route) => {
     const url = new URL(route.request().url());
     return route.fulfill({
@@ -173,6 +173,9 @@ export async function checkUsability() {
       },
     });
   });
+  await page.route('**/api/tasks/*/collaboration*', (route) =>
+    route.fulfill({ json: { assignments: [], followUps: [], hasMore: false } }),
+  );
   await page.route('**/api/tasks/*/usage', (route) =>
     route.fulfill({
       json: {
@@ -251,7 +254,62 @@ export async function checkUsability() {
       recursive: true,
     });
     await page.emulateMedia({ colorScheme: 'light' });
-    await page.goto('http://127.0.0.1:4329', { waitUntil: 'domcontentloaded' });
+    await page.goto(server.origin, { waitUntil: 'domcontentloaded' });
+    await page.locator('.workspace-project-picker select').selectOption(project.id);
+    await openPage(page, 'project');
+    for (const locale of ['zh-CN', 'en']) {
+      await choosePreference(page, 'language', locale);
+      const label = locale === 'zh-CN' ? '允许认领新任务' : 'Allow new task claims';
+      const paused =
+        locale === 'zh-CN'
+          ? '已暂停认领，排队任务等待开启'
+          : 'Claims paused; queued tasks will wait until enabled';
+      const row = page.locator('.repo-control').filter({ hasText: 'fixture-repo' });
+      const toggle = row.getByRole('switch', { name: `fixture-repo ${label}`, exact: true });
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 768 });
+        for (const enabled of [false, true]) {
+          if (enabled) {
+            await toggle.focus();
+            await page.keyboard.press('Space');
+          }
+          await row.getByText(label, { exact: true }).waitFor();
+          await toggle.and(page.locator(`[aria-checked="${enabled}"]`)).waitFor();
+          assert.equal(await toggle.evaluate((el) => el.classList.contains('on')), enabled);
+          assert.equal(store.repo(repo.id).enabled, enabled);
+          assert.equal(await row.getByText(paused, { exact: true }).count(), enabled ? 0 : 1);
+          if (!enabled) {
+            assert.equal(
+              await page
+                .locator(`[id="${await toggle.getAttribute('aria-describedby')}"]`)
+                .innerText(),
+              paused,
+            );
+          }
+          await page.reload();
+          await toggle.and(page.locator(`[aria-checked="${enabled}"]`)).waitFor();
+          await row.getByText(label, { exact: true }).waitFor();
+          assert.equal(await row.getByText(paused, { exact: true }).count(), enabled ? 0 : 1);
+          await toggle.scrollIntoViewIfNeeded();
+          const bounds = await toggle.boundingBox();
+          assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width);
+          assert.equal(
+            await row.evaluate((el) => el.scrollWidth <= el.clientWidth),
+            true,
+            `${width}px repository switch and hint fit`,
+          );
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `repo-claims-${locale}-${width}-${enabled ? 'on' : 'off'}.png`,
+            ),
+          });
+        }
+        await toggle.click();
+        await toggle.and(page.locator('[aria-checked="false"]')).waitFor();
+        assert.equal(store.repo(repo.id).enabled, false);
+      }
+    }
     await page
       .locator('.workspace-project-picker select')
       .selectOption({ label: 'Conversation fixture' });
@@ -982,12 +1040,14 @@ export async function checkUsability() {
       await modal.locator('.modal-body').evaluate((element) => {
         element.scrollTop = 0;
       });
-      await page.screenshot({
-        path: resolve(
-          process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-          `audit-${name}-${width}-${theme}.png`,
-        ),
-      });
+      if (theme === 'light' || width === 390) {
+        await page.screenshot({
+          path: resolve(
+            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+            `audit-${name}-${width}-${theme}.png`,
+          ),
+        });
+      }
       await modal.getByRole('button', { name: 'Close dialog', exact: true }).click();
       await modal.waitFor({ state: 'detached' });
     }
@@ -1010,12 +1070,14 @@ export async function checkUsability() {
           true,
           `${width}px project page overflow`,
         );
-        await page.screenshot({
-          path: resolve(
-            process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
-            `audit-project-page-${width}-${theme}.png`,
-          ),
-        });
+        if (theme === 'light' || width === 390) {
+          await page.screenshot({
+            path: resolve(
+              process.env.PHANTOM_BROWSER_ARTIFACTS ?? 'test-results',
+              `audit-project-page-${width}-${theme}.png`,
+            ),
+          });
+        }
         await projectPage
           .getByRole('button', { name: 'Configure fixture-repo', exact: true })
           .click();
@@ -1037,7 +1099,8 @@ export async function checkUsability() {
     }
     assert.deepEqual(errors, []);
   } finally {
-    await browser.close();
+    await context.close();
+    await release();
     await server.close();
     store.close();
   }
